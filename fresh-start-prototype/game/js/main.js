@@ -34,7 +34,7 @@ function resize() {
 new ResizeObserver(resize).observe(app);
 resize();
 
-function setPaused(on) { paused = on; ui.setPaused(on, world); if (!on) canvas.focus(); }
+function setPaused(on) { paused = on; ui.setPaused(on, world); if (!on) { canvas.focus(); input.swallowAll(); } }
 
 function tryJoin() {
   const devices = input.pollJoins(new Set(world.players.map(p => p.device)));
@@ -49,6 +49,13 @@ function tryJoin() {
 
 function handleMenuEvents() {
   for (const ev of input.takeMenuEvents()) {
+    // The controls screen closes with any controller's B, A, Start or View (H or Esc on the keyboard); the
+    // buttons that closed it don't also act in the game
+    if (started && ui.helpOpen) {
+      if (['back', 'confirm', 'pause', 'help'].includes(ev.type)) { ui.toggleHelp(false); input.swallowAll(); }
+      else if (ev.type === 'up' || ev.type === 'down') ui.scrollHelp(ev.type === 'down' ? 1 : -1);   // the D-pad scrolls it
+      continue;
+    }
     const p = world.players.find(q => q.device === ev.dev);
     if (!started || (!p && ev.type !== 'help')) continue;
     if (ev.type === 'pause') setPaused(!paused);
@@ -84,7 +91,8 @@ function frame(now) {
   input.pollPadMenus();
   handleMenuEvents();
   tryJoin();
-  if (started && !paused && !window.__NS.manual) {
+  const halted = paused || ui.helpOpen;   // the game waits while a menu or the controls screen is open
+  if (started && !halted && !window.__NS.manual) {
     if (view.hitPause > 0) { view.hitPause -= dt; acc = 0; }   // an impact frame's hit-pause holds the world still
     else {
       acc += dt; let steps = 0;
@@ -92,11 +100,11 @@ function frame(now) {
       if (steps === 5) acc = 0;
     }
   }
-  music.update(dt, started ? world : null, paused);
-  sound.update(started && !paused ? world : IDLE);   // charge hums and wall-slide grind
-  if (started && !paused) haptics.update(world);
+  music.update(dt, started ? world : null, halted);
+  sound.update(started && !halted ? world : IDLE);   // charge hums and wall-slide grind
+  if (started && !halted) haptics.update(world);
   try {
-    view.render(world, paused ? 1 : Math.min(1, acc / DT), dt);
+    view.render(world, halted ? 1 : Math.min(1, acc / DT), dt);
     ui.update(dt, world, view, fps);
   } catch (err) {
     console.error(err);

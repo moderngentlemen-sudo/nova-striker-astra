@@ -102,6 +102,37 @@ th { font-family: var(--font-display); text-transform: uppercase; letter-spacing
 .res.over { width: 40px; } .res.over i { background: linear-gradient(90deg, #fff1c9, #ffffff); }
 .chip.over { background: #fff6e0; color: #1d1204; animation: overPulse 0.5s ease-in-out infinite alternate; }
 .chip.red { background: #ff2414; color: #ffffff; }
+/* Ultimate bar: a thin cyan-white line under the health bar; full, it glows and says how to fire it */
+.ultbar { position: relative; height: 5px; margin: -3px 0 6px; background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
+.ultbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: linear-gradient(90deg, #3fb8ff, #bff4ff); transition: width 0.15s linear; }
+.ultbar b { position: absolute; right: 0; top: 7px; font-family: var(--font-display); font-weight: 800; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #bff4ff; line-height: 1; }
+.panel.ultready .ultbar i { background: linear-gradient(90deg, #7fe3ff, #ffffff); animation: ultGlow 0.55s ease-in-out infinite alternate; }
+.panel.ultready .sub { margin-top: 12px; }
+@keyframes ultGlow { from { box-shadow: 0 0 2px 0 rgba(127, 227, 255, 0.4); } to { box-shadow: 0 0 10px 2px rgba(191, 244, 255, 0.95); } }
+/* The ultimate: letterbox bars, the name across the screen during the call, then small at the top */
+.ultcast { position: absolute; inset: 0; pointer-events: none; }
+.ultcast .lb { position: absolute; left: 0; right: 0; height: 7vh; background: #03060c; transition: transform 0.22s ease-out; }
+.ultcast .lb.top { top: 0; transform: translateY(-101%); } .ultcast .lb.bot { bottom: 0; transform: translateY(101%); }
+.ultcast.on .lb { transform: none; }
+.ultcast .uname { position: absolute; left: 50%; top: 34%; transform: translate(-50%, -50%) skewX(-8deg); text-align: center; opacity: 0; white-space: nowrap; }
+.ultcast .uname small { display: block; font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: 0.32em; text-transform: uppercase; color: #7fe3ff; }
+.ultcast .uname strong { display: block; font-family: var(--font-display); font-weight: 800; font-size: clamp(40px, 8vw, 104px); line-height: 0.95; letter-spacing: 0.05em; text-transform: uppercase;
+  color: #ffffff; text-shadow: 0 0 18px rgba(127, 227, 255, 0.95), 0 0 46px rgba(63, 184, 255, 0.6); }
+.ultcast.cast .uname { opacity: 1; animation: ultIn 0.35s cubic-bezier(0.2, 1.4, 0.4, 1); }
+.ultcast.run .uname, .ultcast.finish .uname { opacity: 1; top: calc(7vh + 10px); transform: translate(-50%, 0) skewX(-8deg) scale(0.42); transform-origin: 50% 0; transition: top 0.25s, transform 0.25s; }
+.ultcast.finish.team .uname { top: 34%; transform: translate(-50%, -50%) skewX(-8deg) scale(1.05); }
+.ultcast .ujoin { position: absolute; left: 50%; bottom: calc(7vh + 18px); transform: translateX(-50%); display: flex; gap: 10px; }
+.ultcast .ujoin span { padding: 6px 14px; border-radius: 4px; background: rgba(3, 6, 12, 0.85); border-left: 4px solid var(--pc); font-family: var(--font-display); font-weight: 800;
+  font-size: 18px; letter-spacing: 0.06em; text-transform: uppercase; color: #ffffff; animation: joinPulse 0.4s ease-in-out infinite alternate; }
+@keyframes ultIn { from { transform: translate(-50%, -50%) skewX(-8deg) scale(1.8); opacity: 0; letter-spacing: 0.4em; } to { transform: translate(-50%, -50%) skewX(-8deg) scale(1); opacity: 1; } }
+@keyframes joinPulse { from { box-shadow: 0 0 0 0 rgba(127, 227, 255, 0); } to { box-shadow: 0 0 14px 2px rgba(127, 227, 255, 0.7); } }
+@media (prefers-reduced-motion: reduce) { .panel.ultready .ultbar i, .ultcast .ujoin span { animation: none; } .ultcast.cast .uname { animation: none; } }
+.closehint b { color: var(--text); }
+.helphead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.closebadge { margin: 4px 0 0; padding: 7px 12px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); border: 1px solid var(--plate-edge); font-family: var(--font-display);
+  font-weight: 700; font-size: 16px; letter-spacing: 0.04em; text-transform: uppercase; text-align: right; }
+.closebadge b { display: inline-block; min-width: 1.4em; padding: 0 5px; margin: 0 2px; border-radius: 4px; background: var(--warm); color: #1d1204; text-align: center; }
+.closebadge span { display: block; margin-top: 3px; font-family: var(--font-body); font-weight: 500; font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--muted); }
 .bossbar { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); width: min(470px, calc(100vw - 590px)); padding: 7px 14px 9px; background: var(--plate);
   border-bottom: 3px solid #ff2e7e; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
 .bossbar .bname { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }

@@ -36,11 +36,19 @@ const FX = {
   vbStart: ev => [0.2 + 0.15 * ev.tier, 0.5, 80, 2],
   intercept: () => [0, 0.35, 40, 1],
   thrustOn: () => [0, 0.2, 60, 1],
-  lockOn: () => [0, 0.3, 35, 1], lockSwitch: () => [0, 0.2, 25, 1], lockOff: () => [0, 0.12, 25, 1],
+  lockOn: ev => (ev.why === 'auto' ? null : [0, 0.3, 35, 1]), lockSwitch: () => [0, 0.2, 25, 1], lockOff: () => [0, 0.12, 25, 1],
   challenge: () => [0.1, 0.4, 60, 2], vanish: () => [0.1, 0.4, 60, 2],
+  // Version 9
+  subSwitch: () => [0, 0.2, 30, 1], frag: ev => [0.3 + 0.1 * (ev.level || 0), 0.5, 90 + 20 * (ev.level || 0), 2],
+  chain: ev => [0.15 + 0.1 * (ev.level || 0), 0.6, 70 + 20 * (ev.level || 0), 2], discThrow: () => [0, 0.3, 40, 1], discCatch: () => [0.1, 0.4, 50, 2],
+  wellOpen: () => [0.2, 0.4, 90, 2], wellCollapse: ev => [0.4 + 0.1 * (ev.level || 1), 0.6, 140, 3],
+  dodge: () => [0, 0.3, 40, 1], perfectDodge: () => [0.4, 0.9, 200, 3], riseBlast: () => [0.3, 0.6, 90, 2],
+  ultReady: () => [0.2, 0.7, 150, 2], ultCut: () => [0.15, 0.5, 40, 2],
 };
 // Boss moments everyone feels, on every pad at once
-const ALL = { bossSlam: ev => (ev.big ? [0.8, 0.6, 220, 3] : [0.5, 0.45, 140, 2]), bossPhase: () => [0.9, 0.8, 380, 4], bossCrash: () => [0.7, 0.5, 200, 3], bossDown: () => [1, 1, 700, 4], bossIntro: () => [0.4, 0.5, 300, 2] };
+const ALL = { bossSlam: ev => (ev.big ? [0.8, 0.6, 220, 3] : [0.5, 0.45, 140, 2]), bossPhase: () => [0.9, 0.8, 380, 4], bossCrash: () => [0.7, 0.5, 200, 3], bossDown: () => [1, 1, 700, 4], bossIntro: () => [0.4, 0.5, 300, 2],
+  // Ultimates: everyone feels the call, the nova, the finishers
+  ultCast: () => [0.5, 0.8, 300, 4], ultJoin: () => [0.5, 0.8, 250, 4], ultNova: () => [1, 1, 520, 4], ultFinisher: () => [0.9, 0.9, 420, 4], teamFinisher: () => [1, 1, 750, 4] };
 function level(L) { return L >= 3 ? [0.35, 0.7, 80, 2] : L === 2 ? [0.15, 0.45, 55, 2] : [0, 0.3, 45, 2]; }
 
 // How far along a player's current charge is (0-1), or -1 when nothing is charging
@@ -119,6 +127,10 @@ export class Haptics {
       if (p.state === 'downed' || p.state === 'dead' || !this.canRumble(this.pad(p.device))) continue;
       if (p.state === 'beam' && p.beam) {   // the beam shakes the pad the whole time it fires
         if (t - (this.humT[p.device] || 0) >= 110) { this.humT[p.device] = t; this.play(p, 0.35, 0.55, 130, 1); }
+        continue;
+      }
+      if (p.state === 'ult' && p.ultRun && p.ultRun.segs) {   // and Supernova's far harder
+        if (t - (this.humT[p.device] || 0) >= 110) { this.humT[p.device] = t; this.play(p, 0.65, 0.85, 130, 1); }
         continue;
       }
       const k = chargeOf(p);

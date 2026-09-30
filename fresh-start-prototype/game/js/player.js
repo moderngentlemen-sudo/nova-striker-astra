@@ -3,14 +3,14 @@
 import {
   DT, GRAVITY, FALL_MULT, RISE_CUT_MULT, MAX_FALL, FAST_FALL, HIGH_VEL,
   COYOTE, JUMP_BUFFER, ACTION_BUFFER, PARRY_BUFFER, PARRY, CHARS, MOVES, VB, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, SETTINGS,
-  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND,
+  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT,
 } from './config.js';
 import { moveBody, hasHeadroom } from './level.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 const approach = (v, t, d) => (v < t ? Math.min(v + d, t) : Math.max(v - d, t));
 
-// Nova with the Marksman kit (bracer attachments, Recoil Burst, skate glide)
+// Nova with the Marksman kit (bracer attachments, secondary weapons, dodge, skate glide)
 export const marksman = p => p.char === 'nova' && SETTINGS.novaKit === 'marksman';
 
 export function snap8(x, y) {
@@ -37,12 +37,14 @@ export function createPlayer(slot, device, charId, x, y) {
     resolve: 0, calmT: 0, lastResolveHitT: 0, cells: ECHO.cellsMax, tracerCd: 0,
     snares: HUNTER.snareCharges, snareRecharge: 0, leash: null,
     scarfMode: 'tether', modeCd: 0, veiled: false, veilCharge: 0, veilBreakT: 0, ambushT: 0, targetedBy: 0,
-    attachment: 'lance', focus: 0, focusT: 0, burstCd: 0, burstT: 0, airBurst: true, recoilT: 0, carveT: 0,
+    attachment: 'lance', focus: 0, focusT: 0, burstCd: 0, burstT: 0, shootT: 0, carveT: 0,
     fuel: MARKSMAN.boost.fuel, thrusting: false, rockets: 0, rocketT: 0, rocketPow: 0,
     aegis: null, aegisCd: 0, overcharge: 0, overT: 0, beam: null, slash: null, pound: null,
+    sub: 'scatter', subSwCd: 0, subArmed: false, dodge: null, dodgeCd: 0, airDodge: true, airRise: true, stick: [0, 0],
+    ult: 0, ultRun: null, chordP: 99, chordF: 99,
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
-    lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0,
+    lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0, lockSuspend: false,
     buf: { jump: 99, dash: 99, melee: 99, fire: 99, parry: 99, sig: 99 },
     downedT: 0, revive: 0, respawnT: 0, secondWind: true,
     lastSafeX: x, lastSafeY: y, offscreenT: 0, vbTierShown: 0,
@@ -55,9 +57,10 @@ export function setCharacter(p, charId) {
   p.hp = Math.min(p.hp, p.maxHp); p.chargeT = 0; p.resolve = 0; p.strain = 0;
   p.cells = ECHO.cellsMax; p.lashCharges = ECHO.lashCharges; p.state = 'normal'; p.st = 0;
   p.veiled = false; p.veilCharge = 0; p.veilBreakT = 0; p.ambushT = 0; p.targetedBy = 0;
-  p.focus = 0; p.focusT = 0; p.burstCd = 0; p.burstT = 0; p.recoilT = 0;
+  p.focus = 0; p.focusT = 0; p.burstCd = 0; p.burstT = 0; p.shootT = 0;
   p.fuel = MARKSMAN.boost.fuel; p.thrusting = false; p.rockets = 0; p.rocketT = 0;
   p.rifleT = 0; p.rifleCd = 0; p.dashChargeT = 0; p.overcharge = 0; p.overT = 0; p.beam = null; p.aegis = null;
+  p.subArmed = false; p.dodge = null; p.pound = null;
 }
 
 export function chest(p) { return { x: p.x, y: p.y + p.h * 0.62 }; }
@@ -90,8 +93,9 @@ function updateAim(p, cmd, world) {
       if (e) { const dx = e.x - c.x, dy = e.y + e.h / 2 - c.y, m = Math.hypot(dx, dy); d = [dx / m, dy / m]; }
     }
   }
-  if (p.lockT) {
-    // Locked on: aim straight at the target
+  // Locked on: aim straight at the target. With automatic lock-on, free aim (right stick, mouse) still
+  // aims where it points, and holding the stick up or down aims that way.
+  if (p.lockT && (SETTINGS.lockMode === 'manual' || (!cmd.aimFree && Math.abs(cmd.my) < 0.55))) {
     const c = chest(p), t = p.lockT, dx = t.x - c.x, dy = t.y + t.h * 0.55 - c.y, m = Math.hypot(dx, dy) || 1;
     d = [dx / m, dy / m];
   } else if (p.wallSliding && p.wallDir && d[0] * p.wallDir > 0) d = [-d[0], d[1]];   // on a wall: shoot out from it
@@ -101,18 +105,23 @@ function updateAim(p, cmd, world) {
 export function updatePlayer(p, cmd, world) {
   p.prevX = p.x; p.prevY = p.y;
   for (const b in p.buf) p.buf[b] = cmd.pressed[b] ? 0 : Math.min(99, p.buf[b] + 1);
+  trackChord(p, cmd); p.stick = [cmd.mx, cmd.my];
   if (p.state === 'dead') return;
-  // Mode switches (Echo's scarf, Nova's bracer attachment) are instant, so a press during hitstop is never lost
-  if (cmd.pressed.mode && p.modeCd === 0 && p.state !== 'downed') {
+  // Mode switches (Echo's scarf, Nova's bracer attachment and secondary weapon) are instant, so a press
+  // during hitstop is never lost
+  if (cmd.pressed.mode && p.modeCd === 0 && p.state !== 'downed' && p.state !== 'ult') {
     if (p.char === 'echo') cycleScarf(p, world);
     else if (marksman(p)) cycleAttachment(p, world);
   }
+  if (cmd.pressed.sub && p.subSwCd === 0 && marksman(p) && p.state !== 'downed' && p.state !== 'ult') cycleSub(p, world);
   if (p.hitstop > 0) { p.hitstop--; return; }
+  // Both triggers together with a full bar: the ultimate (the world takes over from here)
+  if (p.ult >= ULT.max && chordReady(p, cmd) && !world.ultCast && p.state !== 'downed' && p.state !== 'ult') { world.startUlt(p); return; }
 
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
-    'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'burstCd', 'recoilT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote', 'aegisCd']) if (p[k] > 0) p[k]--;
+    'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'burstCd', 'shootT', 'carveT', 'rocketT',
+    'rifleCd', 'wallCoyote', 'aegisCd', 'subSwCd', 'dodgeCd']) if (p[k] > 0) p[k]--;
   // Aegis time, and Overcharge draining once it has not grown for a while
   if (p.aegis && --p.aegis.t <= 0) world.endAegis(p, 'expire');
   if (p.overcharge > 0) { if (p.overT > 0) p.overT--; else p.overcharge = Math.max(0, p.overcharge - AEGIS.over.drain); }
@@ -143,8 +152,10 @@ export function updatePlayer(p, cmd, world) {
     case 'zip': stateZip(p, cmd, world); break;
     case 'dive': stateDive(p, cmd, world); break;
     case 'pound': statePound(p, cmd, world); break;
+    case 'dodge': stateDodge(p, cmd, world); break;
+    case 'ult': world.ultStep(p, cmd); break;
   }
-  handleFire(p, cmd, world);
+  if (p.state !== 'ult') handleFire(p, cmd, world);
   // Boosters only run in the normal state; anything else (dash, hitstun, a burst...) cuts them
   if (p.thrusting && (p.state !== 'normal' || p.onGround)) { p.thrusting = false; world.emit('thrustOff', { p }); }
   if (p.wallSliding !== wasSliding) world.emit('wallSlide', { p, on: p.wallSliding, dir: p.wallSliding ? p.wallDir : p.lastWallDir });
@@ -153,16 +164,17 @@ export function updatePlayer(p, cmd, world) {
   if (!['dash', 'zip'].includes(p.state)) p.h = (p.crouch || p.state === 'slide' || p.state === 'dashCharge') ? CHARS[p.char].crouchH : CHARS[p.char].height;
   moveBody(p, DT);
   if (p.onGround) {
-    p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airBurst = true;
+    p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airDodge = true; p.airRise = true;
     p.rockets = 0; p.rocketT = 0; p.wallCoyote = 0; if (p.fuel < MARKSMAN.boost.fuel) p.fuel = Math.min(MARKSMAN.boost.fuel, p.fuel + MARKSMAN.boost.refill);
     if (!wasGround && p.st > 1) world.emit('land', { p, vy: fallV });
     p.lastSafeX = p.x; p.lastSafeY = p.y;
   }
   if (p.wallDir && !p.onGround) {
     // Touching a wall gives back the air dash and the double jump, and remembers the wall for a late wall jump
-    p.airDashes = 1; p.jumpsUsed = 0; p.airBurst = true; p.lastWallDir = p.wallDir; p.wallCoyote = WALL.coyote;
+    p.airDashes = 1; p.jumpsUsed = 0; p.airDodge = true; p.airRise = true; p.lastWallDir = p.wallDir; p.wallCoyote = WALL.coyote;
   }
-  p.iframe = (SETTINGS.dashIframes && p.state === 'dash' && p.st <= 8) || (p.state === 'dash' && !!p.dash && p.st <= p.dash.iframes);
+  p.iframe = (SETTINGS.dashIframes && p.state === 'dash' && p.st <= 8) || (p.state === 'dash' && !!p.dash && p.st <= p.dash.iframes) ||
+    (p.state === 'dodge' && !!p.dodge && p.dodge.t <= DODGE.iframes) || p.state === 'ult';
 }
 
 // ---- Shared action starters ------------------------------------------------------------
@@ -262,6 +274,7 @@ function stateDashCharge(p, cmd, world) {
 
 function tryParry(p, world) {
   if (p.buf.parry > PARRY_BUFFER) return false;
+  if (marksman(p)) return tryDodge(p, world);   // Nova's Marksman kit dodges instead (Echo keeps his parry and deflect)
   p.buf.parry = 99; p.parryT = 0; p.parryResult = null;
   setState(p, 'parry'); world.emit('parryStart', { p });
   return true;
@@ -315,15 +328,16 @@ function tryMelee(p, cmd, world) {
   if (!p.onGround && down && !moving && (p.char === 'nova' || hunter)) { p.buf.melee = 99; startPound(p, world); return true; }
   const tier = vbTier(p);
   if (tier > 0) { velocityBreak(p, tier, world); return true; }
+  // Nova's rising attack, the Solar Uppercut (up + melee; once per airtime in the air)
+  if (p.char === 'nova' && cmd.my > 0.55 && (p.onGround || p.airRise)) {
+    p.buf.melee = 99; if (!p.onGround) p.airRise = false;
+    startMove(p, 'nova_rise', world); return true;
+  }
   if (marksman(p)) {
-    // Marksman kit: close to an enemy, his bracer combo; otherwise a point-blank Recoil Burst from the
-    // bracer (it cancels whatever it interrupts)
+    // Marksman kit: close to an enemy, his bracer combo; otherwise his secondary weapon (it cancels whatever
+    // it interrupts)
     if (meleeTarget(p, world)) { p.buf.melee = 99; startMove(p, p.onGround ? 'nova_k1' : 'nova_kair', world); return true; }
-    if (p.burstCd > 0) return false;
-    p.buf.melee = 99; p.burstCd = MARKSMAN.burst.cd;
-    if (p.state !== 'normal') setState(p, 'normal');
-    world.fireBurst(p, 0);
-    return true;
+    return pressSub(p, world);
   }
   p.buf.melee = 99;
   if (p.char === 'echo' && p.riposteT > 0) { startMove(p, 'echo_riposte', world); p.riposteT = 0; return true; }
@@ -338,7 +352,7 @@ function tryMelee(p, cmd, world) {
   let id;
   if (p.char === 'nova') id = p.onGround ? 'nova_jab1' : 'nova_air';
   else if (!p.onGround) id = hunter ? (cmd.my > 0.55 ? 'echo_spin' : 'echo_ab1') : 'echo_air1';
-  else if (cmd.my > 0.55) id = hunter ? 'echo_rise' : 'echo_launch';
+  else if (cmd.my > 0.55) id = 'echo_rise';   // Echo's rising attack in either kit
   else id = hunter ? 'echo_b1' : 'echo_g1';
   startMove(p, id, world);
   return true;
@@ -352,7 +366,7 @@ function meleeTarget(p, world) {
     const ahead = (e.x - p.x) * face, gap = ahead - e.w / 2 - p.w / 2;
     const dy = Math.abs(e.y + e.h / 2 - (p.y + p.h * 0.5));
     if (ahead > -0.2 && gap < R.reach - 0.8 && dy < R.up) return e;
-    if (e === p.lockT && Math.abs(e.x - p.x) < LOCK.magnet && dy < R.up) return e;
+    if (e === p.lockT && lockChosen(p) && Math.abs(e.x - p.x) < LOCK.magnet && dy < R.up) return e;
   }
   return null;
 }
@@ -393,7 +407,7 @@ function stateDashSlash(p, cmd, world) {
 function startMove(p, id, world) {
   breakVeil(p, world, 'attack');
   p.moveId = id; p.move = MOVES[id]; p.queued = null; p.hitConfirm = false; p.instance = world.newInstance();
-  p.crouch = false;
+  p.crouch = false; p.riseAir = !p.onGround;
   if (Math.abs(p.aimX) > 0.2 && p.aimFree) p.facing = sign(p.aimX);
   // Lock-on: turn to a target that is close, and step in toward it during the swing (lungeTo)
   p.lungeTo = null;
@@ -440,7 +454,7 @@ function horizontalControl(p, cmd, world, scale = 1) {
   let tgt = cmd.mx * (skates ? MARKSMAN.skate.top : c.run) * (p.crouch ? c.crouchSpeed : 1) * (p.thrusting ? MARKSMAN.boost.air : 1) * scale;
   const rifle = p.rifleT >= HUNTER.rifle.raise;   // Echo's staff-rifle up: slower on foot
   if (rifle && p.onGround) tgt *= HUNTER.rifle.slow;
-  const firing = p.chargeT > 0 || p.fireCd > 0 || p.recoilT > 0 || rifle;
+  const firing = p.chargeT > 0 || p.fireCd > 0 || p.shootT > 0 || rifle;
   const facingAim = (p.aimFree || firing) && Math.abs(p.aimX) > 0.2;
   if (facingAim) {
     if (cmd.mx !== 0 && sign(cmd.mx) !== sign(p.aimX)) tgt *= skates ? MARKSMAN.skate.backpedal : c.backpedal;
@@ -696,7 +710,12 @@ function landPound(p, world) {
 function stateAttack(p, cmd, world) {
   const m = p.move, t = p.st;
   const activeStart = m.su, activeEnd = m.su + m.ac, end = m.su + m.ac + m.rc;
-  if (m.rise && t === activeStart) { p.vy = m.rise; p.onGround = false; p.vx = p.facing * 2.5; p.dashCarry = true; }   // Rising Glaive takes off (no rise cut)
+  // A rising attack takes off (no rise cut); from the air it climbs a little less
+  if (m.rise && t === activeStart) { p.vy = m.rise * (p.riseAir ? m.airRise || 1 : 1); p.onGround = false; p.vx = p.facing * (m.fist ? 1.5 : 2.5); p.dashCarry = true; p.fastFall = false; }
+  if (m.riseBlast && t === activeEnd) {
+    // The Solar Uppercut's flare: a burst of light off the fist at the top of the climb
+    world.explode({ owner: p, x: p.x + p.facing * 0.35, y: p.y + p.h + 0.55, spec: { ...m.riseBlast, armorBreak: false }, kind: 'riseBlast', level: 1 });
+  }
   // On the ground an attack keeps pressing into the floor, so it never reads as airborne mid-swing
   if (p.onGround) { p.vx *= 0.82; p.vy = -0.5; }
   else { applyGravity(p, cmd, m.hoverAll ?? (m.hover && p.hitConfirm ? 0.25 : 1)); wallCling(p, cmd, false); }
@@ -813,28 +832,36 @@ export function rifleFocus(t) { const R = HUNTER.rifle; return Math.max(0, Math.
 
 // ---- Lock-on ---------------------------------------------------------------------------
 
+// A lock the player chose (any lock in manual mode; with automatic lock-on, one picked with the button)
+export const lockChosen = p => SETTINGS.lockMode === 'manual' || !!p.lockPicked;
+
 // A press locks onto the best target at once. While locked, a tap cycles to the next target and holding
 // for LOCK.hold ticks lets go. The world keeps the lock valid (target death, range, line of sight).
+// Automatic lock-on (the default) also locks the nearest enemy in sight whenever there is no target;
+// letting go by holding the button pauses that until the next press.
 function updateLock(p, cmd, world) {
-  if (!SETTINGS.lockOn) { if (p.lockT) world.setLock(p, null, 'off'); return; }
+  if (!SETTINGS.lockOn) { if (p.lockT) world.setLock(p, null, 'off'); p.lockSuspend = false; return; }
+  const auto = SETTINGS.lockMode !== 'manual';
   const held = !!(cmd.held && cmd.held.lock), pressed = !!(cmd.pressed && cmd.pressed.lock);
   if (pressed) {
     p.lockHeld = 1; p.lockHoldDone = false;
-    if (!p.lockT) { world.setLock(p, world.bestLockTarget(p), 'on'); p.lockHoldDone = true; }
+    if (!p.lockT || p.lockSuspend) { p.lockSuspend = false; world.setLock(p, world.bestLockTarget(p), 'on'); p.lockHoldDone = true; }
   } else if (held && p.lockHeld > 0) {
     p.lockHeld++;
-    if (p.lockHeld >= LOCK.hold && !p.lockHoldDone) { p.lockHoldDone = true; world.setLock(p, null, 'release'); }
+    if (p.lockHeld >= LOCK.hold && !p.lockHoldDone) { p.lockHoldDone = true; world.setLock(p, null, 'release'); if (auto) p.lockSuspend = true; }
   }
   if (!held && p.lockHeld > 0) {
     if (!p.lockHoldDone && p.lockT) world.setLock(p, world.nextLockTarget(p), 'cycle');
     p.lockHeld = 0; p.lockHoldDone = false;
   }
   world.validateLock(p);
+  if (auto && !p.lockT && !p.lockSuspend) { const t = world.autoLockTarget(p); if (t) world.setLock(p, t, 'auto'); }
+  if (!auto) p.lockSuspend = false;
 }
 
 // ---- Firing ----------------------------------------------------------------------------
 
-function canFire(p) { return ['normal', 'dash', 'slide', 'lash'].includes(p.state) || (p.state === 'attack' && p.hitConfirm); }
+function canFire(p) { return ['normal', 'dash', 'slide', 'lash', 'dodge'].includes(p.state) || (p.state === 'attack' && p.hitConfirm); }
 
 function handleFire(p, cmd, world) {
   if (marksman(p)) { fireMarksman(p, cmd, world); return; }
@@ -917,14 +944,77 @@ function fireMarksman(p, cmd, world) {
     if (t >= L4) { if (canFire(p)) startBeam(p, world); }
     else if (level) world.fireAttachment(p, p.attachment, level, level === 3 && t < C[2] + M.perfectWindow, t);
   }
-  if (cmd.held.melee && canFire(p)) {
+  // Secondary weapon: holding charges it (not while a disc or well of his is still out); letting go fires
+  // the charged level, or a tap (the Scatter fired its tap on the press, in tryMelee)
+  const ready = subReady(p, world);
+  if (cmd.held.melee && canFire(p) && ready) {
     const t0 = p.burstT; p.burstT += rate;
-    crossed(t0, p.burstT, B.charge, level => world.emit('burstLevel', { p, level }));
+    crossed(t0, p.burstT, B.charge, level => world.emit('burstLevel', { p, level, sub: p.sub }));
   }
-  if (!cmd.held.melee && p.burstT > 0) {
-    const t = p.burstT, level = levelOf(t, B.charge); p.burstT = 0;
-    if (level && canFire(p)) { world.fireBurst(p, level, level === 3 && t < B.charge[2] + B.perfectWindow); p.burstCd = B.cd; }
+  if (!cmd.held.melee && (p.burstT > 0 || p.subArmed)) {
+    const t = p.burstT, level = levelOf(t, B.charge), armed = p.subArmed; p.burstT = 0; p.subArmed = false;
+    if (level && canFire(p) && ready) world.fireSub(p, level, level === 3 && t < B.charge[2] + B.perfectWindow);
+    else if (!level && armed && canFire(p) && ready && p.sub !== 'scatter') world.fireSub(p, 0, false);
   }
+}
+
+// The secondary button pressed with no enemy close enough for the combo. The Scatter fires at once; the
+// others fire when it is let go (fireMarksman). A disc or well already out is called back or collapsed.
+function pressSub(p, world) {
+  if (!subReady(p, world)) { p.buf.melee = 99; world.recallSub(p, p.sub); return false; }
+  if (p.burstCd > 0) return false;
+  p.buf.melee = 99;
+  if (p.state !== 'normal') { if (p.state === 'dodge') p.dodge = null; setState(p, 'normal'); }
+  if (p.sub === 'scatter') world.fireSub(p, 0, false); else p.subArmed = true;
+  return true;
+}
+// A disc or a well: one of each at a time
+const subReady = (p, world) => !((p.sub === 'disc' || p.sub === 'well') && world.subOut(p, p.sub));
+
+function cycleSub(p, world) {
+  p.sub = SUBS[(SUBS.indexOf(p.sub) + 1) % SUBS.length]; p.subSwCd = SUB.switchCd; p.burstT = 0; p.subArmed = false;
+  world.emit('subSwitch', { p, sub: p.sub });
+}
+
+// ---- Nova: the dodge (Marksman kit, on the parry button) --------------------------------------
+function tryDodge(p, world) {
+  if (p.dodgeCd > 0 || (!p.onGround && !p.airDodge && !p.wallSliding)) return false;
+  const D = DODGE, [mx] = p.stick;
+  // The way the stick points; with it centred, a backstep. Off a wall it always goes out from the wall.
+  const dx = p.wallSliding ? -p.wallDir : Math.abs(mx) > 0.3 ? sign(mx) : -p.facing;
+  p.buf.parry = 99; p.dodgeCd = D.cd;
+  if (!p.onGround) p.airDodge = false;
+  p.dodge = { dx, t: 0, air: !p.onGround, speed: p.onGround ? D.speed : D.airSpeed, perfect: false };
+  p.crouch = false; p.fastFall = false; p.dashCarry = false; p.wallSliding = false;
+  setState(p, 'dodge'); world.emit('dodge', { p, dx, air: p.dodge.air });
+  return true;
+}
+function stateDodge(p, cmd, world) {
+  const D = DODGE, d = p.dodge;
+  if (!d) { setState(p, 'normal'); return; }
+  d.t++;
+  if (d.t <= D.ticks - 4) p.vx = d.dx * d.speed * Math.pow(D.keep, Math.max(0, d.t - 3));
+  else p.vx = approach(p.vx, cmd.mx * CHARS[p.char].run * 0.6, 60 * DT);
+  if (d.air && d.t <= 8) p.vy = 0; else applyGravity(p, cmd);
+  // It can be cut short: a jump from the fourth tick, anything else once he is hittable again
+  if (d.t >= 4 && tryJump(p, cmd, world)) { p.dodge = null; return; }
+  if (d.t > D.iframes && cancelInto(p, cmd, world, { parry: false, jump: false })) { if (p.state !== 'dodge') p.dodge = null; return; }
+  if (d.t >= D.ticks) { p.dodge = null; setState(p, 'normal'); }
+}
+
+// ---- Ultimates -----------------------------------------------------------------------------
+// Both triggers pulled together: each press counted from when it happened, both within ULT.chord ticks of
+// each other and both still held (so pulling the second trigger long after the first never counts)
+export function trackChord(p, cmd) {
+  p.chordP = cmd.pressed.parry ? 0 : Math.min(99, p.chordP + 1);
+  p.chordF = cmd.pressed.fire ? 0 : Math.min(99, p.chordF + 1);
+}
+export const chordReady = (p, cmd) => !!cmd.pressed.ult ||
+  (!!cmd.held.parry && !!cmd.held.fire && p.chordP <= ULT.chord && p.chordF <= ULT.chord);
+export function gainUlt(p, amount, world) {
+  if (!p || p.kind !== 'player' || !(amount > 0) || p.state === 'ult') return;
+  const was = p.ult; p.ult = Math.min(ULT.max, p.ult + amount);
+  if (was < ULT.max && p.ult >= ULT.max) world.emit('ultReady', { p });
 }
 
 // Level 4: the sustained beam. He braces (slow on the ground, hovering in the air), the beam follows the

@@ -6,6 +6,7 @@ import { SETTINGS, MARKSMAN, CHARS, WALL, DASH_CHARGE, HUNTER, LOCK, GRAVITY } f
 import { GATES } from '../game/js/level.js';
 import { vbTier } from '../game/js/player.js';
 SETTINGS.novaKit = 'marksman'; SETTINGS.echoKit = 'hunter'; SETTINGS.lockOn = true; SETTINGS.dashCharge = true; SETTINGS.dashIframes = false;
+SETTINGS.lockMode = 'manual';   // these check the lock-on button itself (v9-test covers automatic lock-on)
 const BT = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock'];
 function mk(prev, o = {}) {
   const held = {}; for (const b of BT) held[b] = !!(o.held && o.held[b]);

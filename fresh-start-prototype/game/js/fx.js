@@ -1,7 +1,7 @@
 // Visual effects: particles, glints, telegraph markers, projectiles, barriers, lasers, scarf.
 import * as THREE from 'three';
 import { pathFrame, groundBelow } from './level.js';
-import { CHARS, HOSTILE, NOVA, SETTINGS, ATTACH_LOOK, DASH_CHARGE, DASH_SLASH, POUND, MARKSMAN } from './config.js';
+import { CHARS, HOSTILE, NOVA, SETTINGS, ATTACH_LOOK, DASH_CHARGE, DASH_SLASH, POUND, MARKSMAN, SUB_LOOK } from './config.js';
 import { toWorld, planeDir } from './space.js';
 import { Ghosts } from './ghosts.js';
 import { buildPlayerRig } from './rigs.js';
@@ -10,6 +10,8 @@ import { ChargeFX } from './chargefx.js';
 import { SweepTrails } from './trails.js';
 import { AegisFX } from './aegisfx.js';
 import { BeamFX } from './beamfx.js';
+import { SubFX } from './subfx.js';
+import { UltFX } from './ultfx.js';
 export { toWorld, planeDir };
 
 function canvasTex(size, draw) {
@@ -82,7 +84,7 @@ export class FX {
     this.smokePts = new THREE.Points(sg, sm); this.smokePts.frustumCulled = false; this.smokePts.renderOrder = 1; scene.add(this.smokePts);
     // Billboard sprites (glints, rings)
     this.sprites = [];
-    for (let i = 0; i < 48; i++) {
+    for (let i = 0; i < 72; i++) {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex.star, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
       s.visible = false; scene.add(s); this.sprites.push({ s, life: 0, max: 1, grow: 1, base: 1 });
     }
@@ -99,6 +101,7 @@ export class FX {
     this.ghosts = new Ghosts(scene);
     this.charge = new ChargeFX(this);
     this.trails = new SweepTrails(scene); this.aegis = new AegisFX(this); this.beam = new BeamFX(this);
+    this.sub = new SubFX(this); this.ult = new UltFX(this);
     this.slashes = new Map(); this.texts = []; this.poundT = new Map(); this.prevVx = new Map(); this.stepT = new Map();
     // Flat rings on the ground (shockwaves); a small pool
     this.rings = [];
@@ -157,7 +160,7 @@ export class FX {
     this.charge.flash(at, 'glow', '#ffffff', 0.1, 0.01, 1);
     this.charge.trail({ kind: 'lance', team: 'p', level: 2 }, at);
     put(this.rings[0].m); show(this.rings[0].m); show(this.smokePts);
-    const extra = [this.trails.warmShow(at), this.aegis.warmShow(at), ...this.beam.warmShow(at, camera.position)];
+    const extra = [this.trails.warmShow(at), this.aegis.warmShow(at), ...this.beam.warmShow(at, camera.position), ...this.sub.warmShow(at, camera.position), ...this.ult.warmShow(at, camera.position)];
     for (const m of extra) { m.visible = true; }
     this.popText(0, 0, 'CRIT', '#ffffff', 0.01); for (const it of this.texts) { put(it.s); it.s.visible = true; }
     // Boss pieces that only appear mid-fight: a laser cylinder and the Stormcaller (its storm shield material)
@@ -175,7 +178,7 @@ export class FX {
     } catch (e) { /* warm-up is best effort */ }
     for (const q of shown) q.visible = false;
     for (const m of keep) this.scene.remove(m);
-    this.trails.clearAll(); this.aegis.warmDone(); this.beam.warmDone(); for (const it of this.texts) { it.life = 0; it.s.visible = false; }
+    this.trails.clearAll(); this.aegis.warmDone(); this.beam.warmDone(); this.sub.warmDone(); this.ult.warmDone(); for (const it of this.texts) { it.life = 0; it.s.visible = false; }
     g.life = 0; g.root.visible = false;
     // The stand-ins stay (hidden): disposing their materials would let the renderer drop the compiled
     // shaders again, and the first real effect would recompile them
@@ -556,6 +559,13 @@ export class FX {
         this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, '#ffd27a', 1.4, 0.2);
         break;
       }
+      // Version 9: secondary weapons, the dodge, the Solar Uppercut, and the ultimates
+      case 'subSwitch': case 'grenadeThrow': case 'bounce': case 'frag': case 'cluster': case 'chain': case 'discThrow': case 'discRecall': case 'discCatch':
+      case 'discFade': case 'wellLaunch': case 'wellOpen': case 'wellCollapse': case 'dodge': case 'perfectDodge': case 'riseBlast':
+        this.sub.onEvent(ev); break;
+      case 'ultCast': case 'ultJoin': case 'ultRun': case 'ultBegin': case 'ultNova': case 'ultCut': case 'ultFinisher': case 'ultEnd': case 'teamFinisher':
+        this.ult.onEvent(ev); break;
+      case 'ultReady': this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#7fe3ff', 1, 0.4, 3); this.burst(ev.p.x, ev.p.y + 1, '#7fe3ff', 20, 5, 0.28, 0.45); break;
       case 'beamEnd': {
         this.beam.onEvent(ev);
         const p = ev.p, c = { x: p.x + p.facing * 0.5, y: p.y + p.h * 0.62 };
@@ -844,7 +854,7 @@ export class FX {
       } else if (p.state === 'pound' && p.pound && p.pound.phase === 'drop' && dt >= 2) {
         this.ghostTick.set(p, world.tick);
         this.ghosts.spawn(rig, col.clone().lerp(new THREE.Color('#fff6e0'), 0.1 * p.pound.level).multiplyScalar(1.2 + 0.3 * p.pound.level), 0.26 + 0.06 * p.pound.level, 0.16 + 0.03 * p.pound.level);
-      } else if (p.state === 'attack' && p.move && ['echo_spin', 'echo_rise', 'echo_b4', 'echo_charged'].includes(p.moveId) && p.st >= p.move.su && p.st < p.move.su + p.move.ac && dt >= 3) {
+      } else if (p.state === 'attack' && p.move && ['echo_spin', 'echo_rise', 'echo_b4', 'echo_charged', 'nova_rise'].includes(p.moveId) && p.st >= p.move.su && p.st < p.move.su + p.move.ac && dt >= 3) {
         this.ghostTick.set(p, world.tick);
         this.ghosts.spawn(rig, col, 0.2, 0.14);
       } else if (p.rocketT > 0 && p.vy > 8 && (p.rocketPow || 0) > 0.55 && dt >= 3) {
@@ -894,6 +904,7 @@ export class FX {
     this.trails.update(dt, world, view.rigs);
     this.aegis.update(dt, world);
     this.beam.update(dt, world, view);
+    this.sub.update(dt, world, view); this.ult.update(dt, world, view);
     this.updateSlashes(world);
     this.slideFx(world, view);
     this.poundFx(world, view, dt);
@@ -1031,6 +1042,16 @@ export class FX {
       },
       // A boss missile: a magenta rocket with a white-hot nose (it trails smoke)
       missile: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.42, 3, 8), em(HOSTILE, 3))); const n = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), em('#ffffff', 4)); n.position.y = 0.28; g.add(n); return g; },
+      // Nova's secondary weapons: a frag grenade (a dark shell banded in orange light), its bomblets, and the
+      // hard-light disc (a bright rim round a glowing face, spun edge-on to the camera in syncProjectiles)
+      grenade: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10), new THREE.MeshStandardMaterial({ color: '#2d3240', roughness: 0.45, metalness: 0.4 }))); const b = new THREE.Mesh(new THREE.TorusGeometry(0.175, 0.035, 6, 18), em(SUB_LOOK.grenade.tint, 4)); b.rotation.x = Math.PI / 2; g.add(b); return g; },
+      bomblet: () => new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), em(SUB_LOOK.grenade.tint, 4)),
+      disc: () => {
+        const g = new THREE.Group(), face = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.04, 28), new THREE.MeshBasicMaterial({ color: new THREE.Color(SUB_LOOK.disc.tint).multiplyScalar(1.1), transparent: true, opacity: 0.4, depthWrite: false, toneMapped: false }));
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.045, 6, 28), em(SUB_LOOK.disc.tint, 2.6)); rim.rotation.x = Math.PI / 2;
+        const hub = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.03, 6, 18), em('#fff1c9', 2.4)); hub.rotation.x = Math.PI / 2;
+        g.add(face, rim, hub); return g;
+      },
       // A shot Echo's staff knocked back: now his, orange with a white-hot core
       deflected: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.24), em(echo, 4))); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), em('#ffffff', 4))); return g; },
     };
@@ -1050,8 +1071,15 @@ export class FX {
       const x = pr.px + (pr.x - pr.px) * alpha, y = pr.py + (pr.y - pr.py) * alpha;
       toWorld(x, y, 0.1, m.position);
       const d = planeDir(x, pr.vx, pr.vy, this.tmp).normalize();
-      if (SPIN.has(pr.kind)) { m.rotation.x += 0.2; m.rotation.y += 0.15; }
+      if (pr.kind === 'disc') {
+        // Edge-on to the camera, spinning fast (a level 2+ disc is bigger)
+        m.rotation.set(Math.PI / 2 - 0.35, (m.userData.spin = (m.userData.spin || 0) + 0.55), 0); m.scale.setScalar(pr.r / 0.4);
+      } else if (SPIN.has(pr.kind)) { if (!pr.rest) { m.rotation.x += 0.2; m.rotation.y += 0.15; } }
       else m.quaternion.setFromUnitVectors(Y, d);
+      // A grenade's light blinks faster as its fuse runs down
+      if (pr.kind === 'grenade' && (pr.ttl < 24 ? pr.ttl % 4 === 0 : pr.ttl % 10 === 0) && m.userData.blink !== pr.ttl) {
+        m.userData.blink = pr.ttl; this.sprite(x, y, 'glow', pr.ttl < 24 ? '#ff5a3a' : SUB_LOOK.grenade.tint, 0.55, 0.08, 1.2);
+      }
       if (pr.amplified) m.scale.setScalar(1.35);
       if (this.charge.wantsTrail(pr)) this.charge.trail(pr, m.position);
       if (pr.kind === 'missile' && Math.random() < 0.8) this.smoke(x - pr.vx * 0.012, y - pr.vy * 0.012, '#8e97a3', 1, 0.4, 0.35, 0.5, { op: 0.45, grav: -0.3 });
@@ -1170,6 +1198,7 @@ export class FX {
         if (Math.random() < 0.45) this.burstAt(pts[1 + Math.floor(Math.random() * (n - 1))], ECHO_ORANGE, 1, 1.2, 0.18, 0.45);
       } else if (mode === 'veil') S.mats.veil.opacity = 1 - 0.8 * (rig.cloak || 0);
       else S.mat.emissiveIntensity = fast || p.state === 'lash' || reel ? 1.6 : 0.5;
+      S.mesh.visible = rig.root.visible;   // it goes with him (he vanishes during Thousand Cuts)
     }
     for (const [p, S] of this.scarves) if (!seen.has(p)) { this.scene.remove(S.mesh); this.scarves.delete(p); }
   }
@@ -1238,8 +1267,9 @@ const NOVA_GOLD = CHARS.nova.energy;
 const DUST = '#b9c1cb';
 const ECHO_ORANGE = CHARS.echo.energy;
 const VEIL_PALE = '#dcecff';
-const SPIN = new Set(['std', 'heavy', 'snare', 'shell', 'prism', 'mortar']);
-const KIND_TINT = { dart: ATTACH_LOOK.volley.tint, shell: ATTACH_LOOK.arc.tint, prism: ATTACH_LOOK.prism.tint, shard: ATTACH_LOOK.prism.tint, pellet: '#ffcf7a' };
+const SPIN = new Set(['std', 'heavy', 'snare', 'shell', 'prism', 'mortar', 'grenade', 'bomblet']);
+const KIND_TINT = { dart: ATTACH_LOOK.volley.tint, shell: ATTACH_LOOK.arc.tint, prism: ATTACH_LOOK.prism.tint, shard: ATTACH_LOOK.prism.tint, pellet: '#ffcf7a',
+  grenade: SUB_LOOK.grenade.tint, bomblet: SUB_LOOK.grenade.tint, disc: SUB_LOOK.disc.tint };
 function trailColor(pr) {
   if (pr.deflected || pr.kind === 'wave') return ECHO_ORANGE;
   if (pr.team === 'e') return HOSTILE;
@@ -1247,35 +1277,56 @@ function trailColor(pr) {
   return KIND_TINT[pr.kind] || NOVA_GOLD;
 }
 
-// Comic "impact frame" (Q-C test), phased: `invert` is the opening negative flash (white-hot at the impact),
-// then comic ink (halftone mids, solid shadows, paper lights, saturated brights kept) with speed lines that
-// focus on the impact point; `zoom` pulls the frame toward the impact and `split` separates the colours
-// along the radius; `amount` blends it all back out.
-export const InkShader = {
+// Impact frame (Q-C test), sci-fi look since Version 9, phased: `invert` is the opening flash, a cyan
+// photonegative white-hot at the impact; then the frame turns to a hologram: deep teal shadows, cyan mids,
+// glowing cyan edges (the brightest, most saturated light keeps its colour), scanlines and a faint hex grid,
+// light streaks radiating from the impact, a shockwave `ring` bending the image as it spreads, `glitch`
+// slices tearing sideways, a `zoom` toward the impact and a radial colour `split`; `amount` blends it all
+// back out. `dim` (with amount 0) drains colour and light from everything but what glows, for an
+// ultimate's call.
+export const ImpactShader = {
   uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, res: { value: new THREE.Vector2(1280, 720) }, center: { value: new THREE.Vector2(0.5, 0.5) },
-    invert: { value: 0 }, lines: { value: 1 }, zoom: { value: 0 }, split: { value: 0 }, seed: { value: 0 } },
+    invert: { value: 0 }, zoom: { value: 0 }, split: { value: 0 }, seed: { value: 0 }, time: { value: 0 }, ring: { value: -1 }, glitch: { value: 0 }, dim: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float amount, invert, lines, zoom, split, seed; uniform vec2 res, center; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float amount, invert, zoom, split, seed, time, ring, glitch, dim; uniform vec2 res, center; varying vec2 vUv;
     float hash(float n) { return fract(sin(n) * 43758.5453); }
+    float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hexEdge(vec2 p) {
+      vec2 r = vec2(1.0, 1.732), h = r * 0.5, a = mod(p, r) - h, b = mod(p - h, r) - h, g = dot(a, a) < dot(b, b) ? a : b;
+      g = abs(g); return smoothstep(0.43, 0.5, max(dot(g, normalize(r)), g.x));
+    }
     void main(){
-      if (amount <= 0.0) { gl_FragColor = texture2D(tDiffuse, vUv); return; }
-      vec2 asp = vec2(res.x / res.y, 1.0), d = vUv - center, uv = center + d * (1.0 - zoom);
-      vec2 dir = normalize(d * asp + vec2(1e-5)), off = dir / asp * split;
+      vec4 src = texture2D(tDiffuse, vUv);
+      if (amount <= 0.0 && dim <= 0.0) { gl_FragColor = src; return; }
+      vec2 asp = vec2(res.x / res.y, 1.0), d = vUv - center, dir = normalize(d * asp + vec2(1e-5));
+      float r = length(d * asp);
+      if (amount <= 0.0) {
+        float l0 = luma(src.rgb), keep = smoothstep(0.72, 1.05, max(max(src.r, src.g), src.b));
+        vec3 cool = vec3(l0) * vec3(0.46, 0.62, 0.8) * 0.55;
+        gl_FragColor = vec4(mix(src.rgb, mix(cool, src.rgb, keep), dim), 1.0); return;
+      }
+      float wv = ring - r, rm = ring > 0.0 ? exp(-wv * wv * 900.0) : 0.0;
+      vec2 uv = center + d * (1.0 - zoom) - dir / asp * rm * 0.03;
+      float band = floor(vUv.y * 30.0), g = step(0.84, hash(band * 1.31 + floor(time * 24.0) * 3.7 + seed)) * glitch;
+      uv.x += (hash(band * 7.13 + seed + floor(time * 24.0)) - 0.5) * 0.09 * g;
+      vec2 off = dir / asp * (split + g * 0.012);
       vec3 c = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
-      float l = dot(c, vec3(0.299, 0.587, 0.114));
-      vec2 px = vUv * res / 5.0; float dots = length(fract(px) - 0.5);
-      float ink = l < 0.28 ? 0.0 : (l < 0.55 ? step(0.32, dots) : 1.0);
-      vec3 paper = vec3(1.0, 0.97, 0.9), inkc = vec3(0.06, 0.05, 0.08);
-      vec3 comic = mix(inkc, paper, ink);
+      float l = luma(c);
+      vec2 px = 1.5 / res;
+      float e = abs(luma(texture2D(tDiffuse, uv + px * vec2(-1.0, 1.0)).rgb) - luma(texture2D(tDiffuse, uv + px * vec2(1.0, -1.0)).rgb))
+              + abs(luma(texture2D(tDiffuse, uv + px).rgb) - luma(texture2D(tDiffuse, uv - px).rgb));
+      float edge = clamp(e * 3.2, 0.0, 1.0);
+      vec3 holo = mix(vec3(0.01, 0.035, 0.065), vec3(0.22, 0.8, 1.0), smoothstep(0.04, 0.95, l)) + vec3(0.55, 0.96, 1.0) * edge * 1.5;
       float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
-      comic = mix(comic, c * 1.2, smoothstep(0.35, 0.6, sat) * step(0.5, l));
-      // Speed lines: thin ink wedges radiating from the impact, clear close to it
-      float r = length(d * asp), a = (atan(dir.y, dir.x) + 3.14159) / 6.28318, n = 110.0;
-      float cell = floor(a * n), w = hash(cell * 1.37 + seed), band = fract(a * n);
-      float line = step(0.5, w) * step(abs(band - 0.5), 0.05 + 0.15 * hash(cell + seed * 3.1)) * smoothstep(0.16 + 0.22 * w, 0.42 + 0.3 * w, r);
-      comic = mix(comic, inkc, line * lines);
-      vec3 neg = mix(vec3(1.0) - c, vec3(1.0, 0.98, 0.92), smoothstep(0.22, 0.0, r));
-      gl_FragColor = vec4(mix(c, mix(comic, neg, invert), amount), 1.0);
+      holo = mix(holo, c * 1.3, smoothstep(0.3, 0.6, sat) * smoothstep(0.5, 0.85, l));
+      holo *= 0.86 + 0.14 * sin(vUv.y * res.y * 1.35 - time * 40.0);
+      holo += vec3(0.3, 0.8, 1.0) * hexEdge(vUv * asp * 26.0) * 0.14 * (1.0 - smoothstep(0.15, 0.85, r));
+      float a = (atan(dir.y, dir.x) + 3.14159) / 6.28318, cell = floor(a * 96.0), w = hash(cell * 1.37 + seed), bnd = fract(a * 96.0);
+      holo += vec3(0.6, 0.95, 1.0) * step(0.6, w) * smoothstep(0.12, 0.0, abs(bnd - 0.5)) * smoothstep(0.1 + 0.2 * w, 0.42 + 0.3 * w, r) * 0.6;
+      holo += vec3(0.5, 0.92, 1.0) * rm * 0.75;
+      vec3 neg = (vec3(1.0) - c).bgr * vec3(0.5, 0.92, 1.15);
+      neg = mix(neg, vec3(0.9, 0.99, 1.0), smoothstep(0.24, 0.0, r));
+      gl_FragColor = vec4(mix(c, mix(holo, neg, invert), amount), 1.0);
     }`,
 };

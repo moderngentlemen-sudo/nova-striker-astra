@@ -3,7 +3,7 @@
 // after it, the torso twisting into blows, and secondary motion (breathing, bob, head counter-motion).
 // Attacks are keyframed per move (windup, a snapping strike, follow-through); everything eases toward its
 // target at a rate set per state, independent of frame rate.
-import { MOVES, SCARF, SETTINGS, ATTACH_LOOK, DASH_CHARGE, HUNTER, MARKSMAN, DASH_SLASH } from './config.js';
+import { MOVES, SCARF, SETTINGS, ATTACH_LOOK, DASH_CHARGE, HUNTER, MARKSMAN, DASH_SLASH, ULT } from './config.js';
 import { chargeStage, burstStage } from './player.js';
 
 // Joints: spine pitch (+ leans forward), twist (torso turn), shoulders/elbows (near = weapon arm, far),
@@ -34,6 +34,11 @@ const KEYS = {
     k(m.su + m.ac + 4, { spine: 0.4, twist: 0.45, shN: 1.5, elN: 0.15, shF: -0.5, hipN: 0.9, knN: -0.7, hipF: -0.75, hipY: 0.82 }), k(END(m), {})],
   nova_kair: m => [k(0, { ...AIR, spine: -0.1, hipN: 2.1, knN: -0.35, shN: 0.9, shF: 1.3 }), k(m.su, { ...AIR, spine: -0.25, hipN: 2.4, knN: -0.15, shN: 1.2, shF: 1.6 }),
     k(m.su + 2, { ...AIR, spine: 0.45, hipN: 0.05, knN: -0.1, shN: 0.4, shF: 0.6, bodyZ: -0.2 }, true), k(END(m), { ...AIR })],
+  // Solar Uppercut: crouched with the fist cocked low, then driven straight up as the boots fire
+  nova_rise: m => [k(0, { hipY: 0.72, spine: 0.42, twist: -0.45, hipN: 1.25, knN: -1.9, hipF: 0.2, knF: -1.8, shN: -0.45, elN: 1.95, shF: 0.7, elF: 1.6 }),
+    k(m.su, { hipY: 0.95, spine: -0.2, twist: 0.4, shN: 3.05, elN: 0.04, shF: -0.45, elF: 1.25, hipN: 0.35, knN: -0.45, hipF: -0.25, knF: -1.15, head: 0.35 }, true),
+    k(m.su + m.ac, { hipY: 0.95, spine: -0.12, twist: 0.3, shN: 2.95, elN: 0.1, shF: -0.25, elF: 1.3, hipN: 0.6, knN: -1.0, hipF: 0.1, knF: -1.1, head: 0.25 }),
+    k(END(m), { ...AIR })],
   // Echo, Hunter kit: blades, then the glaive
   echo_b1: m => [k(0, { spine: -0.05, twist: -0.35, shN: 2.6, elN: 1.0, hipN: 0.35, hipF: -0.25 }),
     k(m.su, { spine: 0.42, twist: 0.5, shN: 0.55, elN: 0.08, shF: -0.4, hipN: 0.78, knN: -0.72, hipF: -0.58, knF: -0.3, hipY: 0.84 }, true),
@@ -166,6 +171,30 @@ export function animatePlayer(rig, p, dt, t) {
     const m = p.move, sp = SPIN[p.moveId];
     if (sp) { const a = Math.max(0, Math.min(1, (p.st - m.su) / m.ac)), ang = Math.PI * 2 * sp[0] * snapEase(a); if (sp[1] === 'z') roll = -ang; else yaw = ang; }
     rate = 48;
+  } else if (st === 'dodge' && p.dodge) {
+    // Nova's dodge: a low, light hop; backwards he leans away with the bracer up, forwards he dips his shoulder
+    const back = p.dodge.dx * p.facing < 0, u = Math.min(1, p.dodge.t / 4);
+    if (back) Object.assign(P, { spine: -0.3 * u, hipN: 0.75, knN: -1.35, hipF: -0.35, knF: -1.0, shN: 1.25, elN: 1.7, shF: 0.35, elF: 1.3, hipY: 0.84, head: 0.2, bodyZ: 0.1 * u });
+    else Object.assign(P, { spine: 0.5 * u, hipN: 1.05, knN: -1.45, hipF: -0.65, knF: -0.55, shN: -0.7, shF: -0.9, elN: 0.35, elF: 0.3, hipY: 0.78, head: -0.2, bodyZ: -0.12 * u, twist: 0.3 * u });
+    rate = 34;
+  } else if (st === 'ult') {
+    const R = p.ultRun;
+    if (echo) {
+      // Echo: crouched to spring while it is called; the follow-through of a great cut when he reappears
+      if (!R) Object.assign(P, { spine: 0.45, hipN: 1.15, knN: -1.7, hipF: -0.55, knF: -0.65, shN: -0.9, elN: 0.4, shF: -1.1, elF: 0.4, hipY: 0.7, head: -0.2, twist: -0.3 });
+      else Object.assign(P, { spine: 0.5, twist: 0.55, shN: 1.62, elN: 0.05, shF: 1.35, elF: 0.2, hipN: 0.95, knN: -0.9, hipF: -0.8, knF: -0.2, hipY: 0.8, head: -0.1 });
+    } else {
+      // Nova: arms flung wide, head back while it is called; both hands raised to the gathering sun; braced
+      // behind the beam; arms thrown open by the nova
+      const N = ULT.nova, t2 = R ? R.t : 0;
+      if (!R) Object.assign(P, { spine: -0.32, shN: 2.35, elN: 0.25, shF: 2.2, elF: 0.3, hipN: 0.3, knN: -0.45, hipF: -0.3, knF: -0.35, hipY: 0.92, head: 0.45 });
+      else if (t2 <= N.gather) Object.assign(P, { spine: -0.22, shN: 3.0, elN: 0.25, shF: 2.9, elF: 0.3, hipN: 0.55, knN: -0.95, hipF: 0.2, knF: -0.8, hipY: 0.95, head: 0.4 });
+      else if (R.segs) {
+        const j = (Math.random() - 0.5) * 0.04, a = Math.atan2(R.dy, Math.abs(R.dx) < 1e-3 ? 1e-3 : R.dx * p.facing);
+        Object.assign(P, { spine: -0.18 + j, shN: a + Math.PI / 2, elN: 0.02, shF: a + Math.PI / 2 - 0.15, elF: 0.1, hipN: 0.7, knN: -1.0, hipF: -0.5, knF: -0.6, hipY: 0.95 + j, head: -0.1 });
+      } else Object.assign(P, { spine: -0.35, shN: 2.2, elN: 0.1, shF: 2.0, elF: 0.1, hipN: 0.4, knN: -0.7, hipF: -0.2, knF: -0.5, hipY: 0.95, head: 0.3 });
+    }
+    rate = 26;
   } else if (st === 'parry') {
     // Echo twirls the staff in front of him; Nova raises the bracer
     if (echo) Object.assign(P, { spine: 0.1, shN: 1.5, elN: 0.45, shF: 1.25, elF: 0.9, hipN: 0.45, knN: -0.55, hipF: -0.4, knF: -0.3, hipY: 0.88 });
@@ -225,8 +254,7 @@ export function animatePlayer(rig, p, dt, t) {
 
   // Aiming layer: Nova's bracer arm and Echo's rifle follow the aim while shooting
   const rifle = echo && (p.rifleT >= HUNTER.rifle.raise || (p.rifleCd > 0 && (p.rifleCdMax || 0) - p.rifleCd < 14));
-  const shooting = (p.chargeT > 0 || p.fireCd > 0 || p.recoilT > 0 || rifle || (p.aimFree && !echo)) && ['normal', 'dash', 'slide'].includes(st);
-  if (p.recoilT > 4) P.spine -= 0.15 * (p.recoilT - 4) / 6;
+  const shooting = (p.chargeT > 0 || p.fireCd > 0 || p.shootT > 0 || rifle || (p.aimFree && !echo)) && ['normal', 'dash', 'slide'].includes(st);
   if (shooting) {
     P.shN = aimAng + Math.PI / 2 + P.spine; P.elN = 0.02;
     if (echo) {
@@ -281,7 +309,7 @@ export function animatePlayer(rig, p, dt, t) {
     const stage = chargeStage(p), bstage = mk ? burstStage(p) : '';
     const charge = Math.max(LV[stage] || 0, LV[bstage] || 0, dashLevelOf(p), st === 'beam' ? 4 : 0, st === 'pound' && p.pound ? p.pound.level : 0), flash = stage === 'perfect' || bstage === 'perfect';
     rig.mats.energy.emissiveIntensity = 2.2 + charge * 1.2 + (p.chargeT > 0 || p.burstT > 0 || p.dashChargeT > 0 || st === 'beam' ? Math.sin(t * 30) * 0.4 : 0) + (flash ? 2.5 : 0)
-      + (p.overcharge > 0 ? 1.2 + Math.sin(t * 12) * 0.5 : 0);
+      + (p.overcharge > 0 ? 1.2 + Math.sin(t * 12) * 0.5 : 0) + (st === 'ult' ? 4 + Math.sin(t * 36) * 0.8 : 0);
     ex.jets.forEach(j => { j.visible = !!p.thrusting; j.scale.set(1, 0.8 + Math.random() * 0.5, 1); });
     ex.module.visible = mk; ex.blades.forEach(b => { b.visible = mk; });
     if (mk && ex.moduleTint !== p.attachment) {
@@ -299,7 +327,7 @@ export function animatePlayer(rig, p, dt, t) {
     ex.hardMat.emissiveIntensity = strike ? 5.5 : 2.6; ex.hardMat.opacity = 0.35 + 0.5 * rig.hard;
   } else {
     const ex = rig.extra, hunter = SETTINGS.echoKit === 'hunter';
-    const staffOut = (st === 'attack' && staffMove(p.moveId)) || st === 'vb' || st === 'dive' || st === 'pound' || (st === 'parry' && hunter) ||
+    const staffOut = (st === 'attack' && staffMove(p.moveId)) || st === 'vb' || st === 'dive' || st === 'pound' || st === 'ult' || (st === 'parry' && hunter) ||
       ((p.fireCd > 0 || p.chargeT > 0 || p.tracerCd > 60 || rifle) && ['normal', 'dash', 'slide'].includes(st));
     ex.handStaff.visible = staffOut; ex.backStaff.visible = !staffOut;
     // Rifle hold: the staff turns to lie along the forearm like a rifle barrel; parry: it twirls in the hand
@@ -319,7 +347,7 @@ export function animatePlayer(rig, p, dt, t) {
     const flare = p.scarfMode === 'flare' && p.state !== 'downed';
     const focus = p.rifleT >= HUNTER.rifle.raise + HUNTER.rifle.focus;
     rig.mats.energy.emissiveIntensity = 2.0 + p.resolve / 50 + (flare ? 1.1 + Math.sin(t * 9) * 0.45 : 0) + dashLevelOf(p) * 1.1 + (st === 'pound' && p.pound ? p.pound.level * 1.1 : 0)
-      + (focus ? 1.2 + Math.sin(t * 24) * 0.5 : 0) + (st === 'attack' || st === 'dashslash' ? 0.8 : 0);
+      + (focus ? 1.2 + Math.sin(t * 24) * 0.5 : 0) + (st === 'attack' || st === 'dashslash' ? 0.8 : 0) + (st === 'ult' ? 4 + Math.sin(t * 36) * 0.8 : 0);
     const veil = p.scarfMode === 'veil' && p.state !== 'downed' ? Math.min(1, p.veilCharge / SCARF.veilFade) : 0;
     let ck = rig.cloak + (veil - rig.cloak) * (veil > rig.cloak ? 0.25 : 0.45);
     if (Math.abs(ck - veil) < 0.01) ck = veil;

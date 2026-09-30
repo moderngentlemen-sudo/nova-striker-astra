@@ -123,8 +123,8 @@ const M = MARKSMAN, C = M.charge, W = M.perfectWindow, BC = M.burst.charge;
   charge(run, C[0] + 2); run({}, 60);
   assert(count(log, 'split') === 1 && count(log, 'ricochet') >= 1, `Prism splits off the wall and shards ricochet (${count(log, 'ricochet')} bounces)`);
 }
-{ // Recoil Burst: pellets hit and push an enemy just outside melee reach, the kick slides Nova back, and a
-  // cooldown applies (closer in, the melee button is his bracer combo instead)
+{ // Scatter: pellets hit and push an enemy just outside melee reach, Nova stays put (no recoil since
+  // Version 9), and a cooldown applies (closer in, the melee button is his bracer combo instead)
   const { w, p, run, log } = setup(99); const e = enemy(w, 'swarmer', 101.6);
   const aim = aimAt(p, e);
   run({ aim }, 2);
@@ -134,8 +134,8 @@ const M = MARKSMAN, C = M.charge, W = M.perfectWindow, BC = M.burst.charge;
   tap(run, 'melee', { aim });
   const quick = count(log, 'burst');
   run({ aim }, M.burst.cd - 6); tap(run, 'melee', { aim });
-  assert(count(log, 'burst') === 2 && quick === 1 && hits >= 3 && push > 5 && vxAfter < -4 && p.moveId === null,
-    `Burst lands ${hits} pellets, pushes the enemy (vx ${push.toFixed(1)}), kicks Nova back (vx ${vxAfter.toFixed(1)}); a second press inside the cooldown does nothing`);
+  assert(count(log, 'burst') === 2 && quick === 1 && hits >= 3 && push > 5 && Math.abs(vxAfter) < 0.5 && p.moveId === null,
+    `Scatter lands ${hits} pellets, pushes the enemy (vx ${push.toFixed(1)}), no recoil on Nova (vx ${vxAfter.toFixed(1)}); a second press inside the cooldown does nothing`);
 }
 { // Secondary blaster charge levels: pressing fires a quick burst; holding passes levels 1-3; letting go
   // right after level 3 is a Perfect level 3 burst with a muzzle blast, and its centre pellet breaks armor
@@ -164,13 +164,12 @@ const M = MARKSMAN, C = M.charge, W = M.perfectWindow, BC = M.burst.charge;
   const near = hitDmg(100.8), far = hitDmg(109);
   assert(near > 0 && far > 0 && far < near * 0.6, `Pellet damage ${near.toFixed(2)} up close, ${far.toFixed(2)} at 10 m`);
 }
-{ // Aiming the burst diagonally down in the air gives a hop, once per jump (straight down is the ground pound)
+{ // No recoil in the air either: a charged Scatter aimed diagonally down neither lifts nor pushes him
   const { p, run } = setup(99), aim = [0.55, -0.83];
   p.y = 14; p.vy = 0; p.onGround = false; run({}, 4);
-  const vy0 = p.vy; run({ aim, held: { melee: true } }, 1); const vy1 = p.vy;
-  run({ aim }, M.burst.cd + 1); const vy2 = p.vy, air = !p.onGround;
-  run({ aim, held: { melee: true } }, 1); const vy3 = p.vy;
-  assert(vy0 < 0 && vy1 > 6 && air && vy2 < 0 && vy3 <= vy2, `Down-aimed burst in the air lifts Nova (vy ${vy0.toFixed(1)} -> ${vy1.toFixed(1)}); a second one before landing does not (${vy2.toFixed(1)} -> ${vy3.toFixed(1)})`);
+  run({ aim, held: { melee: true } }, BC[2] + 2);
+  const vy0 = p.vy, vx0 = p.vx; run({ aim }, 1); const vy1 = p.vy, vx1 = p.vx;
+  assert(vy1 <= vy0 && Math.abs(vx1 - vx0) < 0.5, `Charged Scatter aimed down in the air: no lift (vy ${vy0.toFixed(1)} -> ${vy1.toFixed(1)}) and no push (vx ${vx0.toFixed(1)} -> ${vx1.toFixed(1)})`);
 }
 { // Skates: higher top speed, a longer glide than the Sentinel kit, and no backpedal slowdown while aiming behind
   const glide = kit => {

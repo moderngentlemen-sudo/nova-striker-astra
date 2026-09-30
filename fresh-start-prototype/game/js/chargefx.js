@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { toWorld, planeDir } from './space.js';
 import { pointInSolid, rayCast, rayBoxT } from './level.js';
-import { MARKSMAN, ATTACH_LOOK, CHARS, HUNTER, DASH_CHARGE, NOVA } from './config.js';
+import { MARKSMAN, ATTACH_LOOK, CHARS, HUNTER, DASH_CHARGE, NOVA, SUB_LOOK } from './config.js';
 import { chargeStage, burstStage, marksman, rocketHeight, rifleFocus, chest } from './player.js';
 import { hurtbox } from './combat.js';
 
@@ -167,13 +167,13 @@ export class ChargeFX {
     if (f <= 0 && fb <= 0) return;
     const burst = fb > f, k = Math.max(f, fb) + (burst ? 0 : 0.45 * f4), perfect = stage === 'perfect' || bstage === 'perfect';
     const attach = mk ? p.attachment : 'lance', over = p.overcharge > 0;
-    let tint = burst ? '#ffcf7a' : mk ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
+    let tint = burst ? (SUB_LOOK[p.sub] || SUB_LOOK.scatter).tint : mk ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
     if (over || l4) tint = '#' + new THREE.Color(tint).lerp(WHITE, l4 ? 0.55 : 0.3).getHexString();   // Overcharge and Level 4 burn whiter
     const at = this.muzzle(p, rig, this.v);
     const t = this.t, pulse = 1 + Math.sin(t * (perfect || l4 ? 55 : 18)) * (perfect ? 0.22 : l4 ? 0.14 : 0.06 * k);
     const big = !burst && attach === 'arc' ? 1.3 : !burst && attach === 'prism' && !l4 ? 0.6 : 1;   // the Prism's crystal is the show
     // The orb and its white-hot core grow with the charge (and keep swelling on the way to Level 4)
-    S.orb.position.copy(at); S.orb.material.color.set(perfect || l4 ? '#fff4d6' : burst ? '#ff9f40' : attach === 'prism' ? '#ffd889' : tint);
+    S.orb.position.copy(at); S.orb.material.color.set(perfect || l4 ? '#fff4d6' : burst ? (p.sub === 'scatter' ? '#ff9f40' : tint) : attach === 'prism' ? '#ffd889' : tint);
     S.orb.scale.setScalar((0.16 + 0.55 * k) * big * pulse); S.orb.material.opacity = 0.65 + 0.3 * Math.min(1, k); S.orb.visible = true;
     S.core.position.copy(at); S.core.material.color.set('#ffffff'); S.core.scale.setScalar((0.1 + 0.3 * k) * big * pulse); S.core.visible = true;
     if (level >= 2 || perfect || (burst && fb >= B[1] / B[2])) {
@@ -346,7 +346,7 @@ export class ChargeFX {
   // ---- Events ----
   levelUp(p, rig, level, kind) {
     const at = kind === 'dash' ? toWorld(p.x, p.y + 0.8, 0.2, this.v) : this.muzzle(p, rig, this.v);
-    const tint = kind === 'burst' ? '#ffcf7a' : kind === 'dash' || kind === 'pound' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
+    const tint = kind === 'burst' ? (SUB_LOOK[p.sub] || SUB_LOOK.scatter).tint : kind === 'dash' || kind === 'pound' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
       : marksman(p) ? ATTACH_LOOK[p.attachment].tint : CHARS.nova.energy;
     const top = level >= 3;
     this.flash(at, 'ring', top ? '#ffffff' : tint, 0.35 + level * 0.18, 0.18, 3.2);

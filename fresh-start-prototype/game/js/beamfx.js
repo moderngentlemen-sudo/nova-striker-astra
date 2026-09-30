@@ -9,8 +9,9 @@ import { toWorld, planeDir } from './space.js';
 const MAXP = 72;
 const WHITE = new THREE.Color('#ffffff');
 
-// A camera-facing strip through a polyline, with a width and an RGBA colour per point
-class Strip {
+// A camera-facing strip through a polyline, with a width and an RGBA colour per point (also used by the
+// chain lightning and the ultimates)
+export class Strip {
   constructor(scene, order) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAXP * 6), 3).setUsage(THREE.DynamicDrawUsage));

@@ -62,7 +62,7 @@ const spawn = (w, type, x, y, o = {}) => { const e = createEnemy(type, x, y, o);
   run({}, 200, () => count(log, 'mortarShot') > 0);
   run({ mx: 1 }, 30); run({}, 70);   // step out of the marker (toward the mortar, away from the arena)
   const dodged = count(log, 'enemyBlast') === 1 && count(log, 'playerHit') === 0;
-  const t = setup(100); spawn(t.w, 'mortar', 110, 0);
+  const t = setup(100, 'echo'); spawn(t.w, 'mortar', 110, 0);   // Echo parries (Nova's Marksman kit dodges)
   t.run({}, 200, () => count(t.log, 'mortarShot') > 0);
   const fly = t.log.find(e => e.type === 'mortarShot').ticks;
   t.run({}, fly - 10); t.run({ held: { parry: true } }, 1); t.run({}, 20);   // the shell bursts on his head a few ticks before the floor
@@ -85,7 +85,7 @@ const spawn = (w, type, x, y, o = {}) => { const e = createEnemy(type, x, y, o);
     `Charger telegraphs a heavy attack, charges, and hits the player (${count(log, 'playerHit')} hit)`);
 }
 { // A perfect parry stops the charge and leaves the Charger dazed
-  const { w, p, run, log } = setup(100);
+  const { w, p, run, log } = setup(100, 'echo');
   const c = spawn(w, 'charger', 108, 0, { cd: 0 });
   run({}, 150, () => c.state === 'charge' && c.x - p.x < 1.76 + 0.45);
   run({ held: { parry: true } }, 1); run({}, 12);

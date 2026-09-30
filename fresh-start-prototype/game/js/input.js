@@ -1,13 +1,15 @@
 // Input: keyboard + mouse (one device) and up to four gamepads.
 // Each simulation tick, a device produces one command frame with held/pressed/released edges.
 
-const BTNS = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock'];
+const BTNS = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock', 'sub', 'ult'];
 
 const KEYMAP = {
   Space: 'jump', ShiftLeft: 'dash', ShiftRight: 'dash',
   KeyJ: 'melee', KeyK: 'fire', KeyL: 'parry', KeyQ: 'parry', KeyE: 'sig', KeyI: 'sig',
   KeyR: 'mode', KeyU: 'mode',   // Echo: cycle scarf mode; Nova: cycle bracer attachment
   KeyF: 'lock', KeyO: 'lock',   // lock-on
+  KeyT: 'sub', KeyY: 'sub',     // Nova: switch secondary weapon
+  KeyV: 'ult', KeyN: 'ult',     // ultimate (a gamepad pulls both triggers)
 };
 
 function deadzone(x, y, dz) {
@@ -153,7 +155,8 @@ export class Input {
       [mx, my] = deadzone(pad.axes[0] || 0, -(pad.axes[1] || 0), 0.22);
       const [rx, ry] = deadzone(pad.axes[2] || 0, -(pad.axes[3] || 0), 0.3);
       if (bt(12)) my = 1; if (bt(13)) my = -1;
-      held.jump = bt(0) || bt(4);
+      held.jump = bt(0);
+      held.sub = bt(4);     // LB: switch secondary weapon
       held.dash = bt(1);
       held.melee = bt(2);
       held.sig = bt(3);
@@ -171,7 +174,11 @@ export class Input {
     return this.finish(st, held, {}, mx, my, aimFree, ax, ay);
   }
 
+  // After a menu closes, buttons still held from closing it count as already held (no stray jump or dash)
+  swallowAll() { for (const st of Object.values(this.devices)) st.swallow = true; this.kbPressed.clear(); this.mousePressed.clear(); }
+
   finish(st, held, pressedExtra, mx, my, aimFree, ax, ay) {
+    if (st.swallow) { st.swallow = false; st.prevHeld = { ...held }; pressedExtra = {}; }
     const pressed = {}, released = {};
     for (const b of BTNS) {
       pressed[b] = (held[b] && !st.prevHeld[b]) || !!pressedExtra[b];
@@ -188,9 +195,5 @@ export class Input {
   }
 }
 
-export const EMPTY_CMD = {
-  mx: 0, my: 0, aimFree: false, ax: 0, ay: 0,
-  held: { jump: false, dash: false, melee: false, fire: false, parry: false, sig: false, mode: false, lock: false },
-  pressed: { jump: false, dash: false, melee: false, fire: false, parry: false, sig: false, mode: false, lock: false },
-  released: { jump: false, dash: false, melee: false, fire: false, parry: false, sig: false, mode: false, lock: false },
-};
+const none = () => Object.fromEntries(BTNS.map(b => [b, false]));
+export const EMPTY_CMD = { mx: 0, my: 0, aimFree: false, ax: 0, ay: 0, held: none(), pressed: none(), released: none() };

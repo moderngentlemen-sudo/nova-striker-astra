@@ -1,7 +1,7 @@
 // Combat resolution: melee hitboxes, projectiles, barriers, shockwaves, damage and parries.
-import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT } from './config.js';
-import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus } from './player.js';
-import { pointInSolid, LEVEL_X0, LEVEL_X1, KILL_Y } from './level.js';
+import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT } from './config.js';
+import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus, gainUlt, chest } from './player.js';
+import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y } from './level.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 
@@ -91,6 +91,7 @@ export function hitEnemy(world, e, hit, source) {
   if (owner && owner.kind === 'player') {
     if (source === 'melee') owner.hitConfirm = true;
     onDealtDamage(owner, dmg, source === 'melee');
+    if (!hit.ult) gainUlt(owner, dmg * ULT.gain.dealt, world);
   }
   const heavyHit = (hit.vbTier || 0) >= 2 || hit.armorBreak || hit.rail || poise >= 40;
   if (source === 'melee') {
@@ -104,7 +105,7 @@ export function hitEnemy(world, e, hit, source) {
   if (hit.vbTier === 3 || (hit.rail && (e.type === 'brute' || e.boss))) world.emit('impact', { x: cx, y: cy, big: true });
 
   if (ambush) { world.emit('ambush', { x: cx, y: cy, e, owner }); world.bark(owner, 'ambush', 0.3); }
-  if (e.hp <= 0) { kill(world, e, owner); return 'kill'; }
+  if (e.hp <= 0) { kill(world, e, owner, hit); return 'kill'; }
   const T = e.type;
   const canMove = !['post', 'turret', 'sniper', 'mortar'].includes(T);
   if (ambush && T !== 'post' && T !== 'turret') {
@@ -126,7 +127,12 @@ export function hitEnemy(world, e, hit, source) {
       e.state = 'hitstun'; e.st = 0; e.stun = T === 'swarmer' ? 16 : 12;
     }
   }
-  if (canMove && !armored && hit.kb && !e.boss) {
+  // Chain lightning holds a light enemy it stuns for longer; everything it touches crackles for a moment
+  if (hit.shock) {
+    e.shockT = Math.max(e.shockT || 0, hit.stun || 12);
+    if (e.light && !armored && !e.boss && e.state === 'hitstun') e.stun = Math.max(e.stun, hit.stun || 0);
+  }
+  if (canMove && !armored && hit.kb && !e.boss && !hit.well) {
     if (e.state !== 'launched') { e.vx = hit.kb[0]; if (hit.kb[1] > 0) e.vy = Math.max(e.vy, hit.kb[1] * 0.6); }
   }
   return 'hit';
@@ -139,9 +145,10 @@ function stagger(world, e, ticks) {
   world.emit('stagger', { x: e.x, y: e.y + e.h * 0.6, e });
 }
 
-function kill(world, e, owner) {
+function kill(world, e, owner, hit = {}) {
   e.dead = true; e.deathT = 0; e.hp = 0;
   world.director.release(e);
+  if (owner && owner.kind === 'player' && !hit.ult) gainUlt(owner, ULT.gain.kill, world);
   world.emit('kill', { x: e.x, y: e.y + e.h / 2, e, owner });
   if (e.boss) world.emit('bossDown', { e, x: e.x, y: e.y + e.h / 2, owner });
 }
@@ -149,7 +156,7 @@ function kill(world, e, owner) {
 // ---- Players taking hits ---------------------------------------------------------------
 
 export function hitPlayer(world, p, hit) {
-  if (p.state === 'dead' || p.state === 'downed') return 'ignored';
+  if (p.state === 'dead' || p.state === 'downed' || p.state === 'ult') return 'ignored';
   // Nova's Aegis blocks every attack (unblockables too) for him and anyone inside it
   const guard = world.shieldFor ? world.shieldFor(p) : null;
   if (guard) {
@@ -200,17 +207,21 @@ export function hitPlayer(world, p, hit) {
           p.riposteT = 20; addResolve(p, 20); p.cells = Math.min(ECHO.cellsMax, p.cells + 2);
         }
       } else addResolve(p, 10);
+      if (perfect) gainUlt(p, ULT.gain.perfect, world);
       world.emit('parry', { ...pos, p, perfect, heavy: !!hit.heavy });
       if (perfect) world.bark(p, 'perfect', 0.35);
       return 'parried';
     }
   }
 
+  // Nova's dodge: an attack that reaches him in its opening ticks is a perfect dodge
+  if (p.state === 'dodge' && p.dodge && !p.dodge.perfect && p.dodge.t <= DODGE.perfect && world.perfectDodge) world.perfectDodge(p, hit);
   if (p.mercy > 0 || p.iframe) return 'ignored';
   const diff = DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal;
   const dmg = hit.dmg * diff.dmg;
   const armored = p.char === 'echo' && p.state === 'attack' && p.moveId === 'echo_charged' && p.resolve >= ECHO.resolveHalf;
   p.hp -= dmg;
+  gainUlt(p, dmg * ULT.gain.taken, world);
   breakVeil(p, world, 'hit');
   if (p.char === 'echo') {
     p.strain = Math.min(p.maxHp - Math.max(0, p.hp), p.strain + dmg * 0.5); p.strainT = 300;
@@ -218,7 +229,7 @@ export function hitPlayer(world, p, hit) {
       addResolve(p, 8); p.lastResolveHitT = world.tick;
     }
   } else { p.chargeT = 0; if (p.focus > 0) loseFocus(p, world); }
-  p.rifleT = 0; p.dashChargeT = 0; p.burstT = 0;
+  p.rifleT = 0; p.dashChargeT = 0; p.burstT = 0; p.subArmed = false; p.dodge = null;
   p.mercy = MERCY_TICKS; p.hitstop = 4;
   world.emit('playerHit', { ...pos, p, dmg, heavy: !!hit.heavy, armored });
   if (p.hp <= 0) { p.hp = 0; world.downPlayer(p); return 'hit'; }
@@ -255,6 +266,10 @@ function projectileHits(world, pr) {
         hit.dmg *= f; hit.poise *= f; hit.kb[0] *= f;
       }
       const res = hitEnemy(world, e, hit, 'proj');
+      if (pr.disc) {   // the disc cuts on through; a shield or a boss's guard turns it for home
+        if (res === 'blocked' && pr.disc.phase === 'out') { discTurn(pr, 'back'); world.emit('ricochet', { x: pr.x, y: pr.y, pr }); }
+        continue;
+      }
       if (res === 'hit' || res === 'kill') awardFocus(world, pr);
       if (pr.tracer || pr.mark) { e.tagged = Math.max(e.tagged, 600); world.emit('tag', { x: e.x, y: e.y + e.h, e }); }
       if (pr.splash) detonate(world, pr, pr.x, pr.y, e, false);   // splash reaches the enemies around this one
@@ -306,8 +321,9 @@ export function awardFocus(world, pr) {
 // A burst on terrain (onTerrain) can rocket-jump Nova; an Arc shell can wherever it bursts.
 function detonate(world, pr, x, y, skip, onTerrain) {
   const common = { owner: pr.owner, team: pr.team, x, y, level: pr.level || 0, perfect: !!pr.perfect, family: pr.family || null, skip };
-  if (pr.blast) world.explode({ ...common, spec: pr.blast, rocket: true, kind: 'blast' });
+  if (pr.blast) world.explode({ ...common, spec: pr.blast, rocket: true, kind: pr.kind === 'grenade' || pr.kind === 'bomblet' ? 'frag' : 'blast' });
   else if (pr.splash) world.explode({ ...common, spec: pr.splash, rocket: onTerrain, kind: 'splash' });
+  if (pr.cluster && world.clusterBurst) world.clusterBurst(pr, x, y);   // a level 3 grenade scatters bomblets
 }
 
 // Walls: shards ricochet while they have bounces left, shells burst, other shots splash, prisms
@@ -315,6 +331,15 @@ function detonate(world, pr, x, y, skip, onTerrain) {
 function hitWall(world, pr, ox, oy) {
   const fx = pointInSolid(pr.x, oy), fy = pointInSolid(ox, pr.y);
   const flipX = fx || !fy, flipY = fy || !fx;
+  if (pr.disc) {
+    // The disc glances off terrain on its way out and turns for home (hovering first if it would)
+    pr.x = ox; pr.y = oy;
+    if (pr.disc.phase === 'out') discTurn(pr, pr.disc.hover > 0 ? 'hover' : 'back');
+    else if (pr.disc.phase === 'hover') { pr.vx = 0; pr.vy = 0; }
+    world.emit('ricochet', { x: ox, y: oy, pr });
+    return false;
+  }
+  if (pr.bouncy) { bounce(world, pr, ox, oy, flipX, flipY); return false; }
   if (pr.bounces > 0) {
     pr.x = ox; pr.y = oy; if (flipX) pr.vx = -pr.vx; if (flipY) pr.vy = -pr.vy; pr.bounces--;
     world.emit('ricochet', { x: ox, y: oy, pr });
@@ -334,24 +359,55 @@ function expire(world, pr) {
   pr.dead = true;
 }
 
-export function updateProjectiles(world) {
+// A grenade bounces off terrain, keeping `bouncy` of its speed; on a floor with little speed left it comes to
+// rest and rolls to a stop
+function bounce(world, pr, ox, oy, flipX, flipY) {
+  pr.x = ox; pr.y = oy;
+  const sp = Math.hypot(pr.vx, pr.vy);
+  if (flipX) pr.vx = -pr.vx * pr.bouncy;
+  if (flipY) {
+    const floor = pr.vy < 0;
+    pr.vy = -pr.vy * pr.bouncy; pr.vx *= SUB.grenade.roll;
+    if (floor && pr.vy < 2.4) { pr.vy = 0; pr.rest = true; const g = groundBelow(pr.x, oy + 0.05); if (g > -Infinity && oy - g < 0.5) pr.y = g + pr.r; }
+  }
+  if (sp > 3) world.emit('bounce', { x: ox, y: oy, pr, sp });
+}
+// The top of a one-way platform crossed going down between two heights, if any (grenades land on them)
+function oneWayTop(x, y0, y1) {
+  for (const b of BOXES) if (b.type === 'o' && x > b.x0 && x < b.x1 && y0 >= b.y1 - 0.02 && y1 < b.y1) return b.y1;
+  return null;
+}
+
+export function updateProjectiles(world, frozen = false) {
   const list = world.projectiles;
   for (const pr of list) {
     if (pr.dead) continue;
     pr.px = pr.x; pr.py = pr.y;
+    if (frozen && pr.team === 'e') continue;   // an ultimate holds enemy fire in the air
+    // A perfect dodge slows enemy shots close by
+    const k = pr.slowT > 0 ? (pr.slowT--, 0.5) : 1;
     if (pr.homing) steerToTagged(world, pr);
     if (pr.seek) steerDart(world, pr);
-    if (pr.gravity) pr.vy -= pr.gravity * DT;
+    if (pr.disc) { steerDisc(world, pr); if (pr.dead) continue; }
+    if (pr.rest) {
+      // A grenade at rest rolls to a stop, and falls again if the floor goes
+      pr.vx *= 0.8; pr.vy = 0;
+      if (!pointInSolid(pr.x, pr.y - pr.r - 0.08) && oneWayTop(pr.x, pr.y, pr.y - pr.r - 0.08) === null) pr.rest = false;
+    } else if (pr.gravity) pr.vy -= pr.gravity * DT * k;
     pr.ttl--;
     if (pr.ttl <= 0) { expire(world, pr); continue; }
     // Anything that leaves the level is gone (Nova's shots otherwise fly until they hit something)
     if (pr.x < LEVEL_X0 - 2 || pr.x > LEVEL_X1 + 2 || pr.y < KILL_Y - 6 || pr.y > 90) { pr.dead = true; continue; }
     // Sub-step so fast shots cannot skip over thin targets or walls
-    const steps = Math.max(1, Math.ceil(Math.hypot(pr.vx, pr.vy) * DT / 0.3));
+    const steps = Math.max(1, Math.ceil(Math.hypot(pr.vx, pr.vy) * DT * k / 0.3));
     for (let s = 0; s < steps && !pr.dead; s++) {
       const ox = pr.x, oy = pr.y;
-      pr.x += pr.vx * DT / steps; pr.y += pr.vy * DT / steps;
-      if (pointInSolid(pr.x, pr.y)) {
+      pr.x += pr.vx * DT * k / steps; pr.y += pr.vy * DT * k / steps;
+      if (pr.bouncy && pr.vy < 0) {
+        const top = oneWayTop(pr.x, oy, pr.y);
+        if (top !== null) { bounce(world, pr, pr.x, top + 0.01, false, true); continue; }
+      }
+      if (!pr.ghost && pointInSolid(pr.x, pr.y)) {
         if (hitWall(world, pr, ox, oy)) break;
         continue;
       }
@@ -390,6 +446,34 @@ export function updateProjectiles(world) {
     }
   }
   world.projectiles = list.filter(pr => !pr.dead);
+}
+
+// Nova's disc: out along the throw (easing off toward the far end), a hover there from level 2 (cutting
+// again every SUB.disc.tick ticks), then home to his chest, faster and faster and through walls. It cuts
+// each enemy once per leg. It fades if he is gone.
+function discTurn(pr, phase) {
+  pr.disc.phase = phase; pr.disc.t = 0; pr.hitSet.clear();
+  if (phase === 'back') pr.ghost = true;
+}
+function steerDisc(world, pr) {
+  const D = SUB.disc, s = pr.disc, o = pr.owner; s.t++;
+  if (!o || !world.players.includes(o) || o.state === 'dead' || o.state === 'downed' || o.char !== 'nova') {
+    pr.dead = true; world.emit('discFade', { x: pr.x, y: pr.y }); return;
+  }
+  if (s.phase === 'out') {
+    const f = 1 - 0.65 * Math.max(0, (s.t - s.out * 0.55) / (s.out * 0.45));
+    pr.vx = s.dx * s.speed * f; pr.vy = s.dy * s.speed * f;
+    if (s.t >= s.out) discTurn(pr, s.hover > 0 ? 'hover' : 'back');
+  } else if (s.phase === 'hover') {
+    pr.vx *= 0.6; pr.vy *= 0.6;
+    if (s.t % D.tick === 0) pr.hitSet.clear();
+    if (s.t >= s.hover) discTurn(pr, 'back');
+  } else {
+    const c = chest(o), dx = c.x - pr.x, dy = c.y - pr.y, d = Math.hypot(dx, dy) || 1, sp = Math.min(D.back + s.t * 0.6, 44);
+    pr.vx = dx / d * sp; pr.vy = dy / d * sp;
+    if (d < 0.8 + sp * DT) { pr.dead = true; world.emit('discCatch', { p: o, x: c.x, y: c.y }); }
+    else if (s.t > D.maxBack) pr.dead = true;
+  }
 }
 
 // Volley darts fly straight for a moment so the fan opens, then turn toward their target.

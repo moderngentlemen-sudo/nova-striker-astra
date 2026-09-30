@@ -77,6 +77,10 @@ export function updateEnemy(e, world) {
     world.emit('kill', { x: e.x, y: e.y, e, owner: null });
     return;
   }
+  if (e.shockT > 0) e.shockT--;
+  if (e.wellT > 0) e.wellT--;
+  // Slowed by Nova's perfect dodge: it only acts every other tick
+  if (e.slowT > 0) { e.slowT--; if (e.slowT % 2) return; }
   if (e.hitstop > 0) { e.hitstop--; return; }
   e.st++;
   if (e.cd > 0) e.cd--;

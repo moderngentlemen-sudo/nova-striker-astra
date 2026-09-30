@@ -73,7 +73,7 @@ const put = (p, x, y) => Object.assign(p, { x, y, prevX: x, prevY: y, vx: 0, vy:
   const a = fight('warden'); settle(a, 82); put(a.p, 79.6, 0); a.p.facing = 1;
   forceBossAttack(a.w, a.e, 'sweep'); a.run({}, BOSS.warden.sweep.wind + 6);
   const hit = count(a.log, 'playerHit', h => h.p === a.p) === 1;
-  const b = fight('warden'); settle(b, 82); put(b.p, 79.6, 0); b.p.facing = 1;
+  const b = fight('warden', ['echo']); settle(b, 82); put(b.p, 79.6, 0); b.p.facing = 1;   // Echo parries; Nova dodges
   forceBossAttack(b.w, b.e, 'hammer'); b.run({}, BOSS.warden.hammer.wind - 1);
   b.run({ held: { parry: true } }, 4); b.run({}, 14);
   const parried = count(b.log, 'parry', q => q.perfect) === 1 && b.e.state === 'dazed' && count(b.log, 'bossDazed') === 1 && b.p.hp === b.p.maxHp;

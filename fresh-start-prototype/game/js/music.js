@@ -33,6 +33,7 @@ const MIX = [
 
 // How hot is the moment? Enemies near the camera, and whether a gate has the team locked in.
 export function musicIntensity(world) {
+  if (world.ultCast) return 2;   // an ultimate is always full intensity
   const cam = world.cam; let near = 0, heavy = false;
   for (const e of world.enemies) {
     if (e.dead || e.type === 'post' || e.type === 'turret') continue;

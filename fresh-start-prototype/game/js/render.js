@@ -12,7 +12,7 @@ import { SETTINGS, PLAYER_COLORS } from './config.js';
 import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
-import { FX, toWorld, InkShader } from './fx.js';
+import { FX, toWorld, ImpactShader } from './fx.js';
 
 const yawAt = x => { const f = pathFrame(x); return Math.atan2(-f.tz, f.tx); };
 // A rig leaving the scene frees its geometry buffers. Enemy rigs free their materials too (a warmed stand-in
@@ -57,7 +57,7 @@ export class View {
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.65, 0.5, 1.5);
     this.output = new OutputPass();
-    this.ink = new ShaderPass(InkShader); this.ink.enabled = false;
+    this.ink = new ShaderPass(ImpactShader); this.ink.enabled = false; this.dim = 0;
     this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(this.output); this.composer.addPass(this.ink);
     this.fx.warm(this.r, this.camera, this.composer.renderTarget1);
     // The impact frame's pass is off until the first big moment: compile it now so that moment never stalls
@@ -268,7 +268,10 @@ export class View {
       rig.root.rotation.y = yawAt(x);
       rig.flip.scale.x = p.facing;
       animatePlayer(rig, p, dt, t);
-      rig.root.visible = p.state !== 'dead' && !(p.mercy > 0 && p.state !== 'downed' && Math.floor(t * 14) % 2 === 0);
+      // Echo is gone during Thousand Cuts until every cut lands at once; a dodging Nova flickers like a hologram
+      const cutting = p.state === 'ult' && p.ultRun && p.ultRun.kind === 'echo' && p.ultRun.t < p.ultRun.fin;
+      const phasing = p.state === 'dodge' && p.dodge && p.dodge.t <= 11 && Math.floor(t * 30) % 3 === 0;
+      rig.root.visible = p.state !== 'dead' && !cutting && !phasing && !(p.mercy > 0 && p.state !== 'downed' && p.state !== 'ult' && Math.floor(t * 14) % 2 === 0);
       rig.ring.visible = p.state !== 'downed';
     }
     for (const [p, rig] of this.rigs) if (!seen.has(p)) { this.scene.remove(rig.root); disposeTree(rig.root, false); this.rigs.delete(p); }
@@ -299,12 +302,21 @@ export class View {
 
   // ---- Camera ----
   updateCamera(world, dt) {
-    const T = world.cam, k = 1 - Math.exp(-dt * 5.5);
+    let T = world.cam, rate = 5.5;
+    // An ultimate's call pushes in on whoever is calling it; while it plays out the frame eases back
+    const U = world.ultCast;
+    if (U && U.members.length) {
+      const n = U.members.length, mx = U.members.reduce((a, m) => a + m.x, 0) / n, my = U.members.reduce((a, m) => a + m.y, 0) / n + 1.1;
+      if (U.phase === 'cast') { T = { x: mx, y: my + 0.4, dist: Math.max(8.5, T.dist * 0.6) }; rate = 9; }
+      else if (U.phase === 'run') T = { x: T.x * 0.7 + mx * 0.3, y: T.y * 0.7 + my * 0.3, dist: T.dist * 1.04 };
+    }
+    const k = 1 - Math.exp(-dt * rate);
     // Vertical follow speeds up the further behind it falls, so a big launch never leaves the frame
-    const ky = 1 - Math.exp(-dt * (5.5 + Math.max(0, Math.abs(T.y - this.cam.y) - 1.2) * 5));
+    const ky = 1 - Math.exp(-dt * (rate + Math.max(0, Math.abs(T.y - this.cam.y) - 1.2) * 5));
     this.cam.x += (T.x - this.cam.x) * k; this.cam.y += (T.y - this.cam.y) * ky; this.cam.dist += (T.dist - this.cam.dist) * k;
     this.trauma = Math.max(0, this.trauma - dt * 1.8);
     if (world.players.some(p => p.state === 'beam' && p.beam)) this.trauma = Math.max(this.trauma, 0.22);   // the beam shakes the frame the whole time
+    if (world.players.some(p => p.state === 'ult' && p.ultRun && p.ultRun.segs)) this.trauma = Math.max(this.trauma, 0.4);   // and Supernova far more
     this.punch *= Math.exp(-dt * 10); this.bloomKick = Math.max(0, this.bloomKick - dt * 3.2);
     const f = pathFrame(this.cam.x);
     const look = new THREE.Vector3(f.px, this.cam.y, f.pz);
@@ -338,12 +350,15 @@ export class View {
       land: ev.vy < -16 ? Math.min(0.3, (-ev.vy - 16) * 0.025) : 0,
       snipe: 0.08 + 0.16 * (ev.f || 0), crit: 0.05, deflect: ev.perfect ? 0.12 : 0.05, dashSlash: 0.04 * (ev.tier || 1), crescent: 0.06, pogo: 0.04,
       poundLand: 0.22 + 0.12 * (ev.level || 0), poundDrop: 0.03, aegisHit: 0.05, beamStart: 0.3,
-      aegisOff: ev.why === 'break' ? 0.3 : ev.why === 'detonate' ? 0.4 : 0, bossSlam: ev.big ? 0.55 : 0.35, bossPhase: 0.6, bossDown: 0.9, bossCrash: 0.45, bossIntro: 0.15 }[ev.type];
+      aegisOff: ev.why === 'break' ? 0.3 : ev.why === 'detonate' ? 0.4 : 0, bossSlam: ev.big ? 0.55 : 0.35, bossPhase: 0.6, bossDown: 0.9, bossCrash: 0.45, bossIntro: 0.15,
+      frag: 0.12 + 0.05 * (ev.level || 0), cluster: 0.1, chain: 0.04 + 0.03 * (ev.level || 0), wellOpen: 0.08, wellCollapse: 0.18 + 0.06 * (ev.level || 1), riseBlast: 0.14, perfectDodge: 0.2,
+      ultCast: 0.35, ultJoin: 0.3, ultNova: 0.95, ultCut: 0.06, ultFinisher: 0.8, teamFinisher: 0.3 }[ev.type];
     if (shake) this.trauma = Math.min(1, this.trauma + shake);
     // Big releases light the whole frame for a moment (bloom) and the rocket jump thumps the camera
     const glow = { rocketJump: 0.45 + 0.75 * (ev.power || 0.5), perfectRelease: 0.4, dash: ev.level >= 3 ? 0.35 : 0,
       shot: ev.level >= 3 ? 0.22 : 0, blast: ev.level >= 3 ? 0.15 : 0, snipe: ev.full ? 0.3 : 0.08, beamStart: 0.6, chargeLevel: ev.level >= 4 ? 0.3 : 0,
-      aegisOff: ev.why === 'detonate' ? 0.5 : ev.why === 'break' ? 0.3 : 0, poundLand: ev.level >= 2 ? 0.2 + 0.1 * ev.level : 0, bossPhase: 0.6, bossDown: 1 }[ev.type];
+      aegisOff: ev.why === 'detonate' ? 0.5 : ev.why === 'break' ? 0.3 : 0, poundLand: ev.level >= 2 ? 0.2 + 0.1 * ev.level : 0, bossPhase: 0.6, bossDown: 1,
+      wellCollapse: 0.25, riseBlast: 0.2, perfectDodge: 0.35, ultCast: 0.6, ultJoin: 0.5, ultNova: 1.4, ultFinisher: 1, teamFinisher: 1.4, chain: 0.08 * (1 + (ev.level || 0)) }[ev.type];
     if (glow) this.bloomKick = Math.min(1.4, this.bloomKick + glow);
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
@@ -354,27 +369,41 @@ export class View {
     else if (ev.type === 'poundLand' && ev.level >= 3) this.startImpact(ev.x, ev.y + 0.6, 1);
     else if (ev.type === 'snipe' && ev.full && ev.crits > 0) this.startImpact(ev.x1, ev.y1, 0.8);
     else if (ev.type === 'bossPhase' || ev.type === 'bossDown') this.startImpact(ev.x, ev.y, 1.2);
+    else if (ev.type === 'ultNova') this.startImpact(ev.x, ev.y, 1.4, true);
+    else if (ev.type === 'ultFinisher') this.startImpact(ev.x, ev.y, 1.2, true);
+    else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5 };   // when the eclipse shatters
+    else if (ev.type === 'perfectDodge') this.startImpact(ev.x, ev.y, 0.6);
+    if (ev.type === 'ultNova') this.punch = Math.min(this.punch, -0.6);
   }
 
-  // Impact frame (the comic Q-C test, now phased and longer): a negative flash, then ink with speed lines
-  // focused on the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds the
-  // simulation (main.js) while it runs. At most one every 0.9 s.
-  startImpact(x, y, strength = 1) {
-    if (!SETTINGS.impactFrames || this.impactCd > 0) return;
+  // Impact frame (Q-C test; sci-fi look since Version 9), phased: a cyan photonegative flash, then a hologram
+  // grade with glowing edges, scanlines and a hex grid, light streaks, a shockwave ring and glitch tears
+  // spreading from the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds
+  // the simulation (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an
+  // ultimate is called.
+  startImpact(x, y, strength = 1, force = false) {
+    if (!SETTINGS.impactFrames || (this.impactCd > 0 && !force)) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
     this.impact = { t: 0, dur: 0.26 + 0.12 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
     this.impactCd = 0.9; this.hitPause = 0.05 + 0.05 * strength;
     this.trauma = Math.min(1, this.trauma + 0.25 * strength); this.bloomKick = Math.min(1.4, this.bloomKick + 0.4 * strength);
   }
-  updateImpact(dt) {
+  updateImpact(dt, world) {
     this.impactCd = Math.max(0, this.impactCd - dt);
-    const I = this.impact, U = this.ink.uniforms;
-    if (!I) { U.amount.value = 0; this.ink.enabled = false; return false; }
+    const I = this.impact, U = this.ink.uniforms, C = world && world.ultCast;
+    // An ultimate's call drains the colour from the world; it comes back as the ultimate plays out
+    // (and the world darkens again under a team finisher's eclipse, until it shatters)
+    const dimTo = C ? (C.phase === 'cast' ? 0.85 : C.phase === 'run' ? 0.3 : C.t >= 8 && C.t < 34 ? 0.8 : 0.12) : 0;
+    this.dim += (dimTo - this.dim) * (1 - Math.exp(-dt * (dimTo > this.dim ? 14 : 5)));
+    if (this.dim < 0.01 && !dimTo) this.dim = 0;
+    U.dim.value = this.dim; U.time.value = this.time;
+    if (!I) { U.amount.value = 0; this.ink.enabled = this.dim > 0; return this.ink.enabled; }
     I.t += dt; const k = Math.min(1, I.t / I.dur);
     U.center.value.set(I.cx, I.cy); U.seed.value = I.seed;
     U.invert.value = k < 0.1 ? 1 : Math.max(0, 1 - (k - 0.1) / 0.06);
     U.amount.value = k < 0.78 ? 1 : Math.max(0, 1 - (k - 0.78) / 0.22);
-    U.lines.value = 1; U.zoom.value = 0.075 * I.k * (1 - k) * (1 - k); U.split.value = 0.007 * I.k * (1 - k);
+    U.zoom.value = 0.07 * I.k * (1 - k) * (1 - k); U.split.value = 0.008 * I.k * (1 - k);
+    U.ring.value = 0.05 + k * 1.25; U.glitch.value = Math.max(0, 1 - k * 2.4) * Math.min(1, I.k);
     this.ink.enabled = true;
     if (I.t >= I.dur) this.impact = null;
     return true;
@@ -382,10 +411,12 @@ export class View {
 
   render(world, alpha, dt) {
     this.time += dt;
+    const PI = this.pendingImpact;
+    if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
     this.syncEntities(world, alpha, dt);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });
-    const inking = this.updateImpact(dt);
+    const inking = this.updateImpact(dt, world);
     if (SETTINGS.quality === 'low' && !inking) {
       this.r.shadowMap.enabled = false;
       this.r.render(this.scene, this.camera);

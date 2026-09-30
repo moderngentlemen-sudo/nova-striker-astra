@@ -68,7 +68,11 @@ export const DASH_CHARGE = { tap: 6, charge: [16, 34, 54], speed: [1.15, 1.3, 1.
 // in toward it. When the target dies the lock jumps to the next one in range; out of range or out of
 // sight for `lost` ticks, it lets go. magnet = how close a target must be for a swing to turn and step
 // in toward it (at up to `lunge` m/s).
-export const LOCK = { range: 18, keep: 24, hold: 20, lost: 90, magnet: 2.8, lunge: 18 };
+// Automatic lock-on (the default, Settings: Lock-on mode): whenever a player has no target, the nearest enemy
+// in sight within `auto` m is locked at once. R3 (F) switches to the next target; holding it lets go and
+// pauses automatic locking until the next press. Free aim (right stick, mouse) still aims where it points;
+// without it, shots go to the target unless the stick is held up or down.
+export const LOCK = { range: 18, keep: 24, hold: 20, lost: 90, magnet: 2.8, lunge: 18, auto: 14 };
 
 // Melee frame data. box = hitbox relative to feet: fx forward offset, y centre, w, h.
 // cancelFrom = tick of recovery after which a whiffed move may cancel into parry/dash.
@@ -84,6 +88,12 @@ export const MOVES = {
   nova_k3:    { su: 7, ac: 4, rc: 16, box: { fx: 1.0, y: 1.1, w: 1.45, h: 1.15 }, dmg: 3.5, poise: 45, kb: [12, 4], shove: true, fist: true, heavy: true,
     blastFist: { r: 1.3, dmg: 1.5, poise: 15 } },
   nova_kair:  { su: 5, ac: 4, rc: 10, box: { fx: 0.8, y: 0.65, w: 1.25, h: 1.1 }, dmg: 2.2, poise: 20, kb: [4, -2], air: true, fist: true },
+  // Every character has a rising attack on up + melee, each designed for them (Echo: the Rising Glaive).
+  // Nova's is the Solar Uppercut: his boots fire and he drives a hard-light fist straight up, three hits on
+  // the way, and a flare of light bursts off the fist at the top (riseBlast). Once per airtime in the air,
+  // a little lower (airRise).
+  nova_rise:  { su: 4, ac: 14, rc: 14, box: { fx: 0.45, y: 1.55, w: 1.35, h: 2.1 }, dmg: 1.4, poise: 16, kb: [1, 16], launcher: true, fist: true,
+    rise: 16, airRise: 0.8, multi: 5, riseBlast: { r: 1.7, dmg: 3, poise: 40 } },
 
   echo_g1:    { su: 4, ac: 3, rc: 10, box: { fx: 0.75, y: 1.15, w: 1.0, h: 0.7 }, dmg: 1.3, poise: 12, kb: [1.5, 0], next: 'echo_g2', blade: true },
   echo_g2:    { su: 5, ac: 3, rc: 11, box: { fx: 0.8, y: 1.15, w: 1.1, h: 0.8 }, dmg: 1.3, poise: 12, kb: [2, 0], next: 'echo_g3', blade: true },
@@ -200,10 +210,10 @@ export const NOVA = {
 
 // Nova's Marksman kit (proposal under test). The bracer takes four attachments that all fire
 // projectiles; the mode button cycles them. Hold fire to charge through three levels, and let go
-// just as level 3 completes for a Perfect Release. His secondary blaster (the Recoil Burst on the
-// melee button) charges the same way. Every shot splashes where it lands, and a charged shot that
-// bursts close to him launches him: aim at your feet to rocket jump. Light boosters let him hover,
-// skate-blade boots let him glide, and his shots fly until they hit something or leave the level.
+// just as level 3 completes for a Perfect Release. His secondary weapons (SUBS, on the melee button)
+// charge the same way. Every shot splashes where it lands, and a charged shot that bursts close to
+// him launches him: aim at your feet to rocket jump. Light boosters let him hover, skate-blade boots
+// let him glide, and his shots fly until they hit something or leave the level.
 // The Pass 1 Sentinel kit stays in Settings.
 export const MARKSMAN = {
   attachments: ['lance', 'volley', 'arc', 'prism'],
@@ -240,14 +250,14 @@ export const MARKSMAN = {
     perfectBounces: 1,   // extra bounces on a Perfect Release
     shard: { speed: 24, dmg: 1.7, poise: 10, r: 0.12, fan: 0.36, splash: { r: 0.7, dmg: 0.5, poise: 5 } },
   },
-  burst: {               // Recoil Burst, his secondary blaster: point-blank pellets; the kick sends him skating back
+  burst: {               // Scatter, the first of his secondary weapons: point-blank pellets (no recoil)
     cd: 24,
-    charge: [30, 62, 98], perfectWindow: 10,
+    charge: [30, 62, 98], perfectWindow: 10,   // every secondary weapon charges on this clock
     falloff: 14,         // pellets fly on, but lose damage over this distance (down to a quarter)
-    tap: { pellets: 5, fan: 0.63, speed: 28, dmg: 0.5, poise: 7, kb: 8, recoil: 7, lift: 9 },
-    1: { pellets: 7, fan: 0.7, speed: 29, dmg: 0.6, poise: 10, kb: 10, recoil: 8, lift: 10 },
-    2: { pellets: 9, fan: 0.8, speed: 30, dmg: 0.7, poise: 12, kb: 12, recoil: 10, lift: 12, armorBreak: true },
-    3: { pellets: 12, fan: 0.9, speed: 32, dmg: 0.8, poise: 14, kb: 14, recoil: 13, lift: 15, armorBreak: true,
+    tap: { pellets: 5, fan: 0.63, speed: 28, dmg: 0.5, poise: 7, kb: 8 },
+    1: { pellets: 7, fan: 0.7, speed: 29, dmg: 0.6, poise: 10, kb: 10 },
+    2: { pellets: 9, fan: 0.8, speed: 30, dmg: 0.7, poise: 12, kb: 12, armorBreak: true },
+    3: { pellets: 12, fan: 0.9, speed: 32, dmg: 0.8, poise: 14, kb: 14, armorBreak: true,
       blast: { r: 1.7, dmg: 2.5, poise: 30 } },
   },
   // Rocket jump: a charged shot bursting within its radius + reach of Nova's centre launches him away
@@ -271,7 +281,7 @@ export const MARKSMAN = {
   beam: { at: 170, ticks: 96, pulse: 6, dmg: 2.4, poise: 16, width: 0.34, range: 42, turn: 0.04, slow: 0.2, hover: 0.8, armorEvery: 24,
     volley: { every: 10 }, arc: { every: 14, blast: { r: 1.7, dmg: 2.4, poise: 22 } }, prism: { bounces: 1 } },
   // Close range: with an enemy within reach m ahead (up m up or down), melee is his bracer combo instead of
-  // the Recoil Burst
+  // his secondary weapon
   melee: { reach: 1.9, up: 1.6 },
   // Light boosters: after the double jump, press and hold jump to hover and climb gently
   boost: { fuel: 60, rise: 3.5, thrust: 70, refill: 2.5, minStart: 6, air: 1.1 },
@@ -291,6 +301,68 @@ export const MARKSMAN = {
 export const AEGIS = { hp: 70, ticks: 300, cd: 660, radius: 1.55,
   over: { perDmg: 2.2, max: 100, hold: 360, drain: 0.25, charge: 1.6, dmg: 1.4, cost: 34 },
   shatter: { r: 3.2, dmg: 3, poise: 45, kb: 10 }, detonate: { r: 3.0, dmg: 4, poise: 45, kb: 10, over: 20 } };
+
+// Nova's secondary weapons (Marksman kit, on the melee button; LB or T switches). None of them has any
+// recoil. Each fires on a tap (level 0) and charges through levels 1-3 on MARKSMAN.burst.charge, with a
+// Perfect Release as for his primary. The Scatter fires the moment you press; the others fire when you
+// let go. Arrays are per level (0 = tap).
+//   Grenade: a bouncing frag with a fuse (bounces keep `bounce` of their speed); it bursts early on an
+//     enemy. Level 3 scatters bomblets.
+//   Chain: instant lightning to the nearest enemy in front (the lock-on target first), then jumping to the
+//     next nearest within `hop` m, up to `jumps` enemies; it arcs round shields and stuns light enemies.
+//   Disc: a hard-light disc that flies out and comes back to him, cutting everything on the way (each
+//     enemy once each way) and slicing enemy shots out of the air; from level 2 it hovers at the far end,
+//     cutting every `tick` ticks. Press again while it is out to call it back. One at a time.
+//   Well: an orb that opens a gravity well where it stops (after `travel` ticks, or on an enemy or a
+//     wall): light enemies are pulled in and held, heavy ones dragged (`heavy`), bosses only hurt; enemy
+//     shots are swallowed. It collapses in a blast after `life` ticks, or when you press again. One at a time.
+export const SUBS = ['scatter', 'grenade', 'chain', 'disc', 'well'];
+export const SUB = {
+  switchCd: 10,
+  grenade: { cd: 26, speed: [14, 15, 16.5, 18], lift: 0.55, gravity: 30, bounce: 0.5, roll: 0.82, r: 0.2, fuse: [58, 64, 70, 76],
+    blast: [{ r: 1.8, dmg: 3, poise: 30 }, { r: 2.2, dmg: 4.5, poise: 45 }, { r: 2.7, dmg: 6.5, poise: 65, armorBreak: true },
+      { r: 3.2, dmg: 9, poise: 90, armorBreak: true }],
+    bomblets: { n: 4, speed: 8, lift: 7, fuse: 28, blast: { r: 1.3, dmg: 2.2, poise: 22 } } },
+  chain: { cd: 28, range: [7, 8, 9, 10], jumps: [3, 4, 5, 7], hop: 5, dmg: [1.3, 1.9, 2.5, 3.4], poise: [12, 18, 26, 38], stun: [14, 20, 28, 40], cone: 0.9 },
+  disc: { cd: 16, speed: [22, 24, 26, 28], out: [16, 18, 20, 22], hover: [0, 0, 40, 60], back: 26, r: [0.4, 0.45, 0.55, 0.65],
+    dmg: [1.6, 2.2, 3, 4], poise: [12, 16, 22, 30], tick: 8, maxBack: 150 },
+  well: { cd: 30, speed: 13, travel: [24, 26, 28, 30], life: [70, 90, 110, 130], r: [3.2, 3.6, 4.2, 5], pull: [6, 7, 8, 9.5], heavy: 0.3,
+    tick: 12, tickDmg: [0.35, 0.45, 0.6, 0.8], lift: 1.1,
+    implode: [{ r: 2.2, dmg: 3, poise: 40 }, { r: 2.6, dmg: 4.5, poise: 55 }, { r: 3.1, dmg: 6.5, poise: 75, armorBreak: true },
+      { r: 3.8, dmg: 9, poise: 100, armorBreak: true }] },
+};
+// Presentation only: HUD names and tints, in Nova's gold family like his attachments
+export const SUB_LOOK = {
+  scatter: { name: 'Scatter', tint: '#ffcf7a' }, grenade: { name: 'Grenade', tint: '#ff9a3d' }, chain: { name: 'Chain', tint: '#ffe066' },
+  disc: { name: 'Disc', tint: '#ffd36b' }, well: { name: 'Gravity Well', tint: '#ffb547' },
+};
+
+// Nova's dodge (Marksman kit, on the parry button; Echo keeps his parry and deflect). A quick hop the way
+// the stick points (backwards with it centred) that leaves him untouchable for the first `iframes` ticks;
+// in the air he can dodge once per airtime. An attack that would have hit him in the first `perfect` ticks
+// is a perfect dodge: enemies within `slowRange` m move at half speed for `slowTicks` ticks (their shots
+// too), and he gains `over` Overcharge (faster charging, harder shots) and ultimate charge. He can shoot
+// and keep charging while he dodges. `cd` counts from the start.
+export const DODGE = { ticks: 16, speed: 13, airSpeed: 11, keep: 0.86, iframes: 11, perfect: 7, cd: 28, slowTicks: 100, slowRange: 7, over: 20 };
+
+// Ultimates. Everyone has an ultimate bar that fills in play (dealing damage, taking it, kills, perfect
+// parries, dodges and deflects). When it is full, pull both triggers together (V on the keyboard) for the
+// character's ultimate. It opens with a short call (`cast` ticks) where the world holds still: any
+// teammate with a full bar can pull both triggers then to join in for a team ultimate. Enemies and their
+// shots stay frozen while the ultimate plays out; the ones using it can't be hurt.
+//   Nova, Supernova: he rises into a hover and fires a colossal beam he can steer (through walls), then
+//     bursts in a nova of light.
+//   Echo, Thousand Cuts: he vanishes and cuts every enemy close by in a storm of blinks (`strikes` shared
+//     among up to `targets` enemies), then every cut lands again at once.
+//   Team: everyone who joined runs their ultimate together at `team.power`, then a team finisher hits every
+//     enemy on screen for `team.dmg` per member. Bosses take `boss` of ultimate damage.
+export const ULT = {
+  max: 100, gain: { dealt: 0.6, taken: 0.35, kill: 2, perfect: 6 }, chord: 6, cast: 54, join: 18, boss: 0.5, mercy: 60,
+  nova: { name: 'Supernova', rise: 1.6, gather: 24, beam: 110, pulse: 5, dmg: 5, width: 1.25, range: 40, turn: 0.06, nova: { r: 6, dmg: 12, poise: 120 }, end: 150 },
+  echo: { name: 'Thousand Cuts', range: 16, targets: 8, strikes: 20, every: 3, dmg: 3, start: 10, finisher: 14, flourish: { r: 5, dmg: 10 }, end: 40 },
+  team: { power: 1.3, dmg: 12, t: 50 },
+  teamNames: { 'echo+nova': 'Eclipse Protocol', 'nova+nova': 'Binary Star', 'echo+echo': 'Twin Phantom' }, teamAll: 'Full Resonance',
+};
 
 // Presentation only: HUD names and a tint for each attachment, kept inside Nova's gold family so
 // his shots still read as his in a 4-player fight (shapes tell the attachments apart)
@@ -318,7 +390,7 @@ export const DEFAULT_SETTINGS = {
   dashIframes: false,
   vbStop: 'hard',       // 'hard' stop or 'keep30' momentum
   vbRefund: true,
-  impactFrames: true,   // comic-look impact frames on the biggest moments (Q-C test; on by default since Version 8)
+  impactFrames: true,   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
   camera: 'persp',
   fov: 34,
   aimAssist: true,
@@ -330,11 +402,12 @@ export const DEFAULT_SETTINGS = {
   volume: 0.6,
   music: 0.6,
   p1Aim: 'mouse',
-  lockOn: true,         // lock-on button (F, R3, mouse forward)
+  lockOn: true,         // lock-on (F, R3, mouse forward)
+  lockMode: 'auto',     // 'auto': the nearest enemy is locked automatically, R3 switches · 'manual': press to lock
   dashCharge: true,     // hold dash while standing still to charge it (off: dash is always instant)
   haptics: true,        // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
-  settingsVersion: 8,
+  settingsVersion: 9,
 };
 
 export const SETTINGS = { ...DEFAULT_SETTINGS };
@@ -347,6 +420,8 @@ export function loadSettings() {
       const saved = JSON.parse(raw);
       // Settings saved before Version 8 pick up its new default once: impact frames on
       if (!(saved.settingsVersion >= 8)) { saved.impactFrames = true; saved.settingsVersion = 8; }
+      // Version 9 introduces automatic lock-on as the default
+      if (!(saved.settingsVersion >= 9)) { saved.lockMode = 'auto'; saved.settingsVersion = 9; }
       Object.assign(SETTINGS, saved);
     }
   } catch (e) { /* storage unavailable: keep defaults */ }
