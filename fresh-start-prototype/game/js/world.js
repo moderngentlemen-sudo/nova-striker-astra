@@ -1,0 +1,837 @@
+// World: owns every entity, runs the fixed-tick simulation, and emits events for
+// rendering, audio and UI. Nothing in here touches the DOM or Three.js.
+import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK } from './config.js';
+import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked } from './level.js';
+import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage } from './player.js';
+import { createEnemy, updateEnemy } from './enemies.js';
+import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus } from './combat.js';
+import { EMPTY_CMD } from './input.js';
+
+const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
+// Height gained by a body launched upward at v with no rise cut, as the fixed-tick integration plays it out
+const apexGain = v => Math.max(0, v * v / (2 * GRAVITY) - v * DT / 2);
+
+// Placeholder lines for the CP-09 test. Not canon; written only to test the feel.
+const BARKS = {
+  nova: {
+    intercept_save: ['Got that one.', 'Covered.'], saved_reply: ['Thanks. Eyes up.'],
+    perfect: ['Denied.', 'Not today.'], revive: ['Up. I have you.', 'On your feet.'],
+    revived: ['Thanks.', 'Noted.'], lash_reply: ['Show-off.', 'I had him.'],
+    lash_save: ['Over here.'], lock_broken: ["Lock's open. Move."],
+    challenge_reply: ["Don't make a habit of that.", 'I see them. Covering you.'],
+    perfect_shot: ['Textbook.', 'Right on the mark.', 'Clean.'],
+  },
+  echo: {
+    intercept_save: ['Got it!'], saved_reply: ['I had it.', "Didn't need that."],
+    perfect: ['Too slow.', 'Again!'], revive: ['Come on, get up.', 'Not like this. Up.'],
+    revived: ['I was fine.', 'Thanks.'], lash_reply: ['Nice pull.'],
+    lash_save: ['Mine now!', 'Over here!'], lock_broken: ["That's how it's done."],
+    challenge: ['Eyes on me!', 'Come on, all of you!'], ambush: ['Missed me?', 'Right behind you.'],
+  },
+};
+
+export class World {
+  constructor() {
+    this.players = []; this.enemies = []; this.projectiles = []; this.hitboxes = [];
+    this.barriers = []; this.shockwaves = []; this.events = []; this.scheduled = []; this.snares = [];
+    this.hitSets = new Map(); this.tick = 0; this.instanceSeq = 1;
+    this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
+    this.arena = { state: 'idle' }; this.towerSpawned = false;
+    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 })); this.routeDone = false;
+    this.aspect = 16 / 9;
+    this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
+    this.director = makeDirector(this);
+    this.spawnGym();
+  }
+
+  emit(type, data = {}) { this.events.push({ type, ...data }); }
+  newInstance() { return this.instanceSeq++; }
+  schedule(ticks, fn) { this.scheduled.push({ t: this.tick + ticks, fn }); }
+  activePlayers() { return this.players.filter(p => p.state !== 'dead' && p.state !== 'downed'); }
+
+  // ---- Spawning helpers used by players, enemies and combat ----
+  spawnHitbox(hb) { this.hitboxes.push(hb); }
+  spawnProjectile(pr) {
+    this.projectiles.push({ ttl: 60, r: 0.15, dmg: 1, poise: 6, hitSet: new Set(), dead: false, ...pr, px: pr.x, py: pr.y });
+  }
+  spawnShockwave(e, dir, dmg, scale = 1) {
+    this.shockwaves.push({ owner: e, x: e.x + dir * (e.w / 2), y: e.y, dir, speed: 11, ttl: Math.round(60 * scale), dmg, h: 0.9, instance: this.newInstance() });
+  }
+  telegraph(e, cat, ticks) { this.emit('telegraph', { e, cat, ticks }); }
+
+  fireShot(p, level) {
+    const c = chest(p), ax = p.aimX, ay = p.aimY, far = marksman(p);
+    const spec = level === 0 ? { speed: NOVA.shotSpeed, dmg: NOVA.shotDmg, poise: 6, r: 0.16, kb: 1.5, kind: 'shot' }
+      : level === 1 ? { speed: NOVA.lance.speed, dmg: NOVA.lance.dmg, poise: NOVA.lance.poise, r: 0.24, pierce: true, kb: 5, kind: 'lance' }
+        : { speed: NOVA.rail.speed, dmg: NOVA.rail.dmg, poise: NOVA.rail.poise, r: 0.3, pierce: true, rail: true, armorBreak: true, kb: 9, kind: 'rail' };
+    spec.dmg *= focusMult(p);
+    // Marksman kit: rounds fly the whole level and splash where they land
+    if (far) { spec.splash = MARKSMAN.round.splash; spec.ttl = MARKSMAN.life; }
+    this.spawnProjectile({ team: 'p', owner: p, x: c.x + ax * 0.7, y: c.y + ay * 0.7, vx: ax * spec.speed, vy: ay * spec.speed,
+      ttl: Math.round(NOVA.shotRange / spec.speed * 60), intercept: true, homing: level > 0, level, ...spec });
+    if (level === 2) { p.vx -= ax * 4; if (!p.onGround) p.vy = Math.max(p.vy, 1.5); }
+    else if (level === 1 && !p.onGround) p.vy = Math.max(p.vy, 0.5);
+    this.emit('shot', { p, level, x: c.x + ax * 0.7, y: c.y + ay * 0.7 });
+  }
+
+  // Marksman kit: a charged release fires the loaded attachment. Every projectile from one release
+  // shares a family, so the shot as a whole earns Focus once and rocket-jumps Nova at most once. The
+  // family also carries how long the shot was charged (chargeT), which sets the rocket jump height.
+  fireAttachment(p, kind, level, perfect, chargeT = MARKSMAN.charge[level - 1]) {
+    const M = MARKSMAN, c = chest(p), ax = p.aimX, ay = p.aimY;
+    const x = c.x + ax * 0.7, y = c.y + ay * 0.7, fm = focusMult(p);
+    const mult = fm * (perfect ? M.perfectMult : 1);
+    const family = { focused: false, rocketed: false, perfect, chargeT, attach: kind, level };
+    const base = { team: 'p', owner: p, x, y, level, perfect, family, intercept: true, ttl: M.life };
+    const splash = S => ({ ...S, dmg: S.dmg * mult, poise: S.poise * mult, r: S.r * (perfect ? 1.2 : 1) });
+    if (kind === 'lance') {
+      const L = M.lance[level];
+      this.spawnProjectile({ ...base, vx: ax * L.speed, vy: ay * L.speed,
+        r: L.r * (perfect ? 1.2 : 1), dmg: L.dmg * mult, poise: L.poise * mult, kb: L.kb, pierce: true, homing: true,
+        armorBreak: !!L.armorBreak || perfect, rail: !!L.rail || perfect, interceptHeavy: true, kind: level === 3 ? 'rail' : 'lance',
+        splash: splash(L.splash) });
+      if (L.recoil) p.vx -= ax * L.recoil;
+      if (!p.onGround) p.vy = Math.max(p.vy, level === 3 ? 1.5 : 0.5);
+    } else if (kind === 'volley') {
+      const V = M.volley, key = perfect ? 'perfect' : level, n = V.darts[key], fan = V.fan[key], a0 = Math.atan2(ay, ax);
+      // Darts are spread over the enemies in front: the lower darts take the lower targets. Locked on,
+      // every dart goes for the locked target.
+      const targets = p.lockT && !p.lockT.dead ? [p.lockT] : this.enemiesInCone(c.x, c.y, ax, ay, V.seekRange, V.seekCone);
+      const S = { ...V.splash, dmg: V.splash.dmg * fm, poise: V.splash.poise * fm, rocket: V.rocket };
+      for (let i = 0; i < n; i++) {
+        const a = a0 + fan * (i / (n - 1) - 0.5), sp = V.speed * (1 + (i % 2) * 0.08);
+        const target = targets.length ? targets[Math.min(targets.length - 1, Math.floor(i * targets.length / n))] : null;
+        this.spawnProjectile({ ...base, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: V.r,
+          dmg: V.dmg * fm, poise: V.poise * fm, kb: 2, interceptHeavy: false, kind: 'dart', splash: S,
+          seek: { target, delay: V.seekDelay, until: V.seekFor, turn: V.turn, age: 0 } });
+      }
+    } else if (kind === 'arc') {
+      const A = M.arc, S = A[level], dx = ax, dy = ay + A.lift, m = Math.hypot(dx, dy) || 1;
+      this.spawnProjectile({ ...base, intercept: false, vx: dx / m * A.speed, vy: dy / m * A.speed, gravity: A.gravity,
+        r: 0.2, dmg: 0, poise: 0, kind: 'shell',
+        blast: { r: S.r * (perfect ? A.perfectRadius : 1), dmg: S.dmg * mult, poise: S.poise * mult, armorBreak: !!S.armorBreak || perfect, rocket: S.rocket } });
+    } else {
+      const P = M.prism, S = P[level];
+      this.spawnProjectile({ ...base, vx: ax * P.speed, vy: ay * P.speed, r: P.r * (perfect ? 1.2 : 1),
+        dmg: S.dmg * mult, poise: S.poise * mult, kb: 3, homing: true, interceptHeavy: true, kind: 'prism', splash: splash(S.splash),
+        prism: { shards: S.shards, bounces: S.bounces + (perfect ? P.perfectBounces : 0), mult } });
+    }
+    this.emit('shot', { p, level, attach: kind, perfect, x, y, ax, ay });
+    if (perfect) { this.emit('perfectRelease', { p, x, y, attach: kind }); this.bark(p, 'perfect_shot', 0.25); }
+  }
+
+  // Explosions: splash from Nova's shots, Arc shells, the level 3 burst, and enemy mortar shells.
+  // A player blast hits every enemy in the radius (over the top of shields) except `skip`, the one a
+  // shot already hit directly; with `rocket` set it can also launch Nova. An enemy blast hits players
+  // and cannot be parried.
+  explode({ owner, team = 'p', x, y, spec, level = 0, perfect = false, family = null, skip = null, rocket = false, kind = 'splash' }) {
+    const reach = (ent, r) => {
+      const nx = Math.max(ent.x - ent.w / 2, Math.min(x, ent.x + ent.w / 2)), ny = Math.max(ent.y, Math.min(y, ent.y + ent.h));
+      return Math.hypot(x - nx, y - ny) <= r;
+    };
+    if (team === 'e') {
+      for (const q of this.players) {
+        if (q.state === 'dead' || q.state === 'downed' || !reach(q, spec.r)) continue;
+        hitPlayer(this, q, { owner, dmg: spec.dmg, unblockable: true, cat: 'unblockable', heavy: true, kb: [(sign(q.x - x) || 1) * 7, 6] });
+      }
+      this.emit('enemyBlast', { x, y, r: spec.r });
+      return;
+    }
+    for (const e of this.enemies) {
+      if (e.dead || e === skip || !reach(e, spec.r)) continue;
+      const res = hitEnemy(this, e, { owner, dmg: spec.dmg, poise: spec.poise, armorBreak: !!spec.armorBreak, kb: [(sign(e.x - x) || 1) * 7, 5], blast: true }, 'blast');
+      if (family && (res === 'hit' || res === 'kill')) awardFocus(this, { owner, family });
+    }
+    if (rocket && spec.rocket && owner && marksman(owner)) this.rocketPush(owner, x, y, spec, family, perfect);
+    this.emit(kind, { p: owner, x, y, r: spec.r, level, perfect });
+  }
+
+  // Rocket jump: a charged shot bursting on terrain close to Nova launches him away from the burst.
+  // The launch speed is the one that reaches the height the charge earned (rocketHeight), weaker for a
+  // burst further away and for each extra rocket jump in the same airtime. It sets his climb speed rather
+  // than adding to it, so the height the charge earned is a real ceiling. A short impact pause (freeze)
+  // sells the blast before he leaves the ground.
+  rocketPush(p, x, y, spec, family, perfect) {
+    const R = MARKSMAN.rocket;
+    if (family && family.rocketed) return;
+    const reach = spec.r + R.reach;
+    if (Math.hypot(p.x - x, p.y + p.h * 0.5 - y) > reach || p.state === 'downed' || p.state === 'dead') return;
+    // A burst anywhere under his boots counts as right under him: the first `slack` m sideways are
+    // ignored for both the direction and the strength
+    const ox = p.x - x, sx = Math.sign(ox) * Math.max(0, Math.abs(ox) - R.slack);
+    let dx = sx, dy = p.y + p.h * 0.5 - y;
+    const dEff = Math.hypot(dx, dy);
+    if (dEff < 0.05) { dx = 0; dy = 1; } else { dx /= dEff; dy /= dEff; }
+    if (family) family.rocketed = true;
+    const H = rocketHeight(family ? family.chargeT : MARKSMAN.charge[2], family ? family.attach : 'arc', perfect);
+    const near = Math.max(0, dEff - R.close) / Math.max(0.01, reach - R.close);   // 0 for a burst at his feet
+    const air = p.onGround ? 1 : R.air[Math.min(p.rockets, R.air.length - 1)];
+    const k = Math.sqrt(2 * GRAVITY * H) * (1 - R.falloff * Math.min(1, near)) * air;
+    if (!p.onGround) p.rockets++;
+    let vx = p.vx + dx * k * R.side;
+    if (Math.abs(vx) > R.sideMax && Math.abs(vx) > Math.abs(p.vx)) vx = sign(vx) * Math.max(R.sideMax, Math.abs(p.vx));
+    p.vx = vx;
+    if (dy > 0) p.vy = Math.max(p.vy, dy * k); else p.vy += dy * k * 0.5;
+    if (dy > 0.2) { p.onGround = false; p.coyote = 0; }   // launched: no late ground jump to cut the climb
+    p.dashCarry = true; p.fastFall = false;   // keeps the launch: no rise cut, momentum carries
+    const power = Math.min(1, k / Math.sqrt(2 * GRAVITY * R.perfect));
+    const h = dy > 0 ? apexGain(dy * k) : 0;
+    p.rocketT = 50; p.rocketPow = power; p.rocketFlip = h >= R.flipH && Math.abs(dx) < 0.5;
+    p.hitstop = Math.max(p.hitstop, R.freeze[power < 0.45 ? 0 : power < 0.8 ? 1 : 2]);
+    this.emit('rocketJump', { p, x, y, k, h, power, perfect, level: family ? family.level : 3, dx, dy });
+  }
+
+  // What a rocket jump would do right now: while Nova charges with his aim pointing down and a surface
+  // close enough below, the height his feet would reach if he let go now. Presentation only (the apex
+  // marker); the real launch is worked out when the shot bursts.
+  rocketPreview(p) {
+    const M = MARKSMAN, R = M.rocket;
+    if (!marksman(p) || p.chargeT < M.charge[0] || p.aimY > -0.6 || !['normal', 'slide'].includes(p.state)) return null;
+    const gy = groundBelow(p.x, p.y + 0.1);
+    if (gy === -Infinity) return null;
+    const stage = chargeStage(p), perfect = stage === 'perfect', level = p.chargeT >= M.charge[2] ? 3 : p.chargeT >= M.charge[1] ? 2 : 1;
+    const A = p.attachment;
+    let r = A === 'lance' ? M.lance[level].splash.r * (perfect ? 1.2 : 1) : A === 'volley' ? M.volley.splash.r
+      : A === 'arc' ? M.arc[level].r * (perfect ? M.arc.perfectRadius : 1) : M.prism[level].splash.r * (perfect ? 1.2 : 1);
+    const d = p.y + p.h * 0.5 - (gy + 0.15), reach = r + R.reach;
+    if (d > reach) return null;
+    const H = rocketHeight(p.chargeT, A, perfect), near = Math.max(0, d - R.close) / Math.max(0.01, reach - R.close);
+    const air = p.onGround ? 1 : R.air[Math.min(p.rockets, R.air.length - 1)];
+    const k = Math.sqrt(2 * GRAVITY * H) * (1 - R.falloff * Math.min(1, near)) * air;
+    const up = Math.max(p.vy, k);
+    return { x: p.x, y: p.y, apex: p.y + apexGain(up), level, perfect, h: H };
+  }
+
+  // Prism rounds split into shards that fan out along (dx, dy); shards skip the enemy that split them
+  splitPrism(pr, x, y, dx, dy, skip) {
+    const S = MARKSMAN.prism.shard, n = pr.prism.shards, a0 = Math.atan2(dy, dx);
+    const splash = { ...S.splash, dmg: S.splash.dmg * pr.prism.mult, poise: S.splash.poise * pr.prism.mult };
+    for (let i = 0; i < n; i++) {
+      const a = a0 + S.fan * (i - (n - 1) / 2);
+      this.spawnProjectile({ team: 'p', owner: pr.owner, x, y, vx: Math.cos(a) * S.speed, vy: Math.sin(a) * S.speed, ttl: MARKSMAN.life, r: S.r,
+        dmg: S.dmg * pr.prism.mult, poise: S.poise * pr.prism.mult, kb: 2, level: pr.level, perfect: pr.perfect, family: pr.family,
+        intercept: true, interceptHeavy: false, bounces: pr.prism.bounces, kind: 'shard', splash });
+      if (skip) this.projectiles[this.projectiles.length - 1].hitSet.add(skip.id);
+    }
+    this.emit('split', { p: pr.owner, x, y, n });
+  }
+
+  // Recoil Burst, Nova's secondary blaster (Marksman melee): point-blank pellets, level 0 for the
+  // quick press or 1-3 when charged. The kick pushes Nova back along the aim; aiming down in the air
+  // turns it into a hop, once per jump. Level 3 adds a blast at the muzzle.
+  fireBurst(p, level, perfect = false) {
+    const B = MARKSMAN.burst, S = level ? B[level] : B.tap, c = chest(p), ax = p.aimX, ay = p.aimY, a0 = Math.atan2(ay, ax);
+    const x = c.x + ax * 0.5, y = c.y + ay * 0.5, mult = perfect ? MARKSMAN.perfectMult : 1;
+    for (let i = 0; i < S.pellets; i++) {
+      const a = a0 + S.fan * (i / (S.pellets - 1) - 0.5);
+      this.spawnProjectile({ team: 'p', owner: p, x, y, vx: Math.cos(a) * S.speed, vy: Math.sin(a) * S.speed, ttl: MARKSMAN.life, r: 0.16,
+        dmg: S.dmg * mult, poise: S.poise * mult, kb: S.kb, kbY: 2, intercept: true, interceptHeavy: false, kind: 'pellet',
+        falloff: { x, y, d: B.falloff }, armorBreak: !!S.armorBreak && i === (S.pellets >> 1) });
+    }
+    if (S.blast) {
+      this.explode({ owner: p, x: x + ax * 0.7, y: y + ay * 0.7, level, perfect, kind: 'blast',
+        spec: { r: S.blast.r * (perfect ? 1.25 : 1), dmg: S.blast.dmg * mult, poise: S.blast.poise * mult, armorBreak: true } });
+    }
+    p.vx -= ax * S.recoil;
+    if (!p.onGround && ay < -0.3 && p.airBurst) { p.vy = Math.max(p.vy, -ay * S.lift); p.airBurst = false; p.dashCarry = true; }
+    p.recoilT = 10;
+    this.emit('burst', { p, x, y, ax, ay, level, charged: level > 0, perfect });
+  }
+
+  fireBolt(p) {
+    const c = chest(p);
+    this.spawnProjectile({ team: 'p', owner: p, x: c.x + p.aimX * 0.7, y: c.y + p.aimY * 0.7, vx: p.aimX * ECHO.boltSpeed, vy: p.aimY * ECHO.boltSpeed,
+      ttl: 36, r: 0.15, dmg: ECHO.boltDmg, poise: 8, kb: 2, kind: 'bolt' });
+    this.emit('shot', { p, level: 0, bolt: true, x: c.x, y: c.y });
+  }
+  // Echo's staff-rifle (Hunter kit): one fast round down the whole level; the marking shot pierces and tags
+  fireRifle(p, mark) {
+    const R = HUNTER.rifle, c = chest(p), ax = p.aimX, ay = p.aimY, x = c.x + ax * 0.9, y = c.y + ay * 0.9;
+    this.spawnProjectile({ team: 'p', owner: p, x, y, vx: ax * R.speed, vy: ay * R.speed, ttl: MARKSMAN.life, r: mark ? 0.17 : 0.12,
+      dmg: mark ? R.markDmg : R.dmg, poise: mark ? R.markPoise : R.poise, kb: R.kb, pierce: mark, mark, kind: mark ? 'markShot' : 'rifle' });
+    this.emit('rifleShot', { p, x, y, ax, ay, mark });
+  }
+  fireTracer(p) {
+    const c = chest(p);
+    this.spawnProjectile({ team: 'p', owner: p, x: c.x + p.aimX * 0.7, y: c.y + p.aimY * 0.7, vx: p.aimX * 40, vy: p.aimY * 40,
+      ttl: 42, r: 0.16, dmg: ECHO.tracerDmg, poise: 5, kb: 1, tracer: true, kind: 'tracer' });
+    this.emit('tracer', { p, x: c.x, y: c.y });
+  }
+
+  bulwarkPulse(p) {
+    const c = chest(p), ax = p.aimX, ay = p.aimY, cos = Math.cos(Math.PI * 50 / 180);
+    for (const e of this.enemies) {
+      if (e.dead || e.type === 'turret') continue;
+      const dx = e.x - c.x, dy = e.y + e.h / 2 - c.y, d = Math.hypot(dx, dy) || 0.01;
+      if ((d < 4.4 && (dx * ax + dy * ay) / d > cos) || d < 1.4) {
+        hitEnemy(this, e, { owner: p, dmg: 1, poise: 40, kb: [ax * 12, 4 + ay * 6], bulwark: true }, 'pulse');
+      }
+    }
+    for (const pr of this.projectiles) {
+      if (pr.team !== 'e' || pr.dead) continue;
+      const dx = pr.x - c.x, dy = pr.y - c.y, d = Math.hypot(dx, dy) || 0.01;
+      if ((d < 4.4 && (dx * ax + dy * ay) / d > cos) || d < 1.6) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
+    }
+    this.barriers.push({ x: c.x + ax * 2.4, y: c.y + ay * 2.4, nx: ax, ny: ay, half: NOVA.barrierHalf, ttl: NOVA.barrierTicks, max: NOVA.barrierTicks, owner: p });
+    this.emit('bulwark', { p, x: c.x, y: c.y, ax, ay });
+  }
+
+  findLashTarget(p, cx, cy, ax, ay, range) {
+    let best = null, bt = range + 0.01;
+    const consider = ent => {
+      const dx = ent.x - cx, dy = ent.y + ent.h * 0.5 - cy, t = dx * ax + dy * ay;
+      if (t <= 0.3 || t > range) return;
+      if (Math.abs(dx * -ay + dy * ax) > ent.h * 0.5 + 0.9) return;
+      if (t < bt) { bt = t; best = ent; }
+    };
+    for (const e of this.enemies) if (!e.dead) consider(e);
+    for (const q of this.players) if (q !== p && q.state === 'downed') consider(q);
+    return best;
+  }
+
+  lashConnect(p, t, held = false) {
+    if (t.kind === 'player') {
+      t.x = p.x + p.facing * 0.9; t.y = p.y + 0.1;
+      this.emit('lashAlly', { p, q: t });
+      return;
+    }
+    if (t.light && t.armor <= 0) {
+      const ally = this.players.find(q => q !== p && q.state !== 'dead' && q.state !== 'downed' && Math.hypot(q.x - t.x, q.y - t.y) < 3);
+      this.director.release(t);
+      t.state = 'caught'; t.st = 0; t.catcher = p; t.catchSide = sign(t.x - p.x) || p.facing; t.shieldDir = t.catchSide; t.dropT = 16;
+      addResolve(p, 4);
+      this.emit('lashPull', { p, e: t });
+      if (held) { p.leash = { e: t, t: 0 }; this.emit('leash', { p, e: t }); }
+      if (ally) { this.bark(p, 'lash_save', 0.8); this.schedule(50, () => this.bark(ally, 'lash_reply', 1, true)); }
+    } else if (held) {
+      // Hunter kit: yank a heavy target off balance instead of zipping to it
+      hitEnemy(this, t, { owner: p, dmg: 0.5, poise: HUNTER.yankPoise, kb: [sign(p.x - t.x) * 3, 0] }, 'pulse');
+      this.emit('yank', { p, e: t });
+    } else {
+      p.zip = { target: t }; p.state = 'zip'; p.st = 0;
+      this.emit('lashZip', { p, e: t });
+    }
+  }
+
+  releaseLeash(p) {
+    const L = p.leash; p.leash = null;
+    if (L && L.e && L.e.state === 'caught') L.e.st = Math.max(L.e.st, 20);
+    this.emit('leashEnd', { p });
+  }
+
+  // ---- Scarf modes ----
+  // Flare Signature (Challenge): every enemy close by turns on Echo, including a sniper already
+  // aiming at someone else, and attacks sooner.
+  challenge(p) {
+    const c = chest(p); let n = 0;
+    for (const e of this.enemies) {
+      if (e.dead || e.type === 'post' || e.type === 'turret') continue;
+      if (Math.hypot(e.x - c.x, e.y + e.h / 2 - c.y) > SCARF.challengeRange) continue;
+      e.taunter = p; e.tauntT = SCARF.tauntTicks; e.target = p; n++;
+      if (e.type === 'sniper' && (e.state === 'aim' || e.state === 'lock')) { e.aimX = p.x; e.aimY = p.y + 1.0; }
+      if (e.cd > 20) e.cd = 20;
+      this.emit('taunted', { e });
+    }
+    addResolve(p, 4);
+    this.emit('challenge', { p, x: c.x, y: c.y, n });
+    const ally = this.players.find(q => q !== p && q.state !== 'dead' && q.state !== 'downed');
+    if (n > 0) { this.bark(p, 'challenge', 0.6); if (ally) this.schedule(60, () => this.bark(ally, 'challenge_reply', 0.6, true)); }
+  }
+  // Veil Signature (Vanish): everything tracking Echo loses him, including a sniper mid-aim.
+  shakeOffTrackers(p) {
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      if (e.taunter === p) { e.tauntT = 0; e.taunter = null; }
+      if (e.target !== p) continue;
+      e.target = null;
+      if (e.type === 'sniper' && e.state === 'aim') { this.director.release(e); e.state = 'idle'; e.st = 0; }
+      this.emit('lostTrack', { e, p });
+    }
+  }
+
+  // ---- Hunter kit snares ----
+  throwSnare(p) {
+    const c = chest(p);
+    // Bola throw: flies straight at an enemy inside the throw cone; otherwise arcs out and plants as a trap
+    const t = this.nearestEnemyInCone(c.x, c.y, p.aimX, p.aimY, 10, Math.PI / 6);
+    let vx, vy, gravity;
+    if (t) {
+      const dx = t.x - c.x, dy = t.y + t.h * 0.5 - c.y, d = Math.hypot(dx, dy) || 1;
+      vx = dx / d * 20; vy = dy / d * 20; gravity = 3;
+    } else {
+      vx = p.aimX * HUNTER.throwSpeed; vy = p.aimY * HUNTER.throwSpeed + HUNTER.throwLift; gravity = HUNTER.snareGravity;
+    }
+    this.spawnProjectile({ team: 'p', owner: p, x: c.x + p.aimX * 0.6, y: c.y + p.aimY * 0.6, vx, vy, gravity,
+      r: 0.3, ttl: 110, dmg: 0, snare: true, kind: 'snare' });
+    this.emit('snareThrow', { p, x: c.x, y: c.y });
+  }
+  plantSnare(p) { this.addSnare(p, p.x + p.facing * 0.6, p.y); }
+  snareLanded(pr, x, y) {
+    const gy = groundBelow(x, y + 0.2);
+    if (gy > -Infinity && y - gy < 6) this.addSnare(pr.owner, x, gy);
+  }
+  addSnare(owner, x, y) {
+    const mine = this.snares.filter(s => s.owner === owner);
+    if (mine.length >= HUNTER.maxPlanted) mine[0].dead = true;
+    this.snares = this.snares.filter(s => !s.dead);
+    this.snares.push({ owner, x, y, armT: HUNTER.armTicks, ttl: HUNTER.life, dead: false });
+    this.emit('snarePlant', { x, y, p: owner });
+  }
+  applySnare(e, owner) {
+    if (e.dead) return;
+    if (e.type === 'post' || e.type === 'turret') { this.emit('snared', { e, x: e.x, y: e.y + 0.4, owner, weak: true }); return; }
+    e.tagged = Math.max(e.tagged, 600);
+    if (e.light && e.armor <= 0) {
+      this.director.release(e);
+      if (e.catcher && e.catcher.leash && e.catcher.leash.e === e) this.releaseLeash(e.catcher);
+      e.state = 'snared'; e.st = 0; e.stun = HUNTER.rootLight; e.vx = 0;
+    } else {
+      hitEnemy(this, e, { owner, dmg: 0.5, poise: HUNTER.rootHeavyPoise, kb: [0, 0] }, 'pulse');
+    }
+    this.emit('snared', { e, x: e.x, y: e.y + e.h * 0.4, owner });
+  }
+  updateSnares() {
+    for (const s of this.snares) {
+      s.ttl--; if (s.armT > 0) { s.armT--; continue; }
+      for (const e of this.enemies) {
+        if (e.dead || e.state === 'snared' || e.type === 'turret') continue;
+        if (Math.abs(e.x - s.x) < e.w / 2 + 0.45 && e.y < s.y + 0.6 && e.y + e.h > s.y - 0.1) {
+          this.applySnare(e, s.owner); s.dead = true; this.emit('snareTrigger', { x: s.x, y: s.y, e });
+          break;
+        }
+      }
+    }
+    this.snares = this.snares.filter(s => !s.dead && s.ttl > 0);
+  }
+
+  // Echo's dash chases tagged enemies roughly in the dash direction.
+  pursuitTarget(p, dx, dy) {
+    if (p.char !== 'echo') return null;
+    let best = null, bd = 12;
+    const c = chest(p);
+    for (const e of this.enemies) {
+      if (e.dead || e.tagged <= 0) continue;
+      const ex = e.x - c.x, ey = e.y + e.h / 2 - c.y, d = Math.hypot(ex, ey);
+      if (d < bd && d > 1 && (ex * dx + ey * dy) / d > 0.5) { bd = d; best = e; }
+    }
+    return best;
+  }
+
+  // ---- Lock-on ----
+  // Candidates in range, best first: near, in front, in sight (training targets last)
+  lockCandidates(p) {
+    const c = chest(p), out = [];
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const ty = e.y + e.h * 0.55, dx = e.x - c.x, d = Math.hypot(dx, ty - c.y);
+      if (d > LOCK.range) continue;
+      const behind = dx * p.facing < -0.5, blocked = segmentBlocked(c.x, c.y, e.x, ty);
+      out.push({ e, score: d + (behind ? 7 : 0) + (blocked ? 10 : 0) + (e.type === 'post' || e.type === 'turret' ? 4 : 0) });
+    }
+    return out.sort((a, b) => a.score - b.score).map(o => o.e);
+  }
+  bestLockTarget(p) { return this.lockCandidates(p).find(e => e !== p.lockT) || null; }
+  nextLockTarget(p) {
+    const list = this.lockCandidates(p);
+    if (!list.length) return p.lockT;
+    return list[(list.indexOf(p.lockT) + 1) % list.length];
+  }
+  setLock(p, e, why) {
+    const prev = p.lockT;
+    p.lockT = e; p.lockLost = 0;
+    if (e && e !== prev) this.emit(prev ? 'lockSwitch' : 'lockOn', { p, e, why });
+    else if (!e && prev) this.emit('lockOff', { p, why });
+    else if (!e && why === 'on') this.emit('lockNone', { p });
+  }
+  // The target died (the lock moves to the next one), left (removed), or is out of range or sight too long
+  validateLock(p) {
+    const t = p.lockT; if (!t) return;
+    if (t.dead || !this.enemies.includes(t)) { this.setLock(p, this.bestLockTarget(p), 'switch'); return; }
+    const c = chest(p), ty = t.y + t.h * 0.55;
+    if (Math.hypot(t.x - c.x, ty - c.y) > LOCK.keep) { this.setLock(p, null, 'range'); return; }
+    p.lockLost = segmentBlocked(c.x, c.y, t.x, ty) ? p.lockLost + 1 : 0;
+    if (p.lockLost > LOCK.lost) this.setLock(p, null, 'sight');
+  }
+
+  nearestEnemyInCone(x, y, dx, dy, range, half) {
+    let best = null, bd = range; const cos = Math.cos(half);
+    for (const e of this.enemies) {
+      if (e.dead || e.type === 'post' || e.type === 'turret') continue;
+      const ex = e.x - x, ey = e.y + e.h / 2 - y, d = Math.hypot(ex, ey);
+      if (d < bd && (ex * dx + ey * dy) / d > cos) { bd = d; best = e; }
+    }
+    return best;
+  }
+  // Enemies within range and half-angle of a direction, ordered by signed angle from it
+  enemiesInCone(x, y, dx, dy, range, half) {
+    const cos = Math.cos(half), out = [];
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const ex = e.x - x, ey = e.y + e.h / 2 - y, d = Math.hypot(ex, ey);
+      if (d > range || d < 1e-3 || (ex * dx + ey * dy) / d < cos) continue;
+      out.push({ e, a: Math.atan2(dx * ey - dy * ex, dx * ex + dy * ey) });
+    }
+    return out.sort((a, b) => a.a - b.a).map(o => o.e);
+  }
+  nearestEnemyDist(x, y) {
+    let bd = Infinity;
+    for (const e of this.enemies) if (!e.dead) bd = Math.min(bd, Math.hypot(e.x - x, e.y + e.h / 2 - y));
+    return bd;
+  }
+  enemyBelow(p, dist) {
+    return this.enemies.find(e => !e.dead && Math.abs(e.x - p.x) < (e.w + p.w) / 2 && p.y - (e.y + e.h) < dist && p.y > e.y);
+  }
+  onOneWay(p) {
+    return BOXES.some(b => b.type === 'o' && Math.abs(p.y - b.y1) < 0.03 && p.x > b.x0 && p.x < b.x1);
+  }
+  projectileTarget(b, savior) {
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    for (const q of this.players) {
+      if (q === savior || q.state === 'dead' || q.state === 'downed') continue;
+      const dx = q.x - b.x, dy = q.y + 1 - b.y, along = (dx * b.vx + dy * b.vy) / sp;
+      if (along > 0 && along < 5 && Math.abs(dx * b.vy - dy * b.vx) / sp < 1.4) return q;
+    }
+    return null;
+  }
+
+  // ---- Barks (CP-09 test) ----
+  bark(p, key, chance = 1, force = false) {
+    if (!SETTINGS.barks || !p || Math.random() > chance) return;
+    if (!force && ((p.barkCd || 0) > 0 || this.globalBarkCd > 0)) return;
+    const lines = BARKS[p.char][key];
+    if (!lines) return;
+    p.barkCd = 300; this.globalBarkCd = 60;
+    this.emit('bark', { p, text: lines[Math.floor(Math.random() * lines.length)] });
+  }
+
+  // ---- Players ----
+  addPlayer(device, charId) {
+    const used = new Set(this.players.map(p => p.slot));
+    let slot = 0; while (used.has(slot)) slot++;
+    if (slot > 3) return null;
+    const anchor = this.activePlayers()[0];
+    const cp = CHECKPOINTS[this.checkpoint];
+    const x = anchor ? anchor.x - 0.8 : cp.x + slot * 0.8, y = anchor ? anchor.lastSafeY : cp.y;
+    const p = createPlayer(slot, device, charId, x, y);
+    p.mercy = 120;
+    this.players.push(p); this.players.sort((a, b) => a.slot - b.slot);
+    this.emit('join', { p });
+    return p;
+  }
+  removePlayer(slot) {
+    this.players = this.players.filter(p => p.slot !== slot);
+    this.emit('leave', { slot });
+  }
+  swapCharacter(p, charId) {
+    if (p.thrusting) this.emit('thrustOff', { p });
+    setCharacter(p, charId);
+    this.emit('swap', { p });
+  }
+
+  downPlayer(p) {
+    if (p.lockT) this.setLock(p, null, 'downed');
+    p.hp = 0; p.chargeT = 0; p.meleeCharged = false; p.dash = null; p.lash = null; p.zip = null; p.rifleT = 0; p.dashChargeT = 0;
+    p.veiled = false; p.veilCharge = 0; p.ambushT = 0;
+    p.state = 'downed'; p.st = 0; p.revive = 0; p.autoRevive = 0;
+    if (this.players.length === 1) {
+      p.downedT = 9999;
+      if (p.secondWind) { p.secondWind = false; p.autoRevive = 70; this.emit('downed', { p, secondWind: true }); }
+      else { this.emit('downed', { p }); this.startWipe(); }
+      return;
+    }
+    p.downedT = 600;
+    this.emit('downed', { p });
+    if (this.activePlayers().length === 0) this.startWipe();
+  }
+  bleedOut(p) {
+    p.state = 'dead'; p.respawnT = 360;
+    this.emit('bleedOut', { p });
+    if (this.activePlayers().length === 0) this.startWipe();
+  }
+  revivePlayer(p, by, frac) {
+    p.state = 'normal'; p.st = 0; p.hp = Math.round(p.maxHp * frac); p.mercy = 90; p.revive = 0;
+    p.h = CHARS[p.char].height; p.crouch = !hasHeadroom(p.x, p.y, p.w, p.h);
+    this.emit('revived', { p, by });
+    if (by) { this.bark(by, 'revive', 1, true); this.schedule(40, () => this.bark(p, 'revived', 1, true)); }
+  }
+  startWipe() { if (this.wipeT <= 0) { this.wipeT = 100; this.emit('wipe', {}); } }
+
+  resetToCheckpoint() {
+    const cp = CHECKPOINTS[this.checkpoint];
+    this.players.forEach((p, i) => {
+      p.x = cp.x + i * 0.8; p.y = cp.y; p.prevX = p.x; p.prevY = p.y; p.vx = 0; p.vy = 0;
+      p.hp = p.maxHp; p.strain = 0; p.state = 'normal'; p.st = 0; p.secondWind = true; p.mercy = 60;
+      p.h = CHARS[p.char].height; p.lastSafeX = p.x; p.lastSafeY = p.y; p.resolve = 0; p.chargeT = 0;
+      p.veiled = false; p.veilCharge = 0; p.veilBreakT = 0; p.ambushT = 0; p.focus = 0;
+    });
+    this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = [];
+    for (const p of this.players) p.leash = null;
+    if (this.arena.state !== 'cleared') this.resetArena();
+    if (this.towerSpawned && this.enemies.some(e => e.zone === 'tower' && !e.dead)) {
+      this.enemies = this.enemies.filter(e => e.zone !== 'tower'); this.towerSpawned = false;
+    }
+    // Skyline encounters that were not finished start over (and their gates open)
+    for (const S of this.encounters) {
+      if (S.state === 'cleared') continue;
+      this.enemies = this.enemies.filter(e => e.enc !== S.def.id);
+      S.state = 'idle'; S.wave = 0;
+      for (const g of S.def.gates || []) GATES[g] = false;
+    }
+    this.director.reset();
+    this.emit('respawnAll', {});
+  }
+
+  teleport(zoneId) {
+    const z = ZONES.find(q => q.id === zoneId); if (!z) return;
+    this.checkpoint = CHECKPOINTS.findIndex(c => c.x === z.spawn.x && c.y === z.spawn.y);
+    if (this.checkpoint < 0) this.checkpoint = 0;
+    if (zoneId === 'arena') { this.arena.state = 'idle'; }
+    this.wipeT = 0;
+    this.resetToCheckpoint();
+    this.emit('banner', { text: z.name, sub: 'Zone loaded' });
+  }
+
+  resetArena() {
+    this.enemies = this.enemies.filter(e => e.zone !== 'arena');
+    GATES.L = false; GATES.R = false;
+    this.arena = { state: 'idle' };
+  }
+
+  spawnGym() {
+    this.enemies.push(createEnemy('post', 54.5, 0, { zone: 'gym' }));
+    this.enemies.push(createEnemy('turret', 58, 3.05, { zone: 'gym', facing: -1 }));
+  }
+
+  // ---- The tick ----
+  step(cmds) {
+    this.tick++;
+    if (this.globalBarkCd > 0) this.globalBarkCd--;
+    const due = this.scheduled.filter(s => s.t <= this.tick);
+    this.scheduled = this.scheduled.filter(s => s.t > this.tick);
+    due.forEach(s => s.fn());
+
+    for (const p of this.players) {
+      if (p.barkCd > 0) p.barkCd--;
+      if (p.state === 'dead') { this.tickDead(p); continue; }
+      const c0 = chest(p);
+      updatePlayer(p, cmds[p.slot] || EMPTY_CMD, this);
+      if (p.state === 'dash') {
+        const c1 = chest(p);
+        for (const b of this.barriers) {
+          if (p.boostT <= 0 && crossesBarrier(b, c0.x, c0.y, c1.x, c1.y)) { p.boostT = 40; this.emit('boost', { p, x: c1.x, y: c1.y }); }
+        }
+        if (p.dash && !p.dash.pursuit && p.st === 1) {
+          const t = this.pursuitTarget(p, p.dash.dx, p.dash.dy);
+          if (t) { p.dash.pursuit = t; p.dash.t = Math.max(p.dash.t, 20); this.emit('pursuit', { p, e: t }); }
+        }
+      }
+    }
+    for (const e of this.enemies) updateEnemy(e, this);
+    updateShockwaves(this);
+    updateProjectiles(this);
+    this.updateSnares();
+    resolveHitboxes(this);
+    for (const b of this.barriers) b.ttl--;
+    this.barriers = this.barriers.filter(b => b.ttl > 0);
+
+    this.tickRevives();
+    this.updateCamera();
+    this.updateEncounters();
+
+    this.enemies = this.enemies.filter(e => !(e.dead && e.deathT > 45));
+    if (this.tick % 120 === 0) {
+      const keep = this.instanceSeq - 400;
+      for (const k of this.hitSets.keys()) if (k < keep) this.hitSets.delete(k);
+    }
+    if (this.wipeT > 0) { this.wipeT--; if (this.wipeT === 0) this.resetToCheckpoint(); }
+  }
+
+  tickDead(p) {
+    p.prevX = p.x; p.prevY = p.y;
+    if (this.wipeT > 0) return;
+    p.respawnT--;
+    if (p.respawnT <= 0) {
+      const ally = this.activePlayers()[0];
+      if (!ally) return;
+      p.x = ally.lastSafeX; p.y = ally.lastSafeY; p.prevX = p.x; p.prevY = p.y; p.vx = 0; p.vy = 0;
+      p.state = 'normal'; p.st = 0; p.hp = Math.round(p.maxHp * 0.3); p.mercy = 120; p.h = CHARS[p.char].height;
+      this.emit('respawn', { p });
+    }
+  }
+
+  tickRevives() {
+    for (const p of this.players) {
+      if (p.state !== 'downed') continue;
+      if (p.autoRevive > 0) { p.autoRevive--; if (p.autoRevive === 0) this.revivePlayer(p, null, 0.4); continue; }
+      const helpers = this.players.filter(q => q !== p && q.state !== 'downed' && q.state !== 'dead' && q.state !== 'hitstun'
+        && Math.abs(q.x - p.x) < 1.7 && Math.abs(q.y - p.y) < 1.6);
+      if (helpers.length) {
+        p.revive += helpers.length;
+        if (p.revive >= 120) this.revivePlayer(p, helpers[0], 0.4);
+      } else p.revive = Math.max(0, p.revive - 0.5);
+    }
+  }
+
+  updateCamera() {
+    const act = this.players.filter(p => p.state !== 'dead');
+    if (!act.length) return;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const p of act) {
+      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y + p.h);
+      // Lining up a rocket jump, the camera eases back to show how high it will go, and it keeps the
+      // peak in view on the way up, so the frame never has to chase the climb
+      const pv = p.chargeT > 0 && this.rocketPreview(p);
+      if (pv) y1 = Math.max(y1, pv.apex + 0.6);
+      if (p.rocketT > 0 && p.vy > 0) { y1 = Math.max(y1, p.y + apexGain(p.vy) * 0.85 + p.h * 0.5); y0 = Math.min(y0, p.y - 2); }
+    }
+    const tanH = Math.tan((SETTINGS.fov * Math.PI / 180) / 2);
+    const needW = (x1 - x0) + 9, needH = (y1 - y0) + 7;
+    const MIN_D = 13, MAX_D = 32;
+    let dist = Math.max(needH / 2 / tanH, needW / 2 / (tanH * this.aspect));
+    dist = Math.max(MIN_D, Math.min(MAX_D, dist));
+    const halfH = dist * tanH, halfW = halfH * this.aspect;
+    this.cam = { x: (x0 + x1) / 2 + 0.8, y: (y0 + y1) / 2 + 1.0, dist, halfW, halfH };
+    // Spread limit and recall (co-op). Being left behind is never a damage penalty.
+    const multi = act.length > 1;
+    for (const p of this.players) {
+      if (p.state === 'dead') continue;
+      if (p.y < KILL_Y) { this.recall(p, true); continue; }
+      if (!multi) continue;
+      const right = this.cam.x + halfW - 0.7;
+      if (p.x > right) { p.x = right; if (p.vx > 0) p.vx = 0; }
+      const off = p.x < this.cam.x - halfW - 0.5 || p.y + p.h < this.cam.y - halfH - 1;
+      p.offscreenT = off ? p.offscreenT + 1 : 0;
+      if (p.offscreenT > 90 && p.state !== 'downed') this.recall(p, false);
+    }
+  }
+
+  recall(p, pit) {
+    const allies = this.activePlayers().filter(q => q !== p);
+    const a = allies.sort((m, n) => Math.abs(m.x - p.x) - Math.abs(n.x - p.x))[0];
+    const tx = a ? a.lastSafeX : p.lastSafeX, ty = a ? a.lastSafeY : p.lastSafeY;
+    p.x = tx; p.y = ty; p.prevX = tx; p.prevY = ty; p.vx = 0; p.vy = 0; p.offscreenT = 0;
+    p.mercy = 90; if (p.state !== 'downed') { p.state = 'normal'; p.st = 0; }
+    this.emit('recall', { p, pit });
+    if (pit && p.state !== 'downed') {
+      p.hp -= 10;
+      if (p.hp <= 0) this.downPlayer(p);
+    }
+  }
+
+  updateEncounters() {
+    // Checkpoints
+    for (let i = this.checkpoint + 1; i < CHECKPOINTS.length; i++) {
+      const cp = CHECKPOINTS[i];
+      if (this.players.some(p => p.state !== 'dead' && p.x >= cp.x - 0.5 && p.y >= cp.y - 0.5 && p.onGround)) {
+        if (i === 1 || this.arena.state === 'cleared' || i > 2) { this.checkpoint = i; this.emit('checkpoint', { i }); }
+      }
+    }
+    // Concourse Lock
+    const n = Math.max(1, this.players.length);
+    const A = this.arena;
+    if (A.state === 'idle' && this.players.some(p => p.state !== 'dead' && p.x > ARENA_TRIGGER_X && p.x < 96)) {
+      GATES.L = true; GATES.R = true; A.state = 'wave1';
+      for (const p of this.players) if (p.x < 63) { p.x = 64 + p.slot * 0.8; p.y = 0; p.vx = 0; p.vy = 0; }
+      const sp = [createEnemy('shield', 88, 0), createEnemy('shield', 92, 0), createEnemy('sniper', 94.1, 5.4)];
+      if (n >= 3) { sp.push(createEnemy('shield', 71, 0)); sp.push(createEnemy('sniper', 64.9, 5.4, { facing: 1 })); }
+      for (const e of sp) { e.zone = 'arena'; this.enemies.push(e); }
+      this.emit('banner', { text: 'Concourse Lock', sub: 'Gate sealed. Break the lock.' });
+      this.emit('gates', { closed: true });
+    } else if (A.state === 'wave1') {
+      const alive = this.enemies.filter(e => e.zone === 'arena' && !e.dead).length;
+      if (alive <= 1) {
+        A.state = 'wave2';
+        const count = n === 1 ? 3 : n === 2 ? 4 : 6;
+        for (let i = 0; i < count; i++) {
+          const e = createEnemy('swarmer', i % 2 ? 66 : 94, 0); e.zone = 'arena'; e.cd = 20 + i * 12; this.enemies.push(e);
+        }
+        const b = createEnemy('brute', 90, 0); b.zone = 'arena'; this.enemies.push(b);
+        this.emit('banner', { text: 'Wave 2', sub: 'The Brute holds the lock.' });
+      }
+    } else if (A.state === 'wave2') {
+      if (!this.enemies.some(e => e.zone === 'arena' && !e.dead)) {
+        A.state = 'cleared'; GATES.L = false; GATES.R = false;
+        this.emit('banner', { text: 'Lock broken', sub: 'Gates open. Storm Spire climb ahead.' });
+        this.emit('gates', { closed: false });
+        const talker = this.activePlayers()[Math.floor(Math.random() * Math.max(1, this.activePlayers().length))];
+        this.bark(talker, 'lock_broken', 1, true);
+      }
+    }
+    this.updateSkyline(n);
+    // Storm Spire climb enemies
+    if (!this.towerSpawned && this.players.some(p => p.x > TOWER_TRIGGER_X)) {
+      this.towerSpawned = true;
+      for (const [t, x, y] of [['swarmer', 122, 5.2], ['swarmer', 134, 11.2], ['drone', 129, 12], ['shield', 152, 15.6], ['drone', 147, 19.5], ['sniper', 158, 15.6]]) {
+        const e = createEnemy(t, x, y); e.zone = 'tower'; this.enemies.push(e);
+      }
+    }
+  }
+}
+
+// Skyline Relay: data-driven encounters (level.js ENCOUNTERS)
+World.prototype.updateSkyline = function (n) {
+  const here = x0 => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0);
+  for (const S of this.encounters) {
+    const E = S.def;
+    if (S.state === 'idle') {
+      if (!here(E.trigger)) continue;
+      S.state = 'active'; S.wave = 0; this.spawnWave(S, n);
+      if (E.gates) {
+        for (const g of E.gates) GATES[g] = true;
+        // Anyone still outside the gate is brought in, as in the Concourse Lock
+        for (const p of this.players) if (p.x < E.inside - 1) { p.x = E.inside + p.slot * 0.8; p.y = groundBelow(p.x, 40); p.vx = 0; p.vy = 0; p.prevX = p.x; p.prevY = p.y; }
+        this.emit('gates', { closed: true });
+      }
+      this.emit('banner', { text: E.banner[0], sub: E.banner[1] });
+    } else if (S.state === 'active') {
+      const alive = this.enemies.filter(e => e.enc === E.id && !e.dead).length;
+      const last = S.wave >= E.waves.length - 1;
+      if (!last && alive <= 1) {
+        S.wave++; this.spawnWave(S, n);
+        const b = E.waveBanners && E.waveBanners[S.wave];
+        if (b) this.emit('banner', { text: b[0], sub: b[1] });
+      } else if (last && alive === 0) {
+        S.state = 'cleared';
+        if (E.gates) { for (const g of E.gates) GATES[g] = false; this.emit('gates', { closed: false }); }
+        if (E.cleared) {
+          this.emit('banner', { text: E.cleared[0], sub: E.cleared[1] });
+          const act = this.activePlayers();
+          this.bark(act[Math.floor(Math.random() * Math.max(1, act.length))], 'lock_broken', 1, true);
+        }
+      }
+    }
+  }
+  if (!this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X)) {
+    this.routeDone = true;
+    this.emit('banner', { text: 'Route complete', sub: 'You reached the end of this build.' });
+  }
+};
+
+World.prototype.spawnWave = function (S, n) {
+  const E = S.def, list = [...E.waves[S.wave], ...(S.wave === 0 && n >= 3 && E.extra ? E.extra : [])];
+  list.forEach(([type, x, y], i) => {
+    const e = createEnemy(type, x, y, { zone: 'skyline', enc: E.id, cd: 40 + i * 14 });
+    this.enemies.push(e);
+  });
+};
+
+function makeDirector(world) {
+  const used = { melee: new Set(), ranged: new Set() };
+  return {
+    cap(pool) {
+      const n = Math.max(1, world.players.filter(p => p.state !== 'dead').length);
+      const d = (DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal).tokens;
+      // Flare's cost: one more enemy may commit to a melee attack at a time
+      const flare = world.players.some(p => p.char === 'echo' && p.scarfMode === 'flare' && p.state !== 'dead' && p.state !== 'downed') ? 1 : 0;
+      return pool === 'melee' ? Math.max(1, 2 + (n - 1) + d + flare) : n >= 3 ? 2 : 1;
+    },
+    request(e, pool) {
+      if (e.token) return true;
+      if (used[pool].size < this.cap(pool)) { used[pool].add(e); e.token = pool; return true; }
+      return false;
+    },
+    release(e) { if (e.token) { used[e.token].delete(e); e.token = null; } },
+    reset() { used.melee.clear(); used.ranged.clear(); },
+    usage() { return { melee: used.melee.size, ranged: used.ranged.size, meleeCap: this.cap('melee'), rangedCap: this.cap('ranged') }; },
+  };
+}
