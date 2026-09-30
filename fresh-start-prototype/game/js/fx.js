@@ -1,11 +1,15 @@
 // Visual effects: particles, glints, telegraph markers, projectiles, barriers, lasers, scarf.
 import * as THREE from 'three';
-import { pathFrame } from './level.js';
-import { CHARS, HOSTILE, NOVA, SETTINGS, ATTACH_LOOK, DASH_CHARGE } from './config.js';
+import { pathFrame, groundBelow } from './level.js';
+import { CHARS, HOSTILE, NOVA, SETTINGS, ATTACH_LOOK, DASH_CHARGE, DASH_SLASH, POUND, MARKSMAN } from './config.js';
 import { toWorld, planeDir } from './space.js';
 import { Ghosts } from './ghosts.js';
 import { buildPlayerRig } from './rigs.js';
+import { buildEnemyRig } from './enemyRigs.js';
 import { ChargeFX } from './chargefx.js';
+import { SweepTrails } from './trails.js';
+import { AegisFX } from './aegisfx.js';
+import { BeamFX } from './beamfx.js';
 export { toWorld, planeDir };
 
 function canvasTex(size, draw) {
@@ -88,12 +92,14 @@ export class FX {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false, depthTest: false }));
       s.visible = false; s.renderOrder = 10; scene.add(s); this.glyphs.push({ s, life: 0, max: 1, e: null });
     }
-    this.arcs = []; this.projMeshes = new Map(); this.barrierMeshes = new Map(); this.lasers = new Map();
+    this.projMeshes = new Map(); this.barrierMeshes = new Map(); this.lasers = new Map();
     this.shockMeshes = new Map(); this.markers = []; this.scarves = new Map(); this.telegraphs = [];
     this.tmp = new THREE.Vector3(); this.tmp2 = new THREE.Vector3();
     this.buildProjectileTemplates();
     this.ghosts = new Ghosts(scene);
     this.charge = new ChargeFX(this);
+    this.trails = new SweepTrails(scene); this.aegis = new AegisFX(this); this.beam = new BeamFX(this);
+    this.slashes = new Map(); this.texts = []; this.poundT = new Map(); this.prevVx = new Map(); this.stepT = new Map();
     // Flat rings on the ground (shockwaves); a small pool
     this.rings = [];
     for (let i = 0; i < 10; i++) {
@@ -142,7 +148,7 @@ export class FX {
     for (const o of [S.orb, S.core, S.halo, S.crystal, S.sight, S.laser, S.laserDot, S.dots, S.aura, S.land, S.apex.group, S.apex.beam, ...S.motes, ...S.apex.ticks]) { put(o); show(o); }
     const stand = buildPlayerRig('nova'); stand.root.position.copy(at); this.scene.add(stand.root); stand.root.updateMatrixWorld(true);
     const g = this.ghosts.spawn(stand, '#ffb547', 0.01, 0.01); this.scene.remove(stand.root);
-    // Its geometry goes; its materials stay referenced so their compiled shaders stay cached for the real rigs
+    // (It is only used for the ghost here; the real rigs compile their own shaders when they first appear)
     stand.root.traverse(q => { if (q.geometry) q.geometry.dispose(); });
     this.warmMats = []; stand.root.traverse(q => { if (q.material) this.warmMats.push(q.material); });
     for (const k in this.tmpl) { const m = this.tmpl[k](); put(m); this.scene.add(m); keep.push(m); }
@@ -151,6 +157,13 @@ export class FX {
     this.charge.flash(at, 'glow', '#ffffff', 0.1, 0.01, 1);
     this.charge.trail({ kind: 'lance', team: 'p', level: 2 }, at);
     put(this.rings[0].m); show(this.rings[0].m); show(this.smokePts);
+    const extra = [this.trails.warmShow(at), this.aegis.warmShow(at), ...this.beam.warmShow(at, camera.position)];
+    for (const m of extra) { m.visible = true; }
+    this.popText(0, 0, 'CRIT', '#ffffff', 0.01); for (const it of this.texts) { put(it.s); it.s.visible = true; }
+    // Boss pieces that only appear mid-fight: a laser cylinder and the Stormcaller (its storm shield material)
+    const bl = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1, 10, 1, true), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false, toneMapped: false }));
+    put(bl); this.scene.add(bl); keep.push(bl);
+    const sr = buildEnemyRig({ type: 'stormcaller' }); sr.parts.shield.visible = true; put(sr.root); this.scene.add(sr.root); keep.push(sr.root);
     this.particle(at, '#ffffff', 0.2, 0.01); this.smoke(0, 0, '#888888', 1, 0, 0.2, 0.01);
     // Compile for the target the scene is really drawn into (the bloom chain renders offscreen in linear
     // colour without tone mapping, which is a different shader variant from drawing to the screen)
@@ -162,6 +175,7 @@ export class FX {
     } catch (e) { /* warm-up is best effort */ }
     for (const q of shown) q.visible = false;
     for (const m of keep) this.scene.remove(m);
+    this.trails.clearAll(); this.aegis.warmDone(); this.beam.warmDone(); for (const it of this.texts) { it.life = 0; it.s.visible = false; }
     g.life = 0; g.root.visible = false;
     // The stand-ins stay (hidden): disposing their materials would let the renderer drop the compiled
     // shaders again, and the first real effect would recompile them
@@ -193,6 +207,25 @@ export class FX {
     }
   }
 
+  // ---- Ground dust ----
+  // The floor under a sim point, if it is within `reach` m below; dust is drawn on the floor surface
+  floorUnder(x, y, reach = 1.2) { const g = groundBelow(x, y + 0.25); return g > -Infinity && y - g <= reach ? g : null; }
+  // Dust thrown along the floor: `dirs` are angles (0 = forward along +x, PI = back), strength 0-1+
+  dust(x, y, strength = 0.5, dirs = [0, Math.PI], opts = {}) {
+    const g = this.floorUnder(x, y, opts.reach ?? 1.2); if (g === null) return false;
+    const k = strength;
+    for (const dir of dirs) this.smoke(x, g + 0.12, opts.color || DUST, Math.max(1, Math.round(2 + 7 * k)), 1.5 + 6 * k, 0.4 + 0.35 * k, 0.45 + 0.35 * k,
+      { dir: dir + (dir === Math.PI / 2 ? 0 : dir > Math.PI / 2 ? -0.12 : 0.12), spread: opts.spread ?? 0.45, drag: 0.88, grav: -0.35, grow: 2.2, op: opts.op ?? 0.5 });
+    if (k >= 0.6 && !opts.noRing) this.groundRing(x, g, '#eef2f6', 0.3, 1 + 1.6 * k, 0.3, 0.55);
+    return true;
+  }
+  // A few puffs swirling off the floor around the feet (charging on the ground)
+  dustSwirl(x, y, k, color = DUST) {
+    const g = this.floorUnder(x, y, 0.4); if (g === null) return;
+    const side = Math.random() < 0.5 ? -1 : 1, d = 0.3 + Math.random() * 0.5;
+    this.smoke(x + side * d, g + 0.1, color, 1, 1 + 2.5 * k, 0.3 + 0.25 * k, 0.5, { dir: side > 0 ? 0.25 : Math.PI - 0.25, spread: 0.6, grav: -0.8, grow: 2.2, op: 0.35 + 0.2 * k });
+  }
+
   // ---- Particles and sprites ----
   burst(x, y, color, n = 10, speed = 5, size = 0.35, life = 0.35, opts = {}) {
     const c = new THREE.Color(color), w = toWorld(x, y, 0, this.tmp);
@@ -207,12 +240,39 @@ export class FX {
       P.drag = opts.drag ?? 0.9; P.grav = opts.grav ?? 0;
     }
   }
-  sprite(x, y, tex, color, size, life, grow = 1.6, depth = 0.3) {
-    const it = this.sprites.find(q => q.life <= 0) || this.sprites[0];
+  sprite(x, y, tex, color, size, life, grow = 1.6, depth = 0.3, sx = 1, rot = 0) {
+    const it = this.sprites.find(q => q.life <= 0) || this.sprites.reduce((a, b) => (a.life < b.life ? a : b));
     if (it.normal) { it.s.material.blending = THREE.AdditiveBlending; it.normal = false; }
-    it.s.material.map = this.tex[tex]; it.s.material.color.set(color); it.s.material.needsUpdate = true;
-    toWorld(x, y, depth, it.s.position); it.life = it.max = life; it.grow = grow; it.base = size; it.s.visible = true;
+    it.s.material.map = this.tex[tex]; it.s.material.color.set(color); it.s.material.rotation = rot; it.s.material.needsUpdate = true;
+    toWorld(x, y, depth, it.s.position); it.life = it.max = life; it.grow = grow; it.base = size; it.sx = sx; it.s.visible = true;
     return it;
+  }
+  // A slash mark: a long thin glint across a hit, at an angle
+  slashMark(x, y, color, len, rot, life = 0.14) { this.sprite(x, y, 'star', color, len * 0.55, life, 1.25, 0.45, 2.6, rot); }
+  // Floating words over a hit ("CRIT"): drawn once per word, normal blending so they read on bright skies
+  popText(x, y, text, color, life = 0.7) {
+    const key = text; this.textTex = this.textTex || {};
+    const tex = this.textTex[key] || (this.textTex[key] = canvasTex(256, (g, s) => {
+      g.font = `italic 900 ${Math.round(s * 0.34)}px "Arial Black", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineJoin = 'round'; g.lineWidth = s * 0.05; g.strokeStyle = 'rgba(12,16,26,0.95)'; g.strokeText(text, s / 2, s / 2);
+      g.fillStyle = '#ffffff'; g.fillText(text, s / 2, s / 2);
+    }));
+    let it = this.texts.find(q => q.life <= 0);
+    if (!it) {
+      if (this.texts.length < 8) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false, depthTest: false })); sp.renderOrder = 11; this.scene.add(sp); it = { s: sp, life: 0 }; this.texts.push(it); }
+      else it = this.texts.reduce((a, b) => (a.life < b.life ? a : b));
+    }
+    it.s.material.map = tex; it.s.material.color.set(color); it.s.material.needsUpdate = true;
+    it.x = x; it.y = y; it.life = it.max = life; it.s.visible = true;
+  }
+  updateTexts(dt) {
+    for (const it of this.texts) {
+      if (it.life <= 0) { it.s.visible = false; continue; }
+      it.life -= dt; const k = 1 - Math.max(0, it.life) / it.max;
+      toWorld(it.x, it.y + k * 0.6, 0.6, it.s.position);
+      const pop = k < 0.12 ? 0.6 + 4 * k : 1.08 - 0.08 * Math.min(1, (k - 0.12) * 4);
+      it.s.scale.set(1.6 * pop, 1.6 * pop, 1); it.s.material.opacity = Math.min(1, Math.max(0, it.life) / 0.2);
+    }
   }
   // Particles at a world-space point, drifting upward (embers)
   burstAt(v, color, n = 1, speed = 1, size = 0.2, life = 0.3) {
@@ -251,10 +311,19 @@ export class FX {
     const pc = ev.p ? CHARS[ev.p.char].energy : '#ffffff';
     switch (ev.type) {
       case 'hit': {
-        const col = ev.owner && ev.owner.kind === 'player' ? CHARS[ev.owner.char].energy : '#ffffff';
-        this.burst(ev.x, ev.y, col, ev.heavy ? 18 : 9, ev.heavy ? 9 : 6, ev.heavy ? 0.5 : 0.35, 0.3);
-        if (ev.heavy) this.sprite(ev.x, ev.y, 'ring', col, 0.8, 0.22, 3);
+        const col = ev.owner && ev.owner.kind === 'player' ? CHARS[ev.owner.char].energy : '#ffffff', d = ev.dmg || 1;
+        this.burst(ev.x, ev.y, col, (ev.heavy ? 18 : 9) + Math.min(14, d * 2), (ev.heavy ? 9 : 6) + Math.min(5, d * 0.5), ev.heavy ? 0.5 : 0.35, 0.3);
+        if (ev.heavy || d >= 4) this.sprite(ev.x, ev.y, 'ring', col, 0.6 + Math.min(1, d * 0.1), 0.22, 3);
         if (ev.tier) this.sprite(ev.x, ev.y, 'ring', '#ffffff', 1 + ev.tier * 0.5, 0.25, 3.5);
+        // Echo's blades and glaive leave a slash mark across what they cut; Nova's fists a hard-light flash
+        const o = ev.owner;
+        if (o && o.kind === 'player' && ev.source === 'melee') {
+          if (o.char === 'echo') {
+            const ds = o.state === 'dashslash' && o.slash, rot = ds ? Math.atan2(ds.dy, ds.dx) : (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? 0 : 0.5);
+            this.slashMark(ev.x, ev.y, '#fff1d6', 1.2 + Math.min(1.4, d * 0.18), rot, ds ? 0.2 : 0.14);
+            if (d >= 4) this.slashMark(ev.x, ev.y, col, 1.6 + d * 0.12, rot + 1.2, 0.16);
+          } else this.sprite(ev.x, ev.y, 'star', '#fff4d6', 0.7 + Math.min(1, d * 0.15), 0.12, 1.5);
+        }
         break;
       }
       case 'blocked': this.burst(ev.x, ev.y, '#cfe8ff', 8, 6, 0.3, 0.25); this.sprite(ev.x, ev.y, 'star', '#dff2ff', 0.6, 0.15, 1.2); break;
@@ -262,7 +331,10 @@ export class FX {
       case 'armorBreak': this.burst(ev.x, ev.y + 0.4, '#e6e9f0', 26, 11, 0.55, 0.6, { grav: 14 }); this.sprite(ev.x, ev.y, 'ring', HOSTILE, 1.5, 0.35, 3); break;
       case 'armorHit': this.burst(ev.x, ev.y, '#b9c3d6', 5, 4, 0.25, 0.2); break;
       case 'stagger': this.sprite(ev.x, ev.y + 0.6, 'star', '#fff4c2', 0.9, 0.5, 1.4); this.burst(ev.x, ev.y + 0.5, '#fff4c2', 12, 4, 0.3, 0.6); break;
-      case 'kill': this.burst(ev.x, ev.y, HOSTILE, 24, 9, 0.45, 0.55, { grav: 6 }); this.burst(ev.x, ev.y, '#ffffff', 10, 5, 0.3, 0.3); break;
+      case 'kill':
+        this.burst(ev.x, ev.y, HOSTILE, 24, 9, 0.45, 0.55, { grav: 6 }); this.burst(ev.x, ev.y, '#ffffff', 10, 5, 0.3, 0.3);
+        if (ev.e && !ev.e.flier) this.dust(ev.e.x, ev.e.y, ev.e.type === 'brute' || ev.e.boss ? 0.9 : 0.3);
+        break;
       case 'parry': {
         const col = ev.perfect ? '#fff6d8' : '#cfe8ff';
         this.sprite(ev.x, ev.y, 'ring', col, ev.perfect ? 1.4 : 0.9, ev.perfect ? 0.3 : 0.2, ev.perfect ? 3.2 : 2.2);
@@ -288,11 +360,12 @@ export class FX {
       case 'tag': this.sprite(ev.x, ev.y + 0.3, 'star', '#ffb347', 0.7, 0.4, 1.2); break;
       case 'land':
         if (!ev.p) break;
+        if (ev.p.state === 'pound') break;   // the pound has its own landing
         if (ev.vy < -16) {   // a hard landing (after a rocket jump or a long fall) kicks up a ring of dust
           const k = Math.min(1, (-ev.vy - 16) / 12);
           this.groundRing(ev.p.x, ev.p.y, '#e6ecf2', 0.4, 1.4 + k, 0.3, 0.6);
-          for (const dir of [Math.PI, 0]) this.smoke(ev.p.x, ev.p.y + 0.1, '#9aa3ae', 5 + k * 6, 4 + k * 3, 0.45 + k * 0.2, 0.5, { dir, spread: 0.6, drag: 0.88, op: 0.5 });
-        } else this.burst(ev.p.x, ev.p.y + 0.05, '#c9d3de', 5, 2.5, 0.35, 0.3, { dir: Math.PI / 2, spread: 2.4 });
+          this.dust(ev.p.x, ev.p.y, 0.45 + 0.45 * k, [Math.PI, 0], { noRing: true });
+        } else this.dust(ev.p.x, ev.p.y, Math.min(0.35, 0.08 + -ev.vy * 0.018), [Math.PI, 0], { noRing: true, op: 0.4 });
         break;
       case 'jump': case 'djump': if (ev.p) this.burst(ev.p.x, ev.p.y + 0.1, '#e8eef5', 5, 2.5, 0.3, 0.25, { dir: -Math.PI / 2, spread: 2 }); break;
       case 'walljump': {
@@ -307,6 +380,7 @@ export class FX {
       case 'dash': {
         if (!ev.p) break;
         const L = ev.level || 0, a = Math.atan2(ev.dy || 0, ev.dx || ev.p.facing);
+        if (ev.p.onGround || ev.p.y - ev.p.lastSafeY < 0.2) this.dust(ev.p.x, ev.p.y, 0.3 + 0.2 * L, [a + Math.PI], { noRing: L < 2 });
         if (!L) { this.burst(ev.p.x, ev.p.y + 0.9, pc, 10, 4, 0.3, 0.25); break; }
         // A charged dash bursts away: a ring behind, streaks thrown back, a ground ring; level 3 flashes
         const col = new THREE.Color(pc).lerp(new THREE.Color('#ffffff'), L >= 3 ? 0.55 : L * 0.15);
@@ -320,19 +394,98 @@ export class FX {
       case 'dashChargeStart': break;
       case 'dashLevel': this.charge.levelUp(ev.p, this.rigs.get(ev.p), ev.level, 'dash'); break;
       case 'rifleRaise': this.charge.levelUp(ev.p, this.rigs.get(ev.p), 1, 'rifle'); break;
-      case 'rifleMark': this.charge.levelUp(ev.p, this.rigs.get(ev.p), 3, 'rifle'); break;
-      case 'rifleShot': {
-        const rig = this.rigs.get(ev.p);
-        this.charge.release({ level: ev.mark ? 3 : 1, rifle: true, mark: ev.mark, ax: ev.ax, ay: ev.ay }, ev.p, rig);
+      case 'rifleFocus': this.charge.levelUp(ev.p, this.rigs.get(ev.p), 3, 'rifle'); break;
+      case 'snipe': this.snipe(ev); break;
+      case 'crit': this.popText(ev.x, ev.y + 0.5, 'CRIT', '#ffd27a', 0.75); this.sprite(ev.x, ev.y, 'star', '#ffffff', 1.5, 0.16, 1.5); break;
+      case 'deflect': {
+        // The staff knocks the shot back: a sharp spark flash, a ring, and sparks along its new path
+        const c = ev.perfect ? '#fff6d8' : ECHO_ORANGE;
+        this.sprite(ev.x, ev.y, 'star', '#ffffff', ev.perfect ? 1.8 : 1.1, 0.14, 1.4);
+        this.sprite(ev.x, ev.y, 'ring', c, ev.perfect ? 1.1 : 0.7, 0.22, 2.8);
+        this.burst(ev.x, ev.y, c, ev.perfect ? 24 : 14, ev.perfect ? 11 : 8, 0.26, 0.28, { grav: 6 });
+        this.slashMark(ev.x, ev.y, '#ffffff', ev.perfect ? 1.8 : 1.2, (Math.random() - 0.5) * 1.4, 0.12);
         break;
       }
+      case 'dashSlash': {
+        const p = ev.p, a = Math.atan2(ev.dy, ev.dx), col = ev.tier >= 3 ? '#fff1d6' : ECHO_ORANGE;
+        this.slashes.set(p, { x0: p.x, y0: p.y + 0.95, tier: ev.tier, drawn: false });
+        this.sprite(p.x, p.y + 0.9, 'ring', col, 0.6 + ev.tier * 0.15, 0.18, 2.4);
+        this.burst(p.x, p.y + 0.9, col, 10 + ev.tier * 6, 8 + ev.tier * 2, 0.3, 0.25, { dir: a + Math.PI, spread: 1 });
+        if (p.onGround) this.smoke(p.x, p.y + 0.15, '#9aa3ae', 3 + ev.tier * 2, 3 + ev.tier, 0.4, 0.4, { dir: a + Math.PI, spread: 0.7, op: 0.45 });
+        break;
+      }
+      case 'crescent': {
+        const p = ev.p;
+        this.sprite(ev.x, ev.y, 'star', '#ffffff', 1.5, 0.14, 1.4); this.sprite(ev.x, ev.y, 'ring', ECHO_ORANGE, 0.9, 0.2, 2.6);
+        this.burst(ev.x, ev.y, ECHO_ORANGE, 18, 9, 0.3, 0.3, { dir: p.facing > 0 ? 0 : Math.PI, spread: 1.2 });
+        break;
+      }
+
+      case 'pogo': {
+        const p = ev.p;
+        this.sprite(p.x, p.y, 'ring', '#fff1d6', 0.9, 0.2, 2.6); this.sprite(p.x, p.y + 0.9, 'ring', ECHO_ORANGE, 0.7, 0.25, 2.4);
+        this.burst(p.x, p.y - 0.1, ECHO_ORANGE, 16, 8, 0.28, 0.25, { dir: -Math.PI / 2, spread: 1.6 });
+        break;
+      }
+      case 'swing':
+        // Echo's whirling glaive moves: a spinning ring of wind around him as they start
+        if (ev.id === 'echo_spin' || ev.id === 'echo_rise') { this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#fff1d6', 1.3, 0.3, 1.8); this.burst(ev.p.x, ev.p.y + 1, '#e8eef5', 12, 6, 0.3, 0.35); }
+        if (ev.id === 'echo_rise') this.dust(ev.p.x, ev.p.y, 0.55);
+        if (ev.id === 'nova_k3' || ev.id === 'echo_charged' || ev.id === 'echo_b4') this.dust(ev.p.x, ev.p.y, 0.25, [ev.p.facing > 0 ? Math.PI : 0], { noRing: true });
+        break;
+      // Ground pound
+      case 'poundStart': {
+        // The air brakes: a burst of wind and a ring around him as he stops dead
+        const p = ev.p, c = CHARS[p.char].energy;
+        this.sprite(p.x, p.y + 1, 'ring', '#ffffff', 1.1, 0.25, 2.2); this.sprite(p.x, p.y + 1, 'ring', c, 0.7, 0.35, 2.8);
+        this.burst(p.x, p.y + 1, '#e8eef5', 14, 5, 0.3, 0.3);
+        this.poundT.set(p, 0);
+        break;
+      }
+      case 'poundLevel': this.charge.levelUp(ev.p, this.rigs.get(ev.p), ev.level, 'pound'); break;
+      case 'poundDrop': {
+        const p = ev.p, c = CHARS[p.char].energy;
+        this.sprite(p.x, p.y + 1, 'star', '#ffffff', 1 + 0.3 * ev.level, 0.12, 1.4);
+        this.burst(p.x, p.y + 1.4, c, 12 + 6 * ev.level, 6, 0.28, 0.25, { dir: Math.PI / 2, spread: 1.2 });
+        break;
+      }
+      case 'poundLand': this.poundLand(ev); break;
+      // Bosses
+      case 'bossSlam': {
+        const k = ev.big ? 1 : 0.6;
+        this.dust(ev.x, ev.y, 0.7 + 0.5 * k, [0, Math.PI], { noRing: true, spread: 0.3 });
+        this.groundRing(ev.x, ev.y, '#ffffff', 0.4, 2.5 + 2.5 * k, 0.35, 0.8); this.groundRing(ev.x, ev.y, HOSTILE, 0.3, 1.8 + 2 * k, 0.3, 0.9);
+        this.burst(ev.x, ev.y + 0.2, '#5d6674', 10 + 10 * k, 8, 0.32, 0.6, { dir: Math.PI / 2, spread: 2, grav: 18 });
+        this.sprite(ev.x, ev.y + 0.3, 'star', '#ffd2e4', 1.4 + k, 0.16, 1.4);
+        break;
+      }
+      case 'bossPhase': {
+        // The roar: rings of force burst off it, and it flares
+        const c = { x: ev.x, y: ev.y };
+        for (const [sz, life, col] of [[1.6, 0.35, '#ffffff'], [2.6, 0.5, HOSTILE], [3.6, 0.65, '#ffd2e4']]) this.sprite(c.x, c.y, 'ring', col, sz, life, 3.2);
+        this.sprite(c.x, c.y, 'star', '#ffffff', 3.2, 0.2, 1.5); this.fireball(c.x, c.y, '#ff5aa0', 2, 0.3);
+        this.burst(c.x, c.y, HOSTILE, 40, 12, 0.4, 0.5); this.burst(c.x, c.y, '#ffffff', 16, 8, 0.3, 0.3);
+        if (!ev.e.flier) this.dust(ev.e.x, ev.e.y, 1.2);
+        break;
+      }
+      case 'bossDazed': case 'bossCrash': {
+        const e = ev.e;
+        this.sprite(e.x, e.y + e.h + 0.3, 'star', '#fff4c2', 1.2, 0.5, 1.4); this.burst(e.x, e.y + e.h * 0.6, '#fff4c2', 16, 5, 0.3, 0.5);
+        if (ev.type === 'bossCrash') { this.dust(e.x, e.y, ev.parried ? 1.2 : 0.9); this.burst(e.x, e.y + 0.3, '#5d6674', 14, 8, 0.3, 0.6, { dir: Math.PI / 2, spread: 2, grav: 18 }); this.sprite(e.x, e.y + 0.4, 'star', '#ffffff', 2.2, 0.16, 1.5); }
+        break;
+      }
+      case 'bossMissiles': { const e = ev.e; this.burst(e.x - e.facing * 0.6, e.y + e.h + 0.2, HOSTILE, 14, 5, 0.3, 0.3, { dir: Math.PI / 2, spread: 1 }); this.smoke(e.x - e.facing * 0.6, e.y + e.h + 0.2, '#8e97a3', 5, 1.5, 0.5, 0.7, { dir: Math.PI / 2, spread: 1.2, op: 0.45 }); break; }
+      case 'bossLaser': { const e = ev.e; this.sprite(e.x + e.facing * e.w * 0.5, e.y + (e.flier ? 0.4 : e.h * 0.9), 'star', '#ffffff', 1.6, 0.16, 1.4); break; }
+      case 'bossDive': { const e = ev.e; this.sprite(e.x, e.y + 0.7, 'ring', HOSTILE, 2, 0.25, 2.4); break; }
+      case 'bossCall': { const e = ev.e; for (const d of [-4, 4]) { this.sprite(e.x + d, e.y + 1.5, 'ring', HOSTILE, 1.2, 0.35, 2.4); this.burst(e.x + d, e.y + 1.5, HOSTILE, 14, 5, 0.3, 0.35); } break; }
+      case 'bossDown': this.bossExplosion(ev); break;
       case 'shot':
         if (ev.level > 0 && ev.p) this.charge.release(ev, ev.p, this.rigs.get(ev.p));
         break;
       case 'downed': this.burst(ev.p.x, ev.p.y + 0.4, '#ffffff', 16, 5, 0.35, 0.5); break;
       case 'revived': this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#9cf5c8', 1.2, 0.4, 2.5); this.burst(ev.p.x, ev.p.y + 1, '#9cf5c8', 18, 5, 0.35, 0.5); break;
       case 'recall': case 'respawn': case 'join': if (ev.p) { this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#bfe9ff', 1.1, 0.35, 2.4); this.burst(ev.p.x, ev.p.y + 1, '#bfe9ff', 16, 4, 0.3, 0.5); } break;
-      case 'slam': this.burst(ev.e.x, ev.e.y + 0.2, HOSTILE, 24, 9, 0.5, 0.45, { dir: Math.PI / 2, spread: 3 }); break;
+      case 'slam': this.burst(ev.e.x, ev.e.y + 0.2, HOSTILE, 24, 9, 0.5, 0.45, { dir: Math.PI / 2, spread: 3 }); this.dust(ev.e.x, ev.e.y, 0.9); break;
       case 'telegraph': this.telegraphs.push({ e: ev.e, cat: ev.cat, ticks: ev.ticks, t: 0 }); break;
       case 'lock': this.sprite(ev.e.x + ev.e.facing * 1.3, ev.e.y + 1.35, 'star', '#ffffff', 0.9, 0.2, 1.3); break;
       case 'snareThrow': this.burst(ev.x, ev.y, ECHO_ORANGE, 6, 3, 0.25, 0.2); break;
@@ -359,18 +512,18 @@ export class FX {
       case 'chargeLevel': case 'burstLevel':
         if (ev.p.char === 'nova') this.charge.levelUp(ev.p, this.rigs.get(ev.p), ev.level, ev.type === 'burstLevel' ? 'burst' : 'shot');
         break;
-      case 'splash':
+      case 'splash': if (ev.r > 1.2) this.dust(ev.x, ev.y, 0.15 + 0.1 * (ev.level || 0), [0, Math.PI], { reach: ev.r * 0.6, noRing: true });
         this.sprite(ev.x, ev.y, 'ring', NOVA_GOLD, 0.35 + ev.r * 0.7, 0.2, 2.2);
         this.burst(ev.x, ev.y, NOVA_GOLD, 5 + Math.round(ev.r * 6), 3 + ev.r * 3, 0.28, 0.25, { grav: 5 });
         break;
       case 'rocketJump': this.rocketBlast(ev); break;
       case 'mortarShot': this.addLandingMark(ev.x, ev.y, ev.r, ev.ticks / 60); break;
-      case 'enemyBlast':
+      case 'enemyBlast': this.dust(ev.x, ev.y, 0.8, [0, Math.PI], { reach: 1.5 });
         this.sprite(ev.x, ev.y + 0.3, 'ring', HOSTILE, ev.r * 1.1, 0.3, 2.4); this.sprite(ev.x, ev.y + 0.3, 'star', '#ffd2e4', ev.r, 0.2, 1.3);
         this.burst(ev.x, ev.y + 0.3, HOSTILE, 26, 9, 0.45, 0.45, { grav: 7 }); this.burst(ev.x, ev.y + 0.3, '#ffffff', 8, 5, 0.3, 0.25);
         break;
       case 'chargeStart': this.burst(ev.e.x - ev.e.facing * 0.7, ev.e.y + 0.2, '#c9d3de', 12, 4, 0.4, 0.4, { dir: Math.PI / 2, spread: 1.6 }); break;
-      case 'chargeCrash':
+      case 'chargeCrash': this.dust(ev.e.x + ev.e.facing * 0.8, ev.e.y, 0.6, [ev.e.facing > 0 ? Math.PI : 0]);
         this.sprite(ev.e.x + ev.e.facing * 0.8, ev.e.y + 0.9, 'star', '#ffffff', 1.6, 0.25, 1.5);
         this.burst(ev.e.x + ev.e.facing * 0.8, ev.e.y + 0.9, '#e6e9f0', 20, 8, 0.4, 0.45, { grav: 10 });
         break;
@@ -379,6 +532,7 @@ export class FX {
         this.burst(ev.x, ev.y, '#fff1c9', 14, 7, 0.35, 0.3);
         break;
       case 'blast': {
+        this.dust(ev.x, ev.y, 0.35 + 0.15 * (ev.level || 1), [0, Math.PI], { reach: 1 + (ev.r || 1) * 0.6 });
         const c = ATTACH_LOOK.arc.tint;
         this.sprite(ev.x, ev.y, 'ring', c, ev.r * 0.9, 0.3, 2.4); this.sprite(ev.x, ev.y, 'star', '#fff1d0', ev.r * 0.8, 0.18, 1.3);
         this.burst(ev.x, ev.y, c, 22 + ev.level * 6, 7 + ev.r * 2, 0.45, 0.4, { grav: 6 }); this.burst(ev.x, ev.y, '#ffffff', 8, 4, 0.3, 0.25);
@@ -390,9 +544,244 @@ export class FX {
         this.burst(ev.x, ev.y, '#ffcf7a', ev.charged ? 22 : 14, ev.charged ? 14 : 11, 0.32, 0.16, { dir: Math.atan2(ev.ay, ev.ax), spread: ev.charged ? 0.9 : 0.7 });
         this.sprite(ev.x, ev.y, 'ring', NOVA_GOLD, ev.charged ? 0.8 : 0.5, 0.14, 2.2);
         break;
-      case 'carve': this.burst(ev.p.x + Math.sign(ev.p.vx) * 0.2, ev.p.y + 0.05, '#ffe2a8', 8, 4, 0.22, 0.25, { dir: ev.p.vx > 0 ? 0.5 : Math.PI - 0.5, spread: 0.9, grav: 8 }); break;
+      case 'carve': this.dust(ev.p.x, ev.p.y, 0.25, [ev.p.vx > 0 ? 0 : Math.PI], { noRing: true }); this.burst(ev.p.x + Math.sign(ev.p.vx) * 0.2, ev.p.y + 0.05, '#ffe2a8', 8, 4, 0.22, 0.25, { dir: ev.p.vx > 0 ? 0.5 : Math.PI - 0.5, spread: 0.9, grav: 8 }); break;
       case 'focusUp': this.sprite(ev.p.x, ev.p.y + ev.p.h + 0.35, 'star', NOVA_GOLD, 0.45 + ev.level * 0.08, 0.3, 1.3); break;
       case 'focusLost': this.burst(ev.p.x, ev.p.y + 1.2, '#9aa6b8', 8, 3, 0.25, 0.3); break;
+      // Nova: the hard-light Aegis and the Level 4 beam
+      case 'aegisOn': case 'aegisHit': case 'aegisOff': this.aegis.onEvent(ev); break;
+      case 'beamStart': {
+        this.beam.onEvent(ev);
+        const p = ev.p, rig = this.rigs.get(p);
+        this.charge.release({ level: 4, attach: ev.attach, perfect: true, ax: p.aimX, ay: p.aimY, beam: true }, p, rig);
+        this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, '#ffd27a', 1.4, 0.2);
+        break;
+      }
+      case 'beamEnd': {
+        this.beam.onEvent(ev);
+        const p = ev.p, c = { x: p.x + p.facing * 0.5, y: p.y + p.h * 0.62 };
+        this.smoke(c.x, c.y, '#8e97a3', 6, 1.6, 0.5, 0.7, { dir: Math.PI / 2, spread: 1.4, op: 0.4 });
+        this.burst(c.x, c.y, '#fff1c9', 10, 4, 0.2, 0.3);
+        break;
+      }
+    }
+  }
+
+  // Echo's sniper shot: a muzzle blast, a tracer to where it stopped with a vapour trail left along it, and at
+  // full focus a white rail with shock rings down its length
+  snipe(ev) {
+    const p = ev.p, rig = this.rigs.get(p), f = ev.f, full = ev.full;
+    const at = this.charge.muzzle(p, rig, new THREE.Vector3()), end = toWorld(ev.x1, ev.y1, 0.25, new THREE.Vector3());
+    this.charge.release({ level: 1 + Math.round(f * 2), rifle: true, mark: full, ax: ev.ax, ay: ev.ay }, p, rig);
+    const line = this.charge.line(full ? '#ffffff' : '#ffc070', 0.025 + 0.035 * f + (full ? 0.02 : 0));
+    this.charge.span(line, at, end); this.charge.flashes.push({ m: line, life: full ? 0.3 : 0.16, max: full ? 0.3 : 0.16, base: 1, dispose: true });
+    if (full) {
+      const glow = this.charge.line('#ff9a1f', 0.12); this.charge.span(glow, at, end); this.charge.flashes.push({ m: glow, life: 0.22, max: 0.22, base: 0.7, dispose: true });
+    }
+    const len = Math.hypot(ev.x1 - ev.x0, ev.y1 - ev.y0);
+    // Vapour trail: smoke left hanging along the shot
+    for (let d = 0.6; d < len; d += 0.55) this.smoke(ev.x0 + ev.ax * d, ev.y0 + ev.ay * d, '#c4ccd6', 1, 0.3, 0.26 + 0.12 * f, 0.5 + 0.3 * f, { op: 0.3 + 0.15 * f, grow: 1.9, grav: -0.3 });
+    // Recoil smoke out of the back of the rifle
+    this.smoke(ev.x0 - ev.ax * 0.6, ev.y0 - ev.ay * 0.6, '#9aa3ae', 3, 2, 0.4, 0.5, { dir: Math.atan2(-ev.ay, -ev.ax), spread: 0.8, op: 0.45 });
+    if (ev.wall) {
+      this.burst(ev.x1, ev.y1, '#ffe0b0', 14 + f * 10, 7, 0.22, 0.3, { dir: Math.atan2(-ev.ay, -ev.ax), spread: 2.2, grav: 10 });
+      this.smoke(ev.x1, ev.y1, '#8e97a3', 4, 1.5, 0.45, 0.6, { op: 0.45 });
+      this.sprite(ev.x1, ev.y1, 'star', '#fff1d6', 0.8 + f * 0.6, 0.12, 1.4);
+    }
+    if (full) {
+      const dir = planeDir(ev.x0, ev.ax, ev.ay, new THREE.Vector3()).normalize();
+      for (const u of [0.18, 0.45, 0.72]) if (u * len > 1) this.charge.shockRing(toWorld(ev.x0 + ev.ax * len * u, ev.y0 + ev.ay * len * u, 0.25, new THREE.Vector3()), dir, '#fff1d6', 0.3, 0.9, 0.28, 1.5);
+    }
+  }
+
+  // The pound lands: a flash, rings the size of the real blast, dust and debris thrown out both ways along the
+  // floor, and sparks (Nova's in hard-light gold, Echo's in orange with a cross of slash marks). All of it
+  // grows with the charge level.
+  poundLand(ev) {
+    const p = ev.p, x = ev.x, y = ev.y, L = ev.level, r = ev.r, c = CHARS[p.char].energy, k = 0.4 + 0.2 * L;
+    this.sprite(x, y + 0.4, 'star', '#ffffff', 1.8 + 0.6 * L, 0.16 + 0.02 * L, 1.5);
+    this.fireball(x, y + 0.3, p.char === 'nova' ? '#ffd27a' : '#ff9a1f', 0.9 + 0.35 * L, 0.2 + 0.04 * L);
+    this.groundRing(x, y, '#fff6e0', 0.3, r * 1.1, 0.32 + 0.05 * L, 0.95); this.groundRing(x, y, c, 0.2, r * 0.8, 0.28, 0.9);
+    if (L >= 2) this.groundRing(x, y, '#ffffff', 0.5, r * 1.35, 0.45, 0.7);
+    this.dust(x, y, 0.7 + 0.25 * L, [0, Math.PI], { noRing: true, spread: 0.3 });
+    this.smoke(x, y + 0.4, '#8e97a3', 4 + 3 * L, 1.2, 0.8 + 0.2 * L, 0.9 + 0.2 * L, { dir: Math.PI / 2, spread: 1.4, grav: -1, grow: 2.4, op: 0.45 });
+    for (const dir of [0.1, Math.PI - 0.1]) this.burst(x, y + 0.15, c, 10 + 6 * L, 9 + 3 * L, 0.3, 0.32, { dir, spread: 0.35, grav: 5 });
+    this.burst(x, y + 0.2, '#5d6674', 8 + 5 * L, 6 + 2 * L, 0.3, 0.6, { dir: Math.PI / 2, spread: 1.9, grav: 18 });
+    this.burst(x, y + 0.3, '#ffffff', 10 + 4 * L, 6 + 2 * L, 0.22, 0.25);
+    if (p.char === 'echo') { this.slashMark(x, y + 0.5, '#fff1d6', 1.6 + 0.4 * L, 0.6, 0.18); this.slashMark(x, y + 0.5, c, 1.6 + 0.4 * L, -0.6, 0.18); }
+    else this.sprite(x, y + 0.5, 'ring', '#fff1c9', 0.8 + 0.3 * L, 0.3, 3);
+    this.poundT.delete(p);
+  }
+
+  // While a pound hangs: energy drawn into the fist or glaive, slow ripples in the air around him and motes
+  // drifting past slowly (the slowdown). While it drops: streaks rushing past him, and just before it lands
+  // the air it pushes ahead lifts dust off the floor.
+  poundFx(world, view, dt) {
+    for (const p of world.players) {
+      if (p.state !== 'pound' || !p.pound) continue;
+      const rig = view.rigs.get(p); if (!rig || !rig.root.visible) continue;
+      const S = p.pound, c = CHARS[p.char].energy;
+      if (S.phase === 'hold') {
+        const at = this.charge.muzzle(p, rig, this.tmp2), n = 1 + S.level;
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * Math.PI * 2, r = 0.9 + Math.random() * 0.6, tv = planeDir(p.x, Math.cos(a) * r, Math.sin(a) * r, new THREE.Vector3());
+          this.charge.inward(at, tv.x, tv.y, tv.z, Math.random() < 0.3 ? '#ffffff' : c, 0.15, 0.24);
+        }
+        const t = (this.poundT.get(p) || 0) + dt; this.poundT.set(p, t);
+        if (t > 0.22 - 0.03 * S.level) {
+          this.poundT.set(p, 0);
+          this.sprite(p.x, p.y + 1, 'ring', S.level >= 3 ? '#ffffff' : c, 0.8, 0.55, 3.2);
+        }
+        if (Math.random() < 0.5) {   // slow motes drifting up past him
+          const w = toWorld(p.x + (Math.random() - 0.5) * 3, p.y - 0.5 + Math.random() * 3, (Math.random() - 0.5) * 1.5, new THREE.Vector3());
+          const P = this.particle(w, Math.random() < 0.5 ? '#ffffff' : c, 0.1, 0.6); P.v.set(0, 0.6, 0); P.drag = 1;
+        }
+        this.dustSwirl(p.x, p.y, 0.3 + 0.2 * S.level);   // close over the floor, the charge stirs it
+      } else if (S.phase === 'drop') {
+        for (let i = 0; i < 3; i++) this.burst(p.x + (Math.random() - 0.5) * 1.2, p.y + Math.random() * 2, '#ffffff', 1, 26, 0.12, 0.08, { dir: Math.PI / 2, spread: 0.05 });
+        if (this.floorUnder(p.x, p.y, 1.6) !== null && Math.random() < 0.7) this.dust(p.x, p.y, 0.25, [0, Math.PI], { reach: 1.6, noRing: true, op: 0.35 });
+      }
+    }
+  }
+
+  // Dust and grit from the characters in general: stirred up around the feet while charging on the ground
+  // (a charged dash, a weapon charge), blown off the floor by the boosters and under the beam, kicked back by
+  // a sprint's footfalls and by skids, and trailed by a charging Charger
+  groundFx(world, view, dt) {
+    for (const p of world.players) {
+      if (p.state === 'dead' || p.state === 'downed') continue;
+      const rig = view.rigs.get(p); if (!rig || !rig.root.visible) continue;
+      if (p.onGround) {
+        const dl = p.state === 'dashCharge' ? (p.dashChargeT >= DASH_CHARGE.charge[2] ? 3 : p.dashChargeT >= DASH_CHARGE.charge[1] ? 2 : p.dashChargeT >= DASH_CHARGE.charge[0] ? 1 : 0.3) : 0;
+        const cl = p.char === 'nova' && SETTINGS.novaKit === 'marksman' && p.chargeT > MARKSMAN.charge[1] ? (p.chargeT >= MARKSMAN.beam.at ? 3 : p.chargeT >= MARKSMAN.charge[2] ? 2 : 1) : 0;
+        const k = Math.max(dl, cl);
+        if (k && Math.random() < 0.25 + 0.2 * k) this.dustSwirl(p.x, p.y, 0.25 * k);
+        // Sprint footfalls and skids
+        const pv = this.prevVx.get(p) ?? p.vx; this.prevVx.set(p, p.vx);
+        if (p.state === 'normal' && Math.abs(pv) > 6 && Math.sign(p.vx) !== Math.sign(pv) && Math.abs(p.vx) > 0.5) this.dust(p.x, p.y, 0.35, [pv > 0 ? 0 : Math.PI], { noRing: true });
+        if (p.char === 'echo' && p.state === 'normal' && Math.abs(p.vx) > 7.5) {
+          const t = (this.stepT.get(p) || 0) + dt; this.stepT.set(p, t);
+          if (t > 0.19) { this.stepT.set(p, 0); this.smoke(p.x - Math.sign(p.vx) * 0.2, p.y + 0.08, DUST, 1, 1.4, 0.3, 0.4, { dir: p.vx > 0 ? Math.PI - 0.4 : 0.4, spread: 0.5, grav: -0.4, op: 0.4 }); }
+        }
+      } else if (p.thrusting && Math.random() < 0.6) this.dust(p.x, p.y, 0.25, [0, Math.PI], { reach: 3.2, noRing: true, op: 0.35 });   // boosters over the floor
+      // Under the beam: wherever it passes low over the floor, dust is blown along it
+      if (p.state === 'beam' && p.beam && p.beam.segs) {
+        for (const g of p.beam.segs) {
+          const len = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
+          for (let d = 0.5; d < len; d += 1.6) {
+            if (Math.random() > 0.22) continue;
+            const x = g.x0 + (g.x1 - g.x0) * d / len, y = g.y0 + (g.y1 - g.y0) * d / len, fl = this.floorUnder(x, y, 1.6);
+            if (fl === null) continue;
+            const dir = g.x1 >= g.x0 ? 0.35 : Math.PI - 0.35;
+            this.smoke(x, fl + 0.08, DUST, 1, 2.5 + 2 * (1.6 - (y - fl)), 0.28, 0.45, { dir, spread: 0.5, grav: -0.5, grow: 2, op: 0.3 });
+          }
+        }
+        if (p.onGround && Math.random() < 0.5) this.dust(p.x, p.y, 0.2, [p.beam.dx > 0 ? Math.PI : 0], { noRing: true, op: 0.35 });
+      }
+    }
+    for (const e of world.enemies) {
+      if (!e.dead && e.type === 'charger' && e.state === 'charge' && e.onGround && Math.random() < 0.6) this.dust(e.x - e.facing * 0.6, e.y, 0.25, [e.facing > 0 ? Math.PI : 0], { noRing: true });
+    }
+  }
+
+  // A boss falls: a string of explosions across its body over a second or so, then one last blast
+  bossExplosion(ev) {
+    const e = ev.e; this.booms = this.booms || [];
+    // Offsets are relative to the boss as it is when each goes off (a downed gunship is falling)
+    for (let i = 0; i < 9; i++) this.booms.push({ t: i * 0.11 + Math.random() * 0.05, e, ox: (Math.random() - 0.5) * e.w, oy: Math.random() * e.h, big: false });
+    this.booms.push({ t: 1.15, e, ox: 0, oy: e.h * 0.5, big: true });
+  }
+  updateBooms(dt) {
+    if (!this.booms || !this.booms.length) return;
+    for (const b of this.booms) {
+      b.t -= dt; if (b.t > 0) continue;
+      b.done = true; b.x = b.e.x + b.ox; b.y = b.e.y + b.oy; b.ground = this.floorUnder(b.e.x, b.e.y, 1) !== null ? b.e.y : null;
+      if (!b.big) { this.fireball(b.x, b.y, '#ff5aa0', 0.9, 0.22); this.burst(b.x, b.y, HOSTILE, 14, 7, 0.3, 0.35, { grav: 6 }); this.smoke(b.x, b.y, '#6d7480', 3, 1.4, 0.6, 0.8, { op: 0.5 }); continue; }
+      this.fireball(b.x, b.y, '#ffd2e4', 3, 0.4); this.sprite(b.x, b.y, 'star', '#ffffff', 5, 0.25, 1.5);
+      for (const [sz, life] of [[2.5, 0.4], [4, 0.6]]) this.sprite(b.x, b.y, 'ring', '#ffffff', sz, life, 3);
+      this.burst(b.x, b.y, HOSTILE, 60, 14, 0.45, 0.7, { grav: 8 }); this.burst(b.x, b.y, '#ffffff', 30, 10, 0.3, 0.4);
+      this.burst(b.x, b.y, '#5d6674', 24, 10, 0.34, 0.9, { grav: 20 });
+      this.smoke(b.x, b.y, '#6d7480', 16, 2.5, 1.1, 1.4, { op: 0.55, grow: 2.6, grav: -0.8 });
+      if (b.ground !== null) this.dust(b.x, b.ground, 1.4);
+    }
+    this.booms = this.booms.filter(b => !b.done);
+  }
+
+  // Boss lasers: a thin flickering line where it will fire during the windup, then a thick beam with a
+  // white-hot core, sparks where it ends and dust kicked off the floor under a low one
+  syncBossLasers(world) {
+    this.bossBeams = this.bossBeams || new Map();
+    const seen = new Set();
+    for (const e of world.enemies) {
+      const A = e.atk;
+      if (!e.boss || e.dead || !A || !A.span || !(e.state === 'laser' || (e.state === 'windup' && (A.kind === 'laser' || A.kind === 'sweep')))) continue;
+      seen.add(e);
+      let B = this.bossBeams.get(e);
+      if (!B) {
+        const mk = (r, col, op, blend) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 1, 10, 1, true), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, depthWrite: false, blending: blend, toneMapped: false })); m.renderOrder = 4; this.scene.add(m); return m; };
+        B = { core: mk(0.07, new THREE.Color('#ffffff').multiplyScalar(2.5), 1, THREE.NormalBlending), glow: mk(0.26, new THREE.Color(HOSTILE).multiplyScalar(2), 0.55, THREE.NormalBlending),
+          feed: mk(0.1, new THREE.Color(HOSTILE).multiplyScalar(2.2), 0.7, THREE.NormalBlending), a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
+        this.bossBeams.set(e, B);
+      }
+      const L = A.span, live = e.state === 'laser';
+      toWorld(L.x0, L.y, 0.2, B.a); toWorld(L.x1, L.y, 0.2, B.b);
+      this.charge.span(B.core, B.a, B.b); this.charge.span(B.glow, B.a, B.b);
+      // A flier fires down from its chin cannon to where the laser starts, so the two read as one beam
+      if (e.flier) { toWorld(e.x + e.facing * 1.3, e.y + 0.35, 0.2, B.c); this.charge.span(B.feed, B.c, B.a); B.feed.material.opacity = live ? 0.75 : 0.25; B.feed.scale.x = B.feed.scale.z = live ? 1 : 0.35; }
+      else B.feed.visible = false;
+      if (live) {
+        const f = 0.85 + Math.random() * 0.3;
+        B.core.scale.x = B.core.scale.z = f; B.glow.scale.x = B.glow.scale.z = f * (1 + 0.1 * Math.sin(performance.now() * 0.05));
+        B.core.material.opacity = 1; B.glow.material.opacity = 0.6;
+        this.burst(L.x1, L.y, Math.random() < 0.5 ? '#ffffff' : HOSTILE, 3, 8, 0.2, 0.2, { dir: L.x1 > L.x0 ? Math.PI : 0, spread: 2.2, grav: 8 });
+        if (L.y0 - (this.floorUnder(L.x0, L.y0, 3) ?? -99) < 1.2) for (let i = 0; i < 2; i++) { const x = L.x0 + (L.x1 - L.x0) * Math.random(); const g = this.floorUnder(x, L.y0, 1.3); if (g !== null) this.smoke(x, g + 0.1, DUST, 1, 2.5, 0.35, 0.4, { dir: L.x1 > L.x0 ? 0.4 : Math.PI - 0.4, spread: 0.6, op: 0.4 }); }
+      } else {
+        const on = Math.random() < 0.75;
+        B.core.scale.x = B.core.scale.z = 0.25; B.glow.scale.x = B.glow.scale.z = 0.12;
+        B.core.material.opacity = on ? 0.55 : 0.1; B.glow.material.opacity = on ? 0.5 : 0.1;
+      }
+    }
+    for (const [e, B] of this.bossBeams) if (!seen.has(e)) { B.core.visible = B.glow.visible = B.feed.visible = false; if (e.dead || !world.enemies.includes(e)) { for (const m of [B.core, B.glow, B.feed]) { this.scene.remove(m); m.geometry.dispose(); m.material.dispose(); } this.bossBeams.delete(e); } }
+  }
+
+  // A badly damaged boss smokes and throws sparks
+  bossDamage(world) {
+    for (const e of world.enemies) {
+      if (!e.boss || e.dead || e.hp > e.maxHp * 0.6) continue;
+      const k = 1 - e.hp / (e.maxHp * 0.6);
+      if (Math.random() < 0.15 + 0.4 * k) this.smoke(e.x + (Math.random() - 0.5) * e.w * 0.8, e.y + e.h * (0.4 + Math.random() * 0.5), '#5d6674', 1, 0.8, 0.5 + 0.3 * k, 0.9, { dir: Math.PI / 2, spread: 0.8, grav: -1, op: 0.45 });
+      if (Math.random() < 0.06 + 0.2 * k) this.burst(e.x + (Math.random() - 0.5) * e.w, e.y + e.h * Math.random(), Math.random() < 0.5 ? '#ffffff' : '#ffd2e4', 4, 5, 0.14, 0.25, { grav: 12 });
+    }
+  }
+
+  // Echo's Dash Slash: as the lunge ends, a bright cut line along his whole path flashes and fades
+  updateSlashes(world) {
+    for (const [p, S] of this.slashes) {
+      const done = p.state !== 'dashslash' || p.st >= DASH_SLASH.ticks;
+      if (!done || S.drawn) { if (p.state !== 'dashslash' && S.drawn) this.slashes.delete(p); continue; }
+      S.drawn = true;
+      const x1 = p.x, y1 = p.y + 0.95, len = Math.hypot(x1 - S.x0, y1 - S.y0);
+      if (len < 1) continue;
+      const a = toWorld(S.x0, S.y0, 0.3, new THREE.Vector3()), b = toWorld(x1, y1, 0.3, new THREE.Vector3());
+      const core = this.charge.line('#ffffff', 0.03 + S.tier * 0.012), glow = this.charge.line(ECHO_ORANGE, 0.09 + S.tier * 0.03);
+      this.charge.span(core, a, b); this.charge.span(glow, a, b);
+      this.charge.flashes.push({ m: core, life: 0.26, max: 0.26, base: 1, dispose: true }, { m: glow, life: 0.3, max: 0.3, base: 0.75, dispose: true });
+      for (let d = 0; d < len; d += 0.4) {
+        const u = d / len; this.burst(S.x0 + (x1 - S.x0) * u, S.y0 + (y1 - S.y0) * u, Math.random() < 0.4 ? '#ffffff' : ECHO_ORANGE, 1, 2, 0.2, 0.3);
+      }
+    }
+  }
+
+  // Slides: Echo's hand drags sparks off the floor and his boots kick up dust; Nova's skates spray sparks
+  slideFx(world, view) {
+    for (const p of world.players) {
+      if (p.state !== 'slide' || !p.onGround) continue;
+      const rig = view.rigs.get(p); if (!rig || !rig.root.visible) continue;
+      const back = p.vx > 0 ? Math.PI - 0.35 : 0.35, sp = Math.min(1, Math.abs(p.vx) / 10);
+      if (p.char === 'echo') {
+        const hand = rig.armF.end.getWorldPosition(this.tmp2);
+        if (Math.random() < 0.7) { const P = this.particle(hand, Math.random() < 0.5 ? '#ffe2a8' : ECHO_ORANGE, 0.14, 0.2); planeDir(p.x, Math.cos(back) * 5 * sp, Math.sin(back) * 5 * sp + 1.5, P.v); P.grav = 10; P.drag = 0.9; }
+      } else if (Math.random() < 0.8) this.burst(p.x + Math.sign(p.vx) * 0.3, p.y + 0.04, '#ffe2a8', 2, 4 * sp + 1, 0.15, 0.22, { dir: back, spread: 0.5, grav: 8 });
+      if (Math.random() < 0.5) this.smoke(p.x - Math.sign(p.vx) * 0.2, p.y + 0.1, '#a3abb5', 1, 1.2, 0.35, 0.45, { dir: back, spread: 0.6, op: 0.4 });
     }
   }
 
@@ -447,6 +836,17 @@ export class FX {
           const c = col.clone().lerp(new THREE.Color('#fff6e0'), [0, 0.05, 0.2, 0.35][L]).multiplyScalar([1, 1, 1.3, 2.2][L]);
           this.ghosts.spawn(rig, c, [0.16, 0.3, 0.45, 0.62][L], [0.12, 0.2, 0.28, 0.4][L]);
         }
+      } else if (p.state === 'dashslash' && dt >= 2) {
+        // Dash Slash: a dense line of bright afterimages, stronger with the tier
+        this.ghostTick.set(p, world.tick);
+        const T = p.slash ? p.slash.tier : 1;
+        this.ghosts.spawn(rig, col.clone().lerp(new THREE.Color('#fff6e0'), 0.12 * T).multiplyScalar(1 + 0.45 * T), 0.26 + 0.08 * T, 0.2 + 0.05 * T);
+      } else if (p.state === 'pound' && p.pound && p.pound.phase === 'drop' && dt >= 2) {
+        this.ghostTick.set(p, world.tick);
+        this.ghosts.spawn(rig, col.clone().lerp(new THREE.Color('#fff6e0'), 0.1 * p.pound.level).multiplyScalar(1.2 + 0.3 * p.pound.level), 0.26 + 0.06 * p.pound.level, 0.16 + 0.03 * p.pound.level);
+      } else if (p.state === 'attack' && p.move && ['echo_spin', 'echo_rise', 'echo_b4', 'echo_charged'].includes(p.moveId) && p.st >= p.move.su && p.st < p.move.su + p.move.ac && dt >= 3) {
+        this.ghostTick.set(p, world.tick);
+        this.ghosts.spawn(rig, col, 0.2, 0.14);
       } else if (p.rocketT > 0 && p.vy > 8 && (p.rocketPow || 0) > 0.55 && dt >= 3) {
         this.ghostTick.set(p, world.tick);
         this.ghosts.spawn(rig, new THREE.Color('#ffb547').multiplyScalar(1 + p.rocketPow), 0.2 + 0.25 * p.rocketPow, 0.3);
@@ -491,7 +891,17 @@ export class FX {
     this.updateParticles(dt);
     this.updateSprites(dt);
     this.updateTelegraphs(world);
-    this.updateArcs(dt, world);
+    this.trails.update(dt, world, view.rigs);
+    this.aegis.update(dt, world);
+    this.beam.update(dt, world, view);
+    this.updateSlashes(world);
+    this.slideFx(world, view);
+    this.poundFx(world, view, dt);
+    this.groundFx(world, view, dt);
+    this.syncBossLasers(world);
+    this.bossDamage(world);
+    this.updateBooms(dt);
+    this.updateTexts(dt);
     this.syncProjectiles(world, view.alpha);
     this.syncBarriers(world);
     this.syncLasers(world);
@@ -541,7 +951,7 @@ export class FX {
     for (const it of this.sprites) {
       if (it.life <= 0) { it.s.visible = false; continue; }
       it.life -= dt; const k = 1 - Math.max(0, it.life) / it.max;
-      const sc = it.base * (1 + (it.grow - 1) * k); it.s.scale.set(sc, sc, 1); it.s.material.opacity = 1 - k;
+      const sc = it.base * (1 + (it.grow - 1) * k); it.s.scale.set(sc * (it.sx || 1), sc, 1); it.s.material.opacity = 1 - k;
     }
   }
   updateTelegraphs(world) {
@@ -550,7 +960,7 @@ export class FX {
       const eye = { x: e.x + e.facing * e.w * 0.35, y: e.y + e.h * 0.8 };
       const pops = tg.cat === 'standard' ? [0, tg.ticks - 7] : tg.cat === 'heavy' ? [0, 7, tg.ticks - 7] : [];
       if (pops.includes(tg.t - 1)) this.sprite(eye.x, eye.y, 'star', tg.cat === 'heavy' ? '#fff3cf' : '#ffffff', tg.cat === 'heavy' ? 1.5 : 1.0, 0.2, 1.2, 0.8);
-      if (tg.cat === 'unblockable' && tg.t === 1 && e.type !== 'mortar') this.addMarker(e, tg.ticks);   // mortars mark the landing spot instead
+      if (tg.cat === 'unblockable' && tg.t === 1 && e.type !== 'mortar' && !e.flier) this.addMarker(e, tg.ticks);   // mortars and fliers mark their own targets
     }
     this.telegraphs = this.telegraphs.filter(tg => tg.t < tg.ticks && !tg.e.dead);
     for (const mk of this.markers) {
@@ -589,35 +999,6 @@ export class FX {
     mesh.rotation.y = Math.atan2(-f.tz, f.tx);
     this.scene.add(mesh); this.markers.push({ e, mesh, t: 0, ticks });
   }
-  updateArcs(dt, world) {
-    for (const p of world.players) {
-      if (p.state === 'attack' && p.move && p.st === p.move.su && p.lastArc !== p.instance) {
-        p.lastArc = p.instance; this.spawnArc(p);
-      }
-    }
-    for (const a of this.arcs) {
-      a.life -= dt; const k = Math.max(0, a.life / a.max);
-      a.mesh.material.opacity = k * 0.9; a.mesh.scale.setScalar(1 + (1 - k) * 0.25);
-      if (a.life <= 0) { this.scene.remove(a.mesh); a.dead = true; }
-    }
-    this.arcs = this.arcs.filter(a => !a.dead);
-  }
-  spawnArc(p) {
-    const m = p.move, big = m.staff || m.heavy;
-    const r0 = big ? 0.9 : 0.55, r1 = big ? 1.6 : 1.05;
-    const up = m.launcher ? 1 : 0;
-    const geo = new THREE.RingGeometry(r0, r1, 24, 1, up ? -0.3 : -0.9, up ? 2.2 : 1.9);
-    const mat = new THREE.MeshBasicMaterial({ color: CHARS[p.char].energy, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    const f = pathFrame(p.x);
-    toWorld(p.x + p.facing * 0.3, p.y + m.box.y, 0.35, mesh.position);
-    mesh.rotation.y = Math.atan2(-f.tz, f.tx);
-    mesh.scale.x = p.facing;
-    mesh.rotateY(0);
-    if (p.facing < 0) { mesh.rotation.y += Math.PI; mesh.scale.x = 1; }
-    this.scene.add(mesh); this.arcs.push({ mesh, life: 0.14, max: 0.14 });
-  }
-
   // ---- Projectiles ----
   buildProjectileTemplates() {
     const em = (c, i = 3) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: i, roughness: 0.3 });
@@ -641,6 +1022,17 @@ export class FX {
       rifle: () => new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.5, 3, 6), em(echo, 5)),
       markShot: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.8, 3, 8), em('#ffe0b0', 6))); g.add(new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 6, 16), em(echo, 5))); return g; },
       mortar: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.28, 14, 10), em('#2b2f3a', 0.2))); g.add(new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.05, 6, 18), em(HOSTILE, 4))); return g; },
+      // Echo's crescent wave: a curved blade of energy, white-hot along its leading edge (it bulges forward)
+      wave: () => {
+        const g = new THREE.Group(), glow = (c, k, op) => new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), transparent: true, opacity: op, side: THREE.DoubleSide, depthWrite: false, toneMapped: false });
+        const outer = new THREE.RingGeometry(0.5, 0.86, 28, 1, Math.PI / 2 - 1.15, 2.3); outer.translate(0, -0.72, 0);
+        const edge = new THREE.RingGeometry(0.74, 0.86, 28, 1, Math.PI / 2 - 1.05, 2.1); edge.translate(0, -0.72, 0);
+        g.add(new THREE.Mesh(outer, glow(echo, 2.2, 0.8))); g.add(new THREE.Mesh(edge, glow('#fff6e0', 3, 1))); return g;
+      },
+      // A boss missile: a magenta rocket with a white-hot nose (it trails smoke)
+      missile: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.42, 3, 8), em(HOSTILE, 3))); const n = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), em('#ffffff', 4)); n.position.y = 0.28; g.add(n); return g; },
+      // A shot Echo's staff knocked back: now his, orange with a white-hot core
+      deflected: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.24), em(echo, 4))); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), em('#ffffff', 4))); return g; },
     };
     // Each look is built once; projectiles are clones that share its geometry and materials
     const build = this.tmpl; this.tmpl = {}; this.protos = {};
@@ -652,7 +1044,9 @@ export class FX {
     for (const pr of world.projectiles) {
       seen.add(pr);
       let m = this.projMeshes.get(pr);
-      if (!m) { m = (this.tmpl[pr.kind] || this.tmpl.std)(); this.scene.add(m); this.projMeshes.set(pr, m); }
+      // A deflected enemy shot changes hands: swap its look for Echo's
+      if (m && pr.deflected && !m.userData.defl) { this.scene.remove(m); m = null; }
+      if (!m) { m = (pr.deflected ? this.tmpl.deflected : this.tmpl[pr.kind] || this.tmpl.std)(); m.userData.defl = !!pr.deflected; this.scene.add(m); this.projMeshes.set(pr, m); }
       const x = pr.px + (pr.x - pr.px) * alpha, y = pr.py + (pr.y - pr.py) * alpha;
       toWorld(x, y, 0.1, m.position);
       const d = planeDir(x, pr.vx, pr.vy, this.tmp).normalize();
@@ -660,7 +1054,9 @@ export class FX {
       else m.quaternion.setFromUnitVectors(Y, d);
       if (pr.amplified) m.scale.setScalar(1.35);
       if (this.charge.wantsTrail(pr)) this.charge.trail(pr, m.position);
-      if (Math.random() < (pr.kind === 'pellet' ? 0.25 : 0.6)) this.burst(x, y, trailColor(pr), 1, 0.6, pr.kind === 'rail' ? 0.5 : 0.22, 0.18);
+      if (pr.kind === 'missile' && Math.random() < 0.8) this.smoke(x - pr.vx * 0.012, y - pr.vy * 0.012, '#8e97a3', 1, 0.4, 0.35, 0.5, { op: 0.45, grav: -0.3 });
+      if (pr.kind === 'wave') { for (let i = 0; i < 3; i++) this.burst(x - Math.sign(pr.vx) * 0.2, y + (Math.random() - 0.5) * 1.3, Math.random() < 0.4 ? '#ffffff' : ECHO_ORANGE, 1, 1.5, 0.24, 0.2); }
+      else if (Math.random() < (pr.kind === 'pellet' ? 0.25 : 0.6)) this.burst(x, y, trailColor(pr), 1, 0.6, pr.kind === 'rail' ? 0.5 : 0.22, 0.18);
     }
     for (const [pr, m] of this.projMeshes) if (!seen.has(pr)) { this.scene.remove(m); this.projMeshes.delete(pr); }
     this.charge.orphanUnseen(seen);
@@ -839,32 +1235,47 @@ export class FX {
 }
 
 const NOVA_GOLD = CHARS.nova.energy;
+const DUST = '#b9c1cb';
 const ECHO_ORANGE = CHARS.echo.energy;
 const VEIL_PALE = '#dcecff';
 const SPIN = new Set(['std', 'heavy', 'snare', 'shell', 'prism', 'mortar']);
 const KIND_TINT = { dart: ATTACH_LOOK.volley.tint, shell: ATTACH_LOOK.arc.tint, prism: ATTACH_LOOK.prism.tint, shard: ATTACH_LOOK.prism.tint, pellet: '#ffcf7a' };
 function trailColor(pr) {
+  if (pr.deflected || pr.kind === 'wave') return ECHO_ORANGE;
   if (pr.team === 'e') return HOSTILE;
   if (pr.kind === 'bolt' || pr.kind === 'tracer' || pr.kind === 'rifle' || pr.kind === 'markShot') return ECHO_ORANGE;
   return KIND_TINT[pr.kind] || NOVA_GOLD;
 }
 
-// Comic "impact frame" (Q-C test): ink shadows, paper highlights, warm accents survive.
+// Comic "impact frame" (Q-C test), phased: `invert` is the opening negative flash (white-hot at the impact),
+// then comic ink (halftone mids, solid shadows, paper lights, saturated brights kept) with speed lines that
+// focus on the impact point; `zoom` pulls the frame toward the impact and `split` separates the colours
+// along the radius; `amount` blends it all back out.
 export const InkShader = {
-  uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, res: { value: new THREE.Vector2(1280, 720) } },
+  uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, res: { value: new THREE.Vector2(1280, 720) }, center: { value: new THREE.Vector2(0.5, 0.5) },
+    invert: { value: 0 }, lines: { value: 1 }, zoom: { value: 0 }, split: { value: 0 }, seed: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float amount; uniform vec2 res; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float amount, invert, lines, zoom, split, seed; uniform vec2 res, center; varying vec2 vUv;
+    float hash(float n) { return fract(sin(n) * 43758.5453); }
     void main(){
-      vec4 c = texture2D(tDiffuse, vUv);
-      if (amount <= 0.0) { gl_FragColor = c; return; }
-      float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      if (amount <= 0.0) { gl_FragColor = texture2D(tDiffuse, vUv); return; }
+      vec2 asp = vec2(res.x / res.y, 1.0), d = vUv - center, uv = center + d * (1.0 - zoom);
+      vec2 dir = normalize(d * asp + vec2(1e-5)), off = dir / asp * split;
+      vec3 c = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
       vec2 px = vUv * res / 5.0; float dots = length(fract(px) - 0.5);
       float ink = l < 0.28 ? 0.0 : (l < 0.55 ? step(0.32, dots) : 1.0);
       vec3 paper = vec3(1.0, 0.97, 0.9), inkc = vec3(0.06, 0.05, 0.08);
       vec3 comic = mix(inkc, paper, ink);
       float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
-      comic = mix(comic, c.rgb * 1.2, smoothstep(0.35, 0.6, sat) * step(0.5, l));
-      gl_FragColor = vec4(mix(c.rgb, comic, amount), 1.0);
+      comic = mix(comic, c * 1.2, smoothstep(0.35, 0.6, sat) * step(0.5, l));
+      // Speed lines: thin ink wedges radiating from the impact, clear close to it
+      float r = length(d * asp), a = (atan(dir.y, dir.x) + 3.14159) / 6.28318, n = 110.0;
+      float cell = floor(a * n), w = hash(cell * 1.37 + seed), band = fract(a * n);
+      float line = step(0.5, w) * step(abs(band - 0.5), 0.05 + 0.15 * hash(cell + seed * 3.1)) * smoothstep(0.16 + 0.22 * w, 0.42 + 0.3 * w, r);
+      comic = mix(comic, inkc, line * lines);
+      vec3 neg = mix(vec3(1.0) - c, vec3(1.0, 0.98, 0.92), smoothstep(0.22, 0.0, r));
+      gl_FragColor = vec4(mix(c, mix(comic, neg, invert), amount), 1.0);
     }`,
 };

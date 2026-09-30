@@ -3,7 +3,7 @@
 import {
   DT, GRAVITY, FALL_MULT, RISE_CUT_MULT, MAX_FALL, FAST_FALL, HIGH_VEL,
   COYOTE, JUMP_BUFFER, ACTION_BUFFER, PARRY_BUFFER, PARRY, CHARS, MOVES, VB, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, SETTINGS,
-  WALL, DASH_CHARGE, LOCK,
+  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND,
 } from './config.js';
 import { moveBody, hasHeadroom } from './level.js';
 
@@ -38,7 +38,8 @@ export function createPlayer(slot, device, charId, x, y) {
     snares: HUNTER.snareCharges, snareRecharge: 0, leash: null,
     scarfMode: 'tether', modeCd: 0, veiled: false, veilCharge: 0, veilBreakT: 0, ambushT: 0, targetedBy: 0,
     attachment: 'lance', focus: 0, focusT: 0, burstCd: 0, burstT: 0, airBurst: true, recoilT: 0, carveT: 0,
-    fuel: MARKSMAN.boost.fuel, thrusting: false, rockets: 0, rocketT: 0, rocketPow: 0, rocketFlip: false,
+    fuel: MARKSMAN.boost.fuel, thrusting: false, rockets: 0, rocketT: 0, rocketPow: 0,
+    aegis: null, aegisCd: 0, overcharge: 0, overT: 0, beam: null, slash: null, pound: null,
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
     lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0,
@@ -56,13 +57,14 @@ export function setCharacter(p, charId) {
   p.veiled = false; p.veilCharge = 0; p.veilBreakT = 0; p.ambushT = 0; p.targetedBy = 0;
   p.focus = 0; p.focusT = 0; p.burstCd = 0; p.burstT = 0; p.recoilT = 0;
   p.fuel = MARKSMAN.boost.fuel; p.thrusting = false; p.rockets = 0; p.rocketT = 0;
-  p.rifleT = 0; p.rifleCd = 0; p.dashChargeT = 0;
+  p.rifleT = 0; p.rifleCd = 0; p.dashChargeT = 0; p.overcharge = 0; p.overT = 0; p.beam = null; p.aegis = null;
 }
 
 export function chest(p) { return { x: p.x, y: p.y + p.h * 0.62 }; }
 
 // Which Velocity Break tier is available right now (0 = none)?
 export function vbTier(p) {
+  if (p.state === 'pound') return 0;   // the pound's drop is fast, but it is not a Velocity Break
   if (p.boostT > 0 || p.launchedT > 0) return 3;
   if (p.dash && p.dash.level >= 2 && (p.state === 'dash' || p.postDash <= 6)) return p.dash.level;
   if (p.zipArriveT > 0) return 2;
@@ -110,7 +112,10 @@ export function updatePlayer(p, cmd, world) {
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
     'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'burstCd', 'recoilT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote']) if (p[k] > 0) p[k]--;
+    'rifleCd', 'wallCoyote', 'aegisCd']) if (p[k] > 0) p[k]--;
+  // Aegis time, and Overcharge draining once it has not grown for a while
+  if (p.aegis && --p.aegis.t <= 0) world.endAegis(p, 'expire');
+  if (p.overcharge > 0) { if (p.overT > 0) p.overT--; else p.overcharge = Math.max(0, p.overcharge - AEGIS.over.drain); }
   p.postDash = Math.min(99, p.postDash + 1);
   if (p.char === 'echo') tickEcho(p, world, cmd);
   else tickFocus(p, world);
@@ -125,6 +130,8 @@ export function updatePlayer(p, cmd, world) {
   switch (p.state) {
     case 'normal': stateNormal(p, cmd, world); break;
     case 'dashCharge': stateDashCharge(p, cmd, world); break;
+    case 'beam': stateBeam(p, cmd, world); break;
+    case 'dashslash': stateDashSlash(p, cmd, world); break;
     case 'dash': stateDash(p, cmd, world); break;
     case 'slide': stateSlide(p, cmd, world); break;
     case 'vb': stateVB(p, cmd, world); break;
@@ -135,6 +142,7 @@ export function updatePlayer(p, cmd, world) {
     case 'lash': stateLash(p, cmd, world); break;
     case 'zip': stateZip(p, cmd, world); break;
     case 'dive': stateDive(p, cmd, world); break;
+    case 'pound': statePound(p, cmd, world); break;
   }
   handleFire(p, cmd, world);
   // Boosters only run in the normal state; anything else (dash, hitstun, a burst...) cuts them
@@ -146,7 +154,7 @@ export function updatePlayer(p, cmd, world) {
   moveBody(p, DT);
   if (p.onGround) {
     p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airBurst = true;
-    p.rockets = 0; p.rocketT = 0; p.rocketFlip = false; p.wallCoyote = 0; if (p.fuel < MARKSMAN.boost.fuel) p.fuel = Math.min(MARKSMAN.boost.fuel, p.fuel + MARKSMAN.boost.refill);
+    p.rockets = 0; p.rocketT = 0; p.wallCoyote = 0; if (p.fuel < MARKSMAN.boost.fuel) p.fuel = Math.min(MARKSMAN.boost.fuel, p.fuel + MARKSMAN.boost.refill);
     if (!wasGround && p.st > 1) world.emit('land', { p, vy: fallV });
     p.lastSafeX = p.x; p.lastSafeY = p.y;
   }
@@ -262,6 +270,14 @@ function tryParry(p, world) {
 function trySignature(p, cmd, world) {
   if (p.buf.sig > ACTION_BUFFER) return false;
   if (p.char === 'nova') {
+    if (marksman(p)) {
+      // Marksman kit: the hard-light Aegis. Instant: no state change, he keeps moving and shooting.
+      // Pressing again while it is up detonates it outward.
+      if (p.aegis) { p.buf.sig = 99; world.detonateAegis(p); return false; }
+      if (p.aegisCd > 0) return false;
+      p.buf.sig = 99; world.raiseAegis(p);
+      return false;
+    }
     if (p.bulwarkCd > 0) return false;
     p.buf.sig = 99; p.bulwarkCd = NOVA.bulwarkCd;
     setState(p, 'bulwark');
@@ -289,10 +305,20 @@ function trySignature(p, cmd, world) {
 
 function tryMelee(p, cmd, world) {
   if (p.buf.melee > ACTION_BUFFER) return false;
+  const hunter = p.char === 'echo' && SETTINGS.echoKit === 'hunter';
+  // Echo on a wall: Wall Slash (before anything else, so a slide never turns it into something else)
+  if (hunter && p.wallSliding && !p.onGround) { p.buf.melee = 99; startMove(p, 'echo_wall', world); return true; }
+  // In the air, the secondary aimed down: the ground pound. Holding down to fast-fall must not turn it into
+  // a Velocity Break; a dash, slide, launch or zip still does.
+  const down = cmd.my < -0.55 || (p.aimFree && p.aimY < POUND.aimDown);
+  const moving = p.state === 'dash' || p.state === 'slide' || p.postDash <= 6 || p.boostT > 0 || p.launchedT > 0 || p.zipArriveT > 0;
+  if (!p.onGround && down && !moving && (p.char === 'nova' || hunter)) { p.buf.melee = 99; startPound(p, world); return true; }
   const tier = vbTier(p);
-  if (tier > 0) { startVB(p, tier, world); return true; }
+  if (tier > 0) { velocityBreak(p, tier, world); return true; }
   if (marksman(p)) {
-    // Marksman kit: melee is a point-blank Recoil Burst from the bracer (it cancels whatever it interrupts)
+    // Marksman kit: close to an enemy, his bracer combo; otherwise a point-blank Recoil Burst from the
+    // bracer (it cancels whatever it interrupts)
+    if (meleeTarget(p, world)) { p.buf.melee = 99; startMove(p, p.onGround ? 'nova_k1' : 'nova_kair', world); return true; }
     if (p.burstCd > 0) return false;
     p.buf.melee = 99; p.burstCd = MARKSMAN.burst.cd;
     if (p.state !== 'normal') setState(p, 'normal');
@@ -302,18 +328,66 @@ function tryMelee(p, cmd, world) {
   p.buf.melee = 99;
   if (p.char === 'echo' && p.riposteT > 0) { startMove(p, 'echo_riposte', world); p.riposteT = 0; return true; }
   if (p.char === 'echo' && !p.onGround && cmd.my < -0.55) {
+    // Pursuit kit: the dive (fast fall into a Velocity Break on landing)
     breakVeil(p, world, 'attack');
-    p.vy = -FAST_FALL; p.vx = p.facing * 5; setState(p, 'dive'); world.emit('dive', { p });
+    p.vy = -FAST_FALL; p.vx = p.facing * 5;
+    p.hitConfirm = false; p.instance = world.newInstance();
+    setState(p, 'dive'); world.emit('dive', { p });
     return true;
   }
   let id;
-  const hunter = SETTINGS.echoKit === 'hunter';
   if (p.char === 'nova') id = p.onGround ? 'nova_jab1' : 'nova_air';
-  else if (!p.onGround) id = hunter ? 'echo_ab1' : 'echo_air1';
+  else if (!p.onGround) id = hunter ? (cmd.my > 0.55 ? 'echo_spin' : 'echo_ab1') : 'echo_air1';
   else if (cmd.my > 0.55) id = hunter ? 'echo_rise' : 'echo_launch';
   else id = hunter ? 'echo_b1' : 'echo_g1';
   startMove(p, id, world);
   return true;
+}
+
+// Marksman kit: an enemy close enough in front for the bracer combo (or the lock-on target in reach)
+function meleeTarget(p, world) {
+  const R = MARKSMAN.melee, face = p.aimFree && Math.abs(p.aimX) > 0.2 ? sign(p.aimX) : p.facing;
+  for (const e of world.enemies) {
+    if (e.dead) continue;
+    const ahead = (e.x - p.x) * face, gap = ahead - e.w / 2 - p.w / 2;
+    const dy = Math.abs(e.y + e.h / 2 - (p.y + p.h * 0.5));
+    if (ahead > -0.2 && gap < R.reach - 0.8 && dy < R.up) return e;
+    if (e === p.lockT && Math.abs(e.x - p.x) < LOCK.magnet && dy < R.up) return e;
+  }
+  return null;
+}
+
+// Echo's Dash Slash (Hunter kit's Velocity Break): a lunging cut along the dash that carries him through
+function startDashSlash(p, tier, world) {
+  breakVeil(p, world, 'attack');
+  p.buf.melee = 99;
+  const sp = Math.hypot(p.vx, p.vy);
+  let dx = sp > 0.5 ? p.vx / sp : p.facing, dy = sp > 0.5 ? p.vy / sp : 0;
+  if (p.state === 'dash' && p.dash) { dx = p.dash.dx; dy = p.dash.dy; }
+  if (Math.abs(dy) < 0.45) { dy = 0; dx = sign(dx) || p.facing; }
+  const m = Math.hypot(dx, dy) || 1; dx /= m; dy /= m;
+  if (Math.abs(dx) > 0.2) p.facing = sign(dx);
+  p.slash = { tier, dx, dy };
+  p.hitConfirm = false; p.instance = world.newInstance();
+  p.boostT = 0; p.launchedT = 0; p.zipArriveT = 0; p.postDash = 99;
+  setState(p, 'dashslash'); world.emit('dashSlash', { p, tier, dx, dy });
+}
+
+function stateDashSlash(p, cmd, world) {
+  const D = DASH_SLASH, s = p.slash, t = p.st, T = s.tier - 1;
+  if (t <= D.ticks) { const v = D.speed[T] * Math.pow(D.keep, t); p.vx = s.dx * v; p.vy = s.dy * v; }
+  else if (!p.onGround) { p.vx = approach(p.vx, cmd.mx * CHARS[p.char].run * 0.5, 30 * DT); applyGravity(p, cmd); }
+  else { p.vx *= 0.8; p.vy = -0.5; }
+  if (t >= 2 && t <= D.ticks - 3) {
+    const cx = p.x + p.facing * D.box.fx, cy = p.y + 0.95 + s.dy * 0.5;
+    world.spawnHitbox({ owner: p, team: 'p', x0: cx - D.box.w / 2, x1: cx + D.box.w / 2, y0: cy - D.box.h / 2, y1: cy + D.box.h / 2,
+      dmg: D.dmg[T], poise: D.poise[T], kb: [p.facing * 7, 3], armorBreak: D.armorBreak[T], instance: p.instance, vbTier: s.tier, dashSlash: true });
+  }
+  if (p.hitConfirm && t >= 4) {
+    if (SETTINGS.vbRefund && !p.onGround) p.airDashes = 1;
+    if (cancelInto(p, cmd, world)) return;
+  }
+  if (t >= D.ticks + (p.hitConfirm ? D.hitRecover : D.recover)) setState(p, 'normal');
 }
 
 function startMove(p, id, world) {
@@ -329,6 +403,11 @@ function startMove(p, id, world) {
     if (p.onGround && Math.abs(t.x - p.x) - t.w / 2 - p.w / 2 > 0.3) p.vx = p.facing * LOCK.lunge;   // the step starts at once
   }
   setState(p, 'attack'); world.emit('swing', { p, id });
+}
+
+// A Velocity Break: Echo's Hunter kit turns it into the Dash Slash
+function velocityBreak(p, tier, world) {
+  if (p.char === 'echo' && SETTINGS.echoKit === 'hunter') startDashSlash(p, Math.max(1, tier), world); else startVB(p, tier, world);
 }
 
 function startVB(p, tier, world) {
@@ -495,7 +574,7 @@ function stateDash(p, cmd, world) {
     p.buf.jump = 99; setState(p, 'normal'); world.emit('jump', { p, dashJump: true });
     return;
   }
-  if (p.buf.melee <= ACTION_BUFFER) { startVB(p, vbTier(p), world); return; }
+  if (p.buf.melee <= ACTION_BUFFER) { velocityBreak(p, vbTier(p), world); return; }
   if (tryParry(p, world)) return;
   if (d.t <= 0 || p.hitWall) {
     p.vx = d.dx * speed * (d.keep ?? c.dash.exitKeep); p.vy = d.dy > 0 ? d.dy * speed * 0.4 : 0;
@@ -507,7 +586,7 @@ function stateSlide(p, cmd, world) {
   const c = CHARS[p.char];
   p.vx *= c.slide.decay; applyGravity(p, cmd);
   if (tryJump(p, cmd, world)) { p.dashCarry = true; return; }
-  if (p.buf.melee <= ACTION_BUFFER) { startVB(p, 1, world); return; }
+  if (p.buf.melee <= ACTION_BUFFER) { velocityBreak(p, 1, world); return; }
   if (tryParry(p, world)) return;
   if (p.st >= c.slide.ticks || Math.abs(p.vx) < 2 || !p.onGround) {
     p.crouch = !hasHeadroom(p.x, p.y, p.w, c.height);
@@ -551,22 +630,100 @@ function stateDive(p, cmd, world) {
   }
 }
 
+// Ground pound (POUND). Phases: 'hold' (he hangs; holding the button charges it), 'drop' (a fast fall that
+// hits what it passes through), 'land' (the scatter blast has gone off; a short recovery). A parry or dash
+// cancels the hold.
+function startPound(p, world) {
+  breakVeil(p, world, 'attack');
+  p.pound = { phase: 'hold', t: 0, level: 0, held: true, y0: p.y };
+  p.hitConfirm = false; p.instance = world.newInstance();
+  p.dashCarry = false; p.fastFall = false; p.lungeTo = null;
+  if (Math.abs(p.aimX) > 0.2 && p.aimFree) p.facing = sign(p.aimX);
+  setState(p, 'pound'); world.emit('poundStart', { p });
+}
+
+function statePound(p, cmd, world) {
+  const P = POUND, S = p.pound;
+  if (!S) { setState(p, 'normal'); return; }
+  S.t++;
+  if (S.phase === 'hold') {
+    // The mid-air slowdown: his rise and drift die away fast and he sinks slowly while it charges
+    p.vx = approach(p.vx, 0, 50 * DT); p.vy = approach(p.vy, -P.hang, 80 * DT); p.fastFall = false;
+    if (!cmd.held.melee) S.held = false;
+    if (S.held) {
+      const lv = S.t >= P.charge[2] ? 3 : S.t >= P.charge[1] ? 2 : S.t >= P.charge[0] ? 1 : 0;
+      if (lv > S.level) { S.level = lv; world.emit('poundLevel', { p, level: lv }); }
+    }
+    if (tryParry(p, world) || tryDash(p, cmd, world)) { p.pound = null; return; }
+    if (p.onGround) { landPound(p, world); return; }
+    if ((!S.held && S.t >= P.windup) || S.t >= P.maxHold) { S.phase = 'drop'; S.t = 0; S.y0 = p.y; p.instance = world.newInstance(); world.emit('poundDrop', { p, level: S.level }); }
+    return;
+  }
+  if (S.phase === 'drop') {
+    // Echo's quick pound bounces off what it hits
+    if (p.char === 'echo' && S.level === 0 && p.hitConfirm) {
+      p.vy = P.bounce; p.vx *= 0.5; p.airDashes = 1; p.jumpsUsed = 0; p.fastFall = false; p.dashCarry = false;
+      p.pound = null; setState(p, 'normal'); world.emit('pogo', { p });
+      return;
+    }
+    p.vy = -P.speed; p.fastFall = true; p.vx *= 0.9;
+    const k = 1 + 0.25 * S.level;
+    world.spawnHitbox({ owner: p, team: 'p', x0: p.x - P.box.w / 2, x1: p.x + P.box.w / 2, y0: p.y - 0.7, y1: p.y + P.box.h - 0.7,
+      dmg: P.drop.dmg * k, poise: P.drop.poise * k, kb: [0, -4], instance: p.instance, pound: true });
+    if (p.onGround) { landPound(p, world); return; }
+    if (S.t > P.maxDrop) { p.pound = null; setState(p, 'normal'); }   // fell a long way (a pit)
+    return;
+  }
+  // 'land': the blast has gone off; a short recovery, cancellable once it has hit something
+  p.vx *= 0.7; p.vy = -0.5;
+  if (p.hitConfirm) S.hit = true;
+  if (S.hit && S.t >= P.hitRecover && cancelInto(p, cmd, world, { melee: false })) { p.pound = null; return; }
+  if (S.t >= P.recover) { p.pound = null; setState(p, 'normal'); }
+}
+
+// The scatter blast: every enemy in reach is hit and thrown outward, away from the impact
+function landPound(p, world) {
+  const P = POUND, S = p.pound, L = P.land[S.level], fall = Math.max(0, S.y0 - p.y);
+  const r = L.r + P.fallBonus * Math.min(1, fall / 12);
+  const inst = world.newInstance();
+  world.spawnHitbox({ owner: p, team: 'p', x0: p.x - r, x1: p.x + r, y0: p.y - 0.3, y1: p.y + 1.6 + 0.3 * S.level, dmg: L.dmg, poise: L.poise,
+    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak, instance: inst, scatter: true });
+  S.phase = 'land'; S.t = 0; S.inst = inst; S.hit = false;
+  p.vx = 0; p.hitConfirm = false; p.hitstop = 2 + S.level;   // a beat of impact freeze, longer the bigger the pound
+  world.emit('poundLand', { p, x: p.x, y: p.y, level: S.level, r, fall });
+}
+
 function stateAttack(p, cmd, world) {
   const m = p.move, t = p.st;
   const activeStart = m.su, activeEnd = m.su + m.ac, end = m.su + m.ac + m.rc;
-  if (p.onGround) p.vx *= 0.82; else { applyGravity(p, cmd, m.hover && p.hitConfirm ? 0.25 : 1); wallCling(p, cmd, false); }
+  if (m.rise && t === activeStart) { p.vy = m.rise; p.onGround = false; p.vx = p.facing * 2.5; p.dashCarry = true; }   // Rising Glaive takes off (no rise cut)
+  // On the ground an attack keeps pressing into the floor, so it never reads as airborne mid-swing
+  if (p.onGround) { p.vx *= 0.82; p.vy = -0.5; }
+  else { applyGravity(p, cmd, m.hoverAll ?? (m.hover && p.hitConfirm ? 0.25 : 1)); wallCling(p, cmd, false); }
   if (m.hover && p.hitConfirm && p.vy < 1.5) p.vy = 1.5;
+  if (m.hoverAll && p.vy < -3) p.vy = -3;
   if (t === activeStart && p.onGround && !m.launcher) p.vx += p.facing * 2.2;
+  if (m.multi && t > activeStart && t < activeEnd && (t - activeStart) % m.multi === 0) p.instance = world.newInstance();
+  if (t === activeStart && m.blastFist) {
+    world.explode({ owner: p, x: p.x + p.facing * 1.2, y: p.y + 1.1, spec: { ...m.blastFist, armorBreak: false }, kind: 'blast', level: 1 });
+  }
+  if (t === activeStart && m.wave && SETTINGS.echoKit === 'hunter') {
+    // Crescent wave: the charged swing looses an energy crescent that flies on and cuts through shots
+    const W = m.wave;
+    world.spawnProjectile({ team: 'p', owner: p, x: p.x + p.facing * 1.0, y: p.y + 1.0, vx: p.facing * W.speed, vy: 0, ttl: W.ttl, r: W.r,
+      dmg: W.dmg, poise: W.poise, kb: 6, pierce: true, intercept: true, interceptHeavy: true, kind: 'wave' });
+    world.emit('crescent', { p, x: p.x + p.facing * 1.0, y: p.y + 1.0 });
+  }
   if (p.lungeTo && t < activeEnd && p.onGround) {
     // Locked on: close the gap to the target until the swing lands
     const e = p.lungeTo, gap = Math.abs(e.x - p.x) - e.w / 2 - p.w / 2;
     if (!e.dead && gap > 0.3) p.vx = p.facing * Math.min(LOCK.lunge, gap * 30); else p.lungeTo = null;
   }
   if (t >= activeStart && t < activeEnd) {
-    const b = m.box, cx = p.x + p.facing * b.fx;
+    const b = m.box, cx = m.spin ? p.x : p.x + p.facing * b.fx;
     world.spawnHitbox({ owner: p, team: 'p', x0: cx - b.w / 2, x1: cx + b.w / 2, y0: p.y + b.y - b.h / 2, y1: p.y + b.y + b.h / 2,
       dmg: m.dmg, poise: m.poise, kb: [p.facing * m.kb[0], m.kb[1]], armorBreak: !!m.armorBreak, heavy: !!m.heavy,
-      launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId });
+      launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x });
   }
   if (m.launcher && t === activeEnd && p.hitConfirm) p.vy = 9;   // Echo hops after a launched enemy
   if (p.buf.melee <= ACTION_BUFFER && m.next && t >= activeStart) p.queued = m.next;
@@ -639,7 +796,7 @@ function stateZip(p, cmd, world) {
   }
   p.vx = dx / d * ECHO.zipSpeed; p.vy = dy / d * ECHO.zipSpeed;
   p.facing = sign(dx) || p.facing;
-  if (p.buf.melee <= ACTION_BUFFER && d < 3) { p.zipArriveT = 12; startVB(p, 2, world); }
+  if (p.buf.melee <= ACTION_BUFFER && d < 3) { p.zipArriveT = 12; velocityBreak(p, 2, world); }
 }
 
 function updateDowned(p, cmd, world) {
@@ -650,6 +807,9 @@ function updateDowned(p, cmd, world) {
   p.downedT--;
   if (p.downedT <= 0) world.bleedOut(p);
 }
+
+// Echo's sniper focus (0-1) after holding fire for t ticks
+export function rifleFocus(t) { const R = HUNTER.rifle; return Math.max(0, Math.min(1, (t - R.raise) / R.focus)); }
 
 // ---- Lock-on ---------------------------------------------------------------------------
 
@@ -701,7 +861,7 @@ function handleFire(p, cmd, world) {
     if (cmd.held.fire && canFire(p)) {
       p.rifleT++;
       if (p.rifleT === R.raise) world.emit('rifleRaise', { p });
-      else if (p.rifleT === R.mark) world.emit('rifleMark', { p });
+      else if (p.rifleT === R.raise + R.focus) world.emit('rifleFocus', { p });   // full focus
     }
     if (!cmd.held.fire && p.rifleT > 0) {
       const t = p.rifleT; p.rifleT = 0;
@@ -713,8 +873,7 @@ function handleFire(p, cmd, world) {
           if (p.snareRecharge <= 0) p.snareRecharge = HUNTER.snareRecharge;
         }
       } else if (p.rifleCd === 0 && canFire(p)) {
-        const mark = t >= R.mark;
-        world.fireRifle(p, mark); p.rifleCd = p.rifleCdMax = mark ? R.markCd : R.cd; breakVeil(p, world, 'attack');
+        world.fireSniper(p, rifleFocus(t)); p.rifleCd = p.rifleCdMax = R.cd; breakVeil(p, world, 'attack');
       } else world.emit('rifleLower', { p });
     }
     p.chargeT = 0;
@@ -742,21 +901,25 @@ function handleFire(p, cmd, world) {
 // blaster works the same way on the melee button: the press fires a quick burst (tryMelee) and
 // holding charges a bigger one.
 const levelOf = (t, C) => (t >= C[2] ? 3 : t >= C[1] ? 2 : t >= C[0] ? 1 : 0);
+// Charge levels reached going from t0 to t1 (a charge can grow by more than one a tick with Overcharge)
+function crossed(t0, t1, marks, fn) { marks.forEach((m, i) => { if (t0 < m && t1 >= m) fn(i + 1); }); }
 
 function fireMarksman(p, cmd, world) {
-  const M = MARKSMAN, C = M.charge, B = M.burst;
+  const M = MARKSMAN, C = M.charge, B = M.burst, L4 = M.beam.at;
+  const rate = p.overcharge > 0 ? AEGIS.over.charge : 1;
   if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) { world.fireShot(p, 0); p.fireCd = NOVA.shotCd; }
   if (cmd.held.fire && canFire(p)) {
-    p.chargeT++;
-    const lv = C.indexOf(p.chargeT); if (lv >= 0) world.emit('chargeLevel', { p, level: lv + 1 });
+    const t0 = p.chargeT; p.chargeT += rate;
+    crossed(t0, p.chargeT, [...C, L4], level => world.emit('chargeLevel', { p, level }));
   }
   if (cmd.released.fire || (!cmd.held.fire && p.chargeT > 0)) {
     const t = p.chargeT, level = levelOf(t, C); p.chargeT = 0;
-    if (level) world.fireAttachment(p, p.attachment, level, level === 3 && t < C[2] + M.perfectWindow, t);
+    if (t >= L4) { if (canFire(p)) startBeam(p, world); }
+    else if (level) world.fireAttachment(p, p.attachment, level, level === 3 && t < C[2] + M.perfectWindow, t);
   }
   if (cmd.held.melee && canFire(p)) {
-    p.burstT++;
-    const lv = B.charge.indexOf(p.burstT); if (lv >= 0) world.emit('burstLevel', { p, level: lv + 1 });
+    const t0 = p.burstT; p.burstT += rate;
+    crossed(t0, p.burstT, B.charge, level => world.emit('burstLevel', { p, level }));
   }
   if (!cmd.held.melee && p.burstT > 0) {
     const t = p.burstT, level = levelOf(t, B.charge); p.burstT = 0;
@@ -764,16 +927,52 @@ function fireMarksman(p, cmd, world) {
   }
 }
 
-// Charge stage from a charge counter: '', 'charging', 'L1', 'L2', 'perfect' (the release window) or 'L3'
-function stageOf(t, C, win) {
+// Level 4: the sustained beam. He braces (slow on the ground, hovering in the air), the beam follows the
+// aim at a limited turn rate, and the world deals its damage (world.beamTick). Dash or parry cut it short;
+// a hit ends it (combat.hitPlayer).
+function startBeam(p, world) {
+  const B = MARKSMAN.beam;
+  p.beam = { t: B.ticks, dx: p.aimX, dy: p.aimY, mult: focusMult(p) * spendOvercharge(p), attach: p.attachment, pulse: 0,
+    armor: new Map(), family: { focused: false, rocketed: true, perfect: false }, segs: [] };
+  p.chargeT = 0;
+  setState(p, 'beam'); world.emit('beamStart', { p, attach: p.attachment, over: p.beam.mult > focusMult(p) });
+}
+function stateBeam(p, cmd, world) {
+  const B = MARKSMAN.beam, b = p.beam;
+  if (!b) { setState(p, 'normal'); return; }
+  const a0 = Math.atan2(b.dy, b.dx);
+  let da = Math.atan2(p.aimY, p.aimX) - a0;
+  while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+  const a = a0 + Math.max(-B.turn, Math.min(B.turn, da));
+  b.dx = Math.cos(a); b.dy = Math.sin(a);
+  if (Math.abs(b.dx) > 0.2) p.facing = sign(b.dx);
+  // No push-back: on the ground he can creep along; in the air he hangs, sinking slowly, while it fires
+  if (p.onGround) { p.vx = approach(p.vx, cmd.mx * CHARS.nova.run * B.slow, 40 * DT); p.vy = -0.5; }
+  else { p.vx = approach(p.vx, 0, 20 * DT); p.vy = approach(p.vy, -B.hover, 40 * DT); p.fastFall = false; }
+  if (tryParry(p, world) || tryDash(p, cmd, world)) { world.endBeam(p, 'cancel'); return; }
+  world.beamTick(p);
+  if (--b.t <= 0) { world.endBeam(p, 'done'); setState(p, 'normal'); }
+}
+
+// Overcharge (from the Aegis) makes a charged release hit harder, at a cost; returns the damage multiplier
+export function spendOvercharge(p) {
+  if (!(p.overcharge > 0)) return 1;
+  p.overcharge = Math.max(0, p.overcharge - AEGIS.over.cost);
+  return AEGIS.over.dmg;
+}
+
+// Charge stage from a charge counter: '', 'charging', 'L1', 'L2', 'perfect' (the release window), 'L3',
+// or 'L4' (Marksman primary only: the beam)
+function stageOf(t, C, win, l4 = Infinity) {
   if (t <= 0) return '';
   if (t < C[0]) return 'charging';
   if (t < C[1]) return 'L1';
   if (t < C[2]) return 'L2';
+  if (t >= l4) return 'L4';
   return t < C[2] + win ? 'perfect' : 'L3';
 }
 export function chargeStage(p) {
-  if (marksman(p)) return stageOf(p.chargeT, MARKSMAN.charge, MARKSMAN.perfectWindow);
+  if (marksman(p)) return stageOf(p.chargeT, MARKSMAN.charge, MARKSMAN.perfectWindow, MARKSMAN.beam.at);
   // Sentinel kit: two levels (lance, rail) and no Perfect Release
   return p.chargeT <= 0 ? '' : p.chargeT < NOVA.charge1 ? 'charging' : p.chargeT < NOVA.charge2 ? 'L1' : 'L2';
 }

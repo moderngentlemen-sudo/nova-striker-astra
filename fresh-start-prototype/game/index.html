@@ -98,6 +98,27 @@ th { font-family: var(--font-display); text-transform: uppercase; letter-spacing
 .res.fuel i { background: linear-gradient(90deg, #ffb547, #fff1c9); }
 .res { display: inline-block; width: 64px; height: 6px; background: rgba(255,255,255,0.14); border-radius: 2px; overflow: hidden; }
 .res i { display: block; height: 100%; background: linear-gradient(90deg, #ff9a1f, #ffd08a); }
+.res.aegis { width: 48px; } .res.aegis i { background: linear-gradient(90deg, #ffd889, #fff6e0); }
+.res.over { width: 40px; } .res.over i { background: linear-gradient(90deg, #fff1c9, #ffffff); }
+.chip.over { background: #fff6e0; color: #1d1204; animation: overPulse 0.5s ease-in-out infinite alternate; }
+.chip.red { background: #ff2414; color: #ffffff; }
+.bossbar { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); width: min(470px, calc(100vw - 590px)); padding: 7px 14px 9px; background: var(--plate);
+  border-bottom: 3px solid #ff2e7e; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
+.bossbar .bname { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.bossbar .bname b { font-family: var(--font-display); font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; font-size: 16px; color: #ffd2e4; }
+.bossbar .bname span { color: var(--muted); font-size: 12px; }
+.bossbar .bhp { position: relative; height: 10px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; }
+.bossbar .bfill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #ff2e7e, #ff8ab8); transition: width 0.15s linear; }
+.bossbar .bnotch { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: rgba(12, 16, 26, 0.8); }
+.bossbar.shielded .bfill { background: linear-gradient(90deg, #c9d3de, #ffffff); }
+.bossbar.p2 { border-bottom-color: #ffffff; }
+.bossbar .barmor { display: flex; gap: 4px; align-items: center; margin-top: 5px; min-height: 10px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.bossbar .barmor span { margin-right: 4px; }
+.bossbar .barmor i { width: 16px; height: 7px; border-radius: 1px; background: rgba(255, 255, 255, 0.14); }
+.bossbar .barmor i.on { background: #e6e9f0; }
+@media (max-width: 1060px) { .bossbar { top: auto; bottom: 60px; width: min(470px, calc(100vw - 32px)); } }
+@keyframes overPulse { from { box-shadow: 0 0 0 0 rgba(255, 241, 201, 0.0); } to { box-shadow: 0 0 10px 2px rgba(255, 241, 201, 0.75); } }
+@media (prefers-reduced-motion: reduce) { .chip.over { animation: none; } }
 
 .labels > div { position: absolute; left: 0; top: 0; will-change: transform; }
 .pmarker { font-family: var(--font-display); font-weight: 800; font-size: 14px; letter-spacing: 0.04em; color: var(--pc);

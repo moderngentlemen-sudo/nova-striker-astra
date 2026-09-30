@@ -9,11 +9,20 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER } from './level.js';
 import { SETTINGS, PLAYER_COLORS } from './config.js';
-import { buildPlayerRig, animatePlayer } from './rigs.js';
+import { buildPlayerRig } from './rigs.js';
+import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
 import { FX, toWorld, InkShader } from './fx.js';
 
 const yawAt = x => { const f = pathFrame(x); return Math.atan2(-f.tz, f.tx); };
+// A rig leaving the scene frees its geometry buffers. Enemy rigs free their materials too (a warmed stand-in
+// in fx.warm keeps those shaders compiled); player rigs keep theirs so a character swap never recompiles one.
+function disposeTree(root, materials = true) {
+  root.traverse(o => {
+    if (o.geometry && !o.isSprite) o.geometry.dispose();
+    if (materials && o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+  });
+}
 
 export class View {
   constructor(canvas) {
@@ -28,7 +37,7 @@ export class View {
     this.ortho = new THREE.OrthographicCamera(-10, 10, 5, -5, 0.5, 600);
     this.camera = this.persp;
     this.cam = { x: 0, y: 3, dist: 16 };
-    this.trauma = 0; this.inkFrames = 0; this.time = 0; this.bloomKick = 0; this.punch = 0;
+    this.trauma = 0; this.time = 0; this.bloomKick = 0; this.punch = 0; this.impact = null; this.impactCd = 0; this.hitPause = 0;
     this.rigs = new Map(); this.enemyRigs = new Map();
 
     const hemi = new THREE.HemisphereLight(0xd8ecff, 0x7a6f63, 0.95); this.scene.add(hemi);
@@ -51,6 +60,9 @@ export class View {
     this.ink = new ShaderPass(InkShader); this.ink.enabled = false;
     this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(this.output); this.composer.addPass(this.ink);
     this.fx.warm(this.r, this.camera, this.composer.renderTarget1);
+    // The impact frame's pass is off until the first big moment: compile it now so that moment never stalls
+    try { this.ink.enabled = true; this.ink.uniforms.amount.value = 1; this.composer.render(0); } catch (e) { /* best effort */ }
+    this.ink.enabled = false; this.ink.uniforms.amount.value = 0;
   }
 
   resize(w, h, world) {
@@ -244,7 +256,7 @@ export class View {
       seen.add(p);
       let rig = this.rigs.get(p);
       if (!rig || rig.char !== p.char) {
-        if (rig) this.scene.remove(rig.root);
+        if (rig) { this.scene.remove(rig.root); disposeTree(rig.root, false); }
         rig = buildPlayerRig(p.char);
         const ringMat = new THREE.MeshBasicMaterial({ color: PLAYER_COLORS[p.slot], transparent: true, opacity: 0.65, depthWrite: false });
         const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 32), ringMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03;
@@ -259,7 +271,7 @@ export class View {
       rig.root.visible = p.state !== 'dead' && !(p.mercy > 0 && p.state !== 'downed' && Math.floor(t * 14) % 2 === 0);
       rig.ring.visible = p.state !== 'downed';
     }
-    for (const [p, rig] of this.rigs) if (!seen.has(p)) { this.scene.remove(rig.root); this.rigs.delete(p); }
+    for (const [p, rig] of this.rigs) if (!seen.has(p)) { this.scene.remove(rig.root); disposeTree(rig.root, false); this.rigs.delete(p); }
 
     const seenE = new Set();
     for (const e of world.enemies) {
@@ -276,7 +288,7 @@ export class View {
       }
       if (R.tag) R.tag.visible = e.tagged > 0 && !e.dead;
     }
-    for (const [e, R] of this.enemyRigs) if (!seenE.has(e)) { this.scene.remove(R.root); this.enemyRigs.delete(e); }
+    for (const [e, R] of this.enemyRigs) if (!seenE.has(e)) { this.scene.remove(R.root); disposeTree(R.root); this.enemyRigs.delete(e); }
 
     for (const g of this.gateMeshes) {
       g.mesh.visible = GATES[g.tag];
@@ -292,6 +304,7 @@ export class View {
     const ky = 1 - Math.exp(-dt * (5.5 + Math.max(0, Math.abs(T.y - this.cam.y) - 1.2) * 5));
     this.cam.x += (T.x - this.cam.x) * k; this.cam.y += (T.y - this.cam.y) * ky; this.cam.dist += (T.dist - this.cam.dist) * k;
     this.trauma = Math.max(0, this.trauma - dt * 1.8);
+    if (world.players.some(p => p.state === 'beam' && p.beam)) this.trauma = Math.max(this.trauma, 0.22);   // the beam shakes the frame the whole time
     this.punch *= Math.exp(-dt * 10); this.bloomKick = Math.max(0, this.bloomKick - dt * 3.2);
     const f = pathFrame(this.cam.x);
     const look = new THREE.Vector3(f.px, this.cam.y, f.pz);
@@ -321,17 +334,50 @@ export class View {
       blast: 0.14 + (ev.level || 1) * 0.06 + (ev.perfect ? 0.1 : 0), burst: ev.charged ? 0.06 + ev.level * 0.04 : 0.05, perfectRelease: 0.1,
       splash: ev.level ? 0.04 + ev.level * 0.03 : 0, rocketJump: 0.2 + 0.42 * (ev.power || 0.5), enemyBlast: 0.3, chargeCrash: 0.3,
       shot: ev.level ? 0.03 + ev.level * 0.04 : 0, dash: ev.level ? 0.04 + ev.level * 0.05 : 0, dashLevel: 0.02 + ev.level * 0.02,
-      chargeLevel: ev.level >= 3 ? 0.04 : 0, rifleShot: ev.mark ? 0.14 : 0.05, walljump: 0.03,
-      land: ev.vy < -16 ? Math.min(0.3, (-ev.vy - 16) * 0.025) : 0 }[ev.type];
+      chargeLevel: ev.level >= 4 ? 0.1 : ev.level >= 3 ? 0.04 : 0, walljump: 0.03,
+      land: ev.vy < -16 ? Math.min(0.3, (-ev.vy - 16) * 0.025) : 0,
+      snipe: 0.08 + 0.16 * (ev.f || 0), crit: 0.05, deflect: ev.perfect ? 0.12 : 0.05, dashSlash: 0.04 * (ev.tier || 1), crescent: 0.06, pogo: 0.04,
+      poundLand: 0.22 + 0.12 * (ev.level || 0), poundDrop: 0.03, aegisHit: 0.05, beamStart: 0.3,
+      aegisOff: ev.why === 'break' ? 0.3 : ev.why === 'detonate' ? 0.4 : 0, bossSlam: ev.big ? 0.55 : 0.35, bossPhase: 0.6, bossDown: 0.9, bossCrash: 0.45, bossIntro: 0.15 }[ev.type];
     if (shake) this.trauma = Math.min(1, this.trauma + shake);
     // Big releases light the whole frame for a moment (bloom) and the rocket jump thumps the camera
     const glow = { rocketJump: 0.45 + 0.75 * (ev.power || 0.5), perfectRelease: 0.4, dash: ev.level >= 3 ? 0.35 : 0,
-      shot: ev.level >= 3 ? 0.22 : 0, rifleShot: ev.mark ? 0.25 : 0, blast: ev.level >= 3 ? 0.15 : 0 }[ev.type];
+      shot: ev.level >= 3 ? 0.22 : 0, blast: ev.level >= 3 ? 0.15 : 0, snipe: ev.full ? 0.3 : 0.08, beamStart: 0.6, chargeLevel: ev.level >= 4 ? 0.3 : 0,
+      aegisOff: ev.why === 'detonate' ? 0.5 : ev.why === 'break' ? 0.3 : 0, poundLand: ev.level >= 2 ? 0.2 + 0.1 * ev.level : 0, bossPhase: 0.6, bossDown: 1 }[ev.type];
     if (glow) this.bloomKick = Math.min(1.4, this.bloomKick + glow);
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
+    if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
     if (ev.type === 'kill' && ev.e.type === 'brute') this.trauma = Math.min(1, this.trauma + 0.6);
-    const big = ev.type === 'impact' || ev.type === 'armorBreak' || (ev.type === 'kill' && ev.e.type === 'brute') || (ev.type === 'parry' && ev.perfect && ev.heavy);
-    if (big && SETTINGS.impactFrames) this.inkFrames = 4;
+    // The big moments get an impact frame
+    if (ev.type === 'impact' || (ev.type === 'armorBreak' && ev.left === 0) || (ev.type === 'parry' && ev.perfect && ev.heavy)) this.startImpact(ev.x, ev.y, ev.type === 'impact' ? 1 : 0.8);
+    else if (ev.type === 'kill' && (ev.e.type === 'brute' || ev.e.boss)) this.startImpact(ev.x, ev.y, 1);
+    else if (ev.type === 'poundLand' && ev.level >= 3) this.startImpact(ev.x, ev.y + 0.6, 1);
+    else if (ev.type === 'snipe' && ev.full && ev.crits > 0) this.startImpact(ev.x1, ev.y1, 0.8);
+    else if (ev.type === 'bossPhase' || ev.type === 'bossDown') this.startImpact(ev.x, ev.y, 1.2);
+  }
+
+  // Impact frame (the comic Q-C test, now phased and longer): a negative flash, then ink with speed lines
+  // focused on the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds the
+  // simulation (main.js) while it runs. At most one every 0.9 s.
+  startImpact(x, y, strength = 1) {
+    if (!SETTINGS.impactFrames || this.impactCd > 0) return;
+    const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
+    this.impact = { t: 0, dur: 0.26 + 0.12 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    this.impactCd = 0.9; this.hitPause = 0.05 + 0.05 * strength;
+    this.trauma = Math.min(1, this.trauma + 0.25 * strength); this.bloomKick = Math.min(1.4, this.bloomKick + 0.4 * strength);
+  }
+  updateImpact(dt) {
+    this.impactCd = Math.max(0, this.impactCd - dt);
+    const I = this.impact, U = this.ink.uniforms;
+    if (!I) { U.amount.value = 0; this.ink.enabled = false; return false; }
+    I.t += dt; const k = Math.min(1, I.t / I.dur);
+    U.center.value.set(I.cx, I.cy); U.seed.value = I.seed;
+    U.invert.value = k < 0.1 ? 1 : Math.max(0, 1 - (k - 0.1) / 0.06);
+    U.amount.value = k < 0.78 ? 1 : Math.max(0, 1 - (k - 0.78) / 0.22);
+    U.lines.value = 1; U.zoom.value = 0.075 * I.k * (1 - k) * (1 - k); U.split.value = 0.007 * I.k * (1 - k);
+    this.ink.enabled = true;
+    if (I.t >= I.dur) this.impact = null;
+    return true;
   }
 
   render(world, alpha, dt) {
@@ -339,7 +385,8 @@ export class View {
     this.syncEntities(world, alpha, dt);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });
-    if (SETTINGS.quality === 'low' && this.inkFrames <= 0) {
+    const inking = this.updateImpact(dt);
+    if (SETTINGS.quality === 'low' && !inking) {
       this.r.shadowMap.enabled = false;
       this.r.render(this.scene, this.camera);
       return;
@@ -347,9 +394,6 @@ export class View {
     this.r.shadowMap.enabled = SETTINGS.quality !== 'low';
     this.bloom.enabled = SETTINGS.quality !== 'low';
     this.bloom.strength = 0.65 + this.bloomKick * 0.9;
-    this.ink.enabled = this.inkFrames > 0;
-    this.ink.uniforms.amount.value = this.inkFrames > 0 ? 1 : 0;
-    if (this.inkFrames > 0) this.inkFrames--;
     this.composer.render(dt);
   }
 

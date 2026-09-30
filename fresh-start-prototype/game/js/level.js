@@ -67,7 +67,9 @@ const RAW = [
   [276, 281, 23.6, 24.0, 'o', 'plat'],
   [287, 293, 21.6, 22.0, 'o', 'plat'],
   [297.2, 298, 18.6, 50, 'g', 'R2'],
-  [298, 316, 5, 18.6, 's', 'pad'],            // beacon pad: the end of the route
+  [298, 316, 5, 18.6, 's', 'pad'],            // beacon pad: the end of the route, and the Stormcaller's arena
+  [301.5, 305, 21.8, 22.2, 'o', 'plat'],      // perches over the pad: above its sweep, closer to the gunship
+  [309, 312.5, 21.8, 22.2, 'o', 'plat'],
   [316, 318, -6, 50, 's', 'bound'],
 ];
 
@@ -110,6 +112,9 @@ export const ENCOUNTERS = [
     waveBanners: [null, ['Final wave', 'The Brute holds the relay.']],
     extra: [['swarmer', 276, 18.6]],
     cleared: ['Relay secured', 'Gates open. The beacon is ahead.'] },
+  // The level boss: the gunship guarding the beacon. Its gate seals behind the team.
+  { id: 'beacon', trigger: 300.5, gates: ['R2'], inside: 299.5, boss: 'stormcaller', bossAt: [308, 32], banner: ['Stormcaller', 'It keeps the relay beacon.'],
+    cleared: ['Beacon secured', 'The Stormcaller is down.'] },
 ];
 export const ROUTE_END_X = 304;
 
@@ -217,6 +222,38 @@ export function segmentBlocked(ax, ay, bx, by) {
     }
   }
   return false;
+}
+
+// Slab test of a ray from (x, y) along (dx, dy) against a box: the entry distance and the face normal hit,
+// or null. A ray that starts inside the box enters at 0.
+export function rayBoxT(x, y, dx, dy, x0, y0, x1, y1) {
+  let tin = -Infinity, tout = Infinity, nx = 0, ny = 0;
+  if (Math.abs(dx) < 1e-9) { if (x <= x0 || x >= x1) return null; }
+  else {
+    const ta = (x0 - x) / dx, tb = (x1 - x) / dx, tn = Math.min(ta, tb);
+    if (tn > tin) { tin = tn; nx = dx > 0 ? -1 : 1; ny = 0; }
+    tout = Math.min(tout, Math.max(ta, tb));
+  }
+  if (Math.abs(dy) < 1e-9) { if (y <= y0 || y >= y1) return null; }
+  else {
+    const ta = (y0 - y) / dy, tb = (y1 - y) / dy, tn = Math.min(ta, tb);
+    if (tn > tin) { tin = tn; nx = 0; ny = dy > 0 ? -1 : 1; }
+    tout = Math.min(tout, Math.max(ta, tb));
+  }
+  if (tin > tout || tout < 0) return null;
+  return { t: Math.max(0, tin), nx, ny };
+}
+
+// The first solid surface along a ray (unit direction), up to `range` m: where it is, how far, and the
+// surface normal there (wall: false when nothing is hit within range)
+export function rayCast(x, y, dx, dy, range) {
+  let best = range, nx = 0, ny = 0;
+  for (const b of BOXES) {
+    if (!isSolid(b)) continue;
+    const h = rayBoxT(x, y, dx, dy, b.x0, b.y0, b.x1, b.y1);
+    if (h && h.t < best) { best = h.t; nx = h.nx; ny = h.ny; }
+  }
+  return { t: best, x: x + dx * best, y: y + dy * best, nx, ny, wall: best < range };
 }
 
 export function pointInSolid(x, y) {

@@ -1,19 +1,18 @@
 // Synthesized placeholder audio. Timing cues matter more than fidelity here: every threat
 // category and both parry grades have a distinct, unmistakable sound.
-import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER } from './config.js';
-import { marksman } from './player.js';
+import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER, POUND } from './config.js';
+import { marksman, rifleFocus } from './player.js';
 
 // How far along a player's current charge is (0-1), or -1 when nothing is charging. `perfect` marks the
 // Perfect Release window.
 function chargeOf(p) {
   if (p.state === 'dashCharge' && p.dashChargeT >= DASH_CHARGE.tap) return { k: Math.min(1, p.dashChargeT / DASH_CHARGE.charge[2]), kind: 'dash' };
-  if (p.char === 'echo') {
-    const R = HUNTER.rifle;
-    return p.rifleT >= R.raise ? { k: Math.min(1, (p.rifleT - R.raise) / (R.mark - R.raise)), kind: 'rifle' } : { k: -1 };
-  }
+  if (p.state === 'pound' && p.pound && p.pound.phase === 'hold' && p.pound.held && p.pound.t > POUND.windup) return { k: Math.min(1, p.pound.t / POUND.charge[2]), kind: 'pound' };
+  if (p.char === 'echo') return p.rifleT >= HUNTER.rifle.raise ? { k: rifleFocus(p.rifleT), kind: 'rifle' } : { k: -1 };
   if (marksman(p)) {
-    const C = MARKSMAN.charge, B = MARKSMAN.burst.charge;
-    if (p.chargeT > 0) return { k: Math.min(1, p.chargeT / C[2]), kind: 'shot', perfect: p.chargeT >= C[2] && p.chargeT < C[2] + MARKSMAN.perfectWindow };
+    const C = MARKSMAN.charge, B = MARKSMAN.burst.charge, L4 = MARKSMAN.beam.at;
+    if (p.chargeT > 0) return { k: Math.min(1, p.chargeT / C[2]), kind: 'shot', perfect: p.chargeT >= C[2] && p.chargeT < C[2] + MARKSMAN.perfectWindow,
+      l4: p.chargeT > C[2] ? Math.min(1, (p.chargeT - C[2]) / (L4 - C[2])) : 0 };
     if (p.burstT > 0) return { k: Math.min(1, p.burstT / B[2]), kind: 'burst', perfect: p.burstT >= B[2] && p.burstT < B[2] + MARKSMAN.burst.perfectWindow };
     return { k: -1 };
   }
@@ -102,10 +101,10 @@ export class Sound {
           g.gain.setValueAtTime(0.0001, now); o1.start(); o2.start(); lfo.start();
           h = { o1, o2, lfo, lg, g }; this.hums.set(p, h);
         }
-        const base = ch.kind === 'dash' ? 90 : ch.kind === 'rifle' ? 240 : ch.kind === 'burst' ? 130 : 110;
-        const f0 = base * (1 + 2.2 * ch.k) * (ch.perfect ? 2 : 1);
-        h.o1.frequency.setTargetAtTime(f0, now, 0.03); h.o2.frequency.setTargetAtTime(f0 * 1.5, now, 0.03);
-        h.lfo.frequency.setTargetAtTime(ch.perfect ? 26 : 5 + 10 * ch.k, now, 0.05);
+        const base = ch.kind === 'dash' ? 90 : ch.kind === 'rifle' ? 240 : ch.kind === 'burst' ? 130 : ch.kind === 'pound' ? 70 : 110;
+        const l4 = ch.l4 || 0, f0 = base * (1 + 2.2 * ch.k) * (ch.perfect ? 2 : 1) * (1 + 0.6 * l4);
+        h.o1.frequency.setTargetAtTime(f0, now, 0.03); h.o2.frequency.setTargetAtTime(f0 * (l4 >= 1 ? 2 : 1.5), now, 0.03);
+        h.lfo.frequency.setTargetAtTime(ch.perfect || l4 >= 1 ? 26 : 5 + 10 * ch.k + 10 * l4, now, 0.05);
         const gain = (0.012 + 0.03 * ch.k) * vol * (ch.kind === 'rifle' ? 0.6 : 1);
         h.g.gain.setTargetAtTime(gain, now, 0.04); h.lg.gain.setTargetAtTime(gain * (ch.perfect ? 0.8 : 0.3), now, 0.04);
       } else if (h) this.stopHum(p);
@@ -123,6 +122,47 @@ export class Sound {
       } else if (w) { w.g.gain.setTargetAtTime(0.0001, now, 0.04); w.src.stop(now + 0.25); this.grinds.delete(p); }
     }
     for (const p of [...this.hums.keys()]) if (!seen.has(p)) this.stopHum(p);
+    this.loops(world, now, vol);
+  }
+  // Two looping voices: the Level 4 beam's roar (a detuned buzz and rushing noise, wobbling) and the Aegis'
+  // glassy hum, which drops in pitch and starts to waver as the shield weakens
+  loops(world, now, vol) {
+    const c = this.ctx; this.beamV = this.beamV || new Map(); this.aegisV = this.aegisV || new Map();
+    const want = new Set(), wantA = new Set();
+    for (const p of world.players) {
+      if (p.state === 'beam' && p.beam && vol > 0) {
+        want.add(p);
+        let v = this.beamV.get(p);
+        if (!v) {
+          const o1 = c.createOscillator(), o2 = c.createOscillator(), n = c.createBufferSource(), f = c.createBiquadFilter(), nf = c.createBiquadFilter(), g = c.createGain(), lfo = c.createOscillator(), lg = c.createGain();
+          o1.type = 'sawtooth'; o2.type = 'square'; o1.frequency.value = 92; o2.frequency.value = 139; n.buffer = this.noiseBuf; n.loop = true;
+          f.type = 'lowpass'; f.frequency.value = 1400; nf.type = 'bandpass'; nf.frequency.value = 2600; nf.Q.value = 0.7;
+          lfo.frequency.value = 11; lg.gain.value = 0.02 * vol; lfo.connect(lg); lg.connect(g.gain);
+          o1.connect(f); o2.connect(f); n.connect(nf); nf.connect(g); f.connect(g); g.connect(this.master);
+          g.gain.setValueAtTime(0.0001, now); g.gain.exponentialRampToValueAtTime(0.07 * vol, now + 0.06);
+          o1.start(); o2.start(); n.start(); lfo.start();
+          v = { o1, o2, n, lfo, g }; this.beamV.set(p, v);
+        }
+        const k = p.beam.t / MARKSMAN.beam.ticks;
+        v.o1.frequency.setTargetAtTime(80 + 30 * k, now, 0.05); v.o2.frequency.setTargetAtTime(120 + 45 * k, now, 0.05);
+      }
+      if (p.aegis && vol > 0 && p.state !== 'dead' && p.state !== 'downed') {
+        wantA.add(p);
+        let a = this.aegisV.get(p);
+        if (!a) {
+          const o1 = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), lfo = c.createOscillator(), lg = c.createGain();
+          o1.type = 'sine'; o2.type = 'triangle'; lfo.frequency.value = 3; lg.gain.value = 0.004 * vol; lfo.connect(lg); lg.connect(g.gain);
+          o1.connect(g); o2.connect(g); g.connect(this.master); g.gain.setValueAtTime(0.0001, now); g.gain.exponentialRampToValueAtTime(0.014 * vol, now + 0.1);
+          o1.start(); o2.start(); lfo.start(); a = { o1, o2, lfo, g }; this.aegisV.set(p, a);
+        }
+        const frac = p.aegis.hp / p.aegis.max;
+        a.o1.frequency.setTargetAtTime(420 + 240 * frac, now, 0.08); a.o2.frequency.setTargetAtTime(632 + 360 * frac, now, 0.08);
+        a.lfo.frequency.setTargetAtTime(frac < 0.35 ? 13 : 3, now, 0.1);
+      }
+    }
+    const stop = (map, p, fade = 0.05) => { const v = map.get(p); v.g.gain.setTargetAtTime(0.0001, now, fade); for (const k of ['o1', 'o2', 'n', 'lfo']) if (v[k]) v[k].stop(now + 0.3); map.delete(p); };
+    for (const p of [...this.beamV.keys()]) if (!want.has(p)) stop(this.beamV, p, 0.06);
+    for (const p of [...this.aegisV.keys()]) if (!wantA.has(p)) stop(this.aegisV, p, 0.03);
   }
   stopHum(p) {
     const h = this.hums.get(p); if (!h) return;
@@ -158,11 +198,59 @@ export class Sound {
       case 'dashChargeStart': this.tone(220, 330, 0.1, 'triangle', 0.025); break;
       case 'dashLevel': this.tone([0, 523, 659, 880][ev.level] || 659, 0, 0.1, 'triangle', 0.06); if (ev.level === 3) this.tone(1320, 0, 0.1, 'sine', 0.04, 0.05); break;
       case 'rifleRaise': this.tone(1800, 0, 0.02, 'square', 0.03); this.tone(1200, 0, 0.03, 'square', 0.025, 0.04); break;
-      case 'rifleMark': this.tone(1760, 0, 0.18, 'sine', 0.06); this.tone(2637, 0, 0.12, 'sine', 0.035, 0.03); break;
+      case 'rifleFocus': this.tone(1760, 0, 0.18, 'sine', 0.06); this.tone(2637, 0, 0.12, 'sine', 0.035, 0.03); break;
       case 'rifleLower': this.tone(900, 0, 0.03, 'square', 0.02); break;
-      case 'rifleShot':
-        this.noise(0.06, 5000, 0.14, 'highpass'); this.tone(900, 200, 0.08, 'square', 0.05); this.noise(0.2, 1200, 0.09, 'lowpass');
-        if (ev.mark) { this.tone(260, 70, 0.32, 'sawtooth', 0.09); this.tone(2400, 1200, 0.25, 'sine', 0.04); this.tone(90, 40, 0.25, 'sine', 0.14); }
+      case 'snipe': {
+        // A sharp crack, a deep report, the supersonic whip down the line, a rolling tail; then the bolt cycles
+        const f = ev.f || 0;
+        this.noise(0.05, 5200, 0.2 + 0.1 * f, 'highpass'); this.tone(95 + 30 * f, 38, 0.3 + 0.15 * f, 'sine', 0.16 + 0.1 * f);
+        this.tone(900, 180, 0.09, 'square', 0.05); this.noise(0.25, 3200, 0.08 + 0.05 * f, 'bandpass', 700, 0.01);
+        this.noise(0.5 + 0.3 * f, 900, 0.1 + 0.05 * f, 'lowpass', 150, 0.02);
+        if (ev.full) { this.tone(2400, 1100, 0.3, 'sine', 0.045); this.tone(260, 70, 0.32, 'sawtooth', 0.06); }
+        this.tone(1900, 0, 0.025, 'square', 0.035, 0.34); this.noise(0.03, 3000, 0.06, 'bandpass', 0, 0.34);
+        this.tone(1500, 0, 0.03, 'square', 0.035, 0.5); this.noise(0.04, 2400, 0.07, 'bandpass', 0, 0.5);
+        break;
+      }
+      case 'crit': this.tone(2637, 0, 0.1, 'sine', 0.06); this.tone(3520, 0, 0.08, 'square', 0.025, 0.02); break;
+      case 'deflect':
+        // Staff meets shot: a bright metallic ting (brighter and ringing on a perfect)
+        this.tone(2350, 0, ev.perfect ? 0.3 : 0.14, 'sine', 0.08); this.tone(3525, 0, ev.perfect ? 0.24 : 0.1, 'sine', 0.045);
+        this.noise(0.03, 6000, 0.08, 'highpass'); if (ev.perfect) this.tone(1175, 2350, 0.12, 'triangle', 0.04);
+        break;
+      case 'dashSlash': this.noise(0.18, 1800, 0.14 + 0.04 * ev.tier, 'bandpass', 6500); this.tone(1100, 2400, 0.1, 'sine', 0.05); this.tone(140, 60, 0.14, 'sine', 0.06 + 0.03 * ev.tier); break;
+      case 'crescent': this.tone(300, 900, 0.22, 'sawtooth', 0.05); this.noise(0.25, 900, 0.1, 'bandpass', 4200); this.tone(1800, 1200, 0.18, 'sine', 0.03); break;
+      case 'pogo': this.tone(320, 900, 0.1, 'triangle', 0.07); this.noise(0.06, 2400, 0.05); break;
+      case 'poundStart': this.noise(0.22, 3000, 0.1, 'bandpass', 400); this.tone(520, 260, 0.2, 'triangle', 0.04); break;
+      case 'poundLevel': this.tone([0, 392, 523, 659][ev.level] || 523, 0, 0.12, 'triangle', 0.07); if (ev.level === 3) this.tone(1047, 0, 0.12, 'sine', 0.05, 0.05); break;
+      case 'poundDrop': this.tone(1500, 380, 0.32, 'sine', 0.05); this.noise(0.3, 700, 0.08 + 0.02 * ev.level, 'bandpass', 3000); break;
+      case 'poundLand': {
+        const L = ev.level || 0;
+        this.tone(88 - 6 * L, 30, 0.35 + 0.08 * L, 'sine', 0.2 + 0.05 * L); this.noise(0.3 + 0.1 * L, 700, 0.18 + 0.05 * L, 'lowpass', 120);
+        this.noise(0.06, 4200, 0.1 + 0.03 * L, 'highpass'); this.tone(200, 60, 0.2, 'sawtooth', 0.05 + 0.02 * L);
+        if (L >= 3) { this.tone(55, 28, 0.6, 'sine', 0.2); this.noise(0.7, 400, 0.12, 'lowpass', 90, 0.05); }
+        break;
+      }
+      // Nova: the Level 4 beam and the Aegis
+      case 'beamStart': this.tone(1760, 440, 0.3, 'sawtooth', 0.05); this.noise(0.35, 2000, 0.16, 'bandpass', 500); this.tone(70, 35, 0.4, 'sine', 0.2); break;
+      case 'beamEnd': this.tone(420, 90, 0.35, 'sawtooth', 0.04); this.noise(0.3, 1500, 0.06, 'lowpass', 200); break;
+      case 'erase': if (this.limit('erase', 0.05)) this.noise(0.05, 3500, 0.05, 'highpass'); break;
+      case 'aegisOn': this.tone(660, 1320, 0.2, 'sine', 0.06); this.tone(990, 1980, 0.24, 'triangle', 0.035, 0.03); this.noise(0.25, 5000, 0.05, 'highpass', 2000); break;
+      case 'aegisHit': {
+        // Glass under strain: a ping that drops with the shield's strength, and a crackle as it weakens
+        const fr = ev.frac ?? 1;
+        if (this.limit('aegisHit', 0.03)) { this.tone(1900 + 1400 * fr, 0, 0.12, 'triangle', 0.07); this.noise(0.04, 6000, 0.08, 'highpass'); }
+        if (fr < 0.6) for (let i = 0; i < 3; i++) this.tone(2400 + Math.random() * 2400, 0, 0.03, 'square', 0.02, 0.02 + i * 0.025);
+        this.tone(160, 90, 0.1, 'sine', 0.06);
+        break;
+      }
+      case 'aegisOff':
+        if (ev.why === 'break') {
+          // Shatter: a burst of glass, then tinkling shards
+          this.noise(0.6, 4200, 0.2, 'highpass', 1800); this.tone(140, 50, 0.3, 'sine', 0.14);
+          for (let i = 0; i < 9; i++) this.tone(2000 + Math.random() * 3000, 0, 0.06 + Math.random() * 0.06, 'triangle', 0.03, 0.03 + i * 0.045);
+        } else if (ev.why === 'detonate') {
+          this.tone(90, 32, 0.5, 'sine', 0.22); this.noise(0.45, 900, 0.22, 'lowpass', 150); this.tone(1320, 2640, 0.2, 'sine', 0.05); this.noise(0.3, 5000, 0.1, 'highpass');
+        } else this.tone(1320, 440, 0.4, 'sine', 0.04);
         break;
       case 'lockOn': this.tone(1320, 0, 0.05, 'sine', 0.05); this.tone(1760, 0, 0.07, 'sine', 0.05, 0.05); break;
       case 'lockSwitch': this.tone(1560, 0, 0.05, 'sine', 0.045); break;
@@ -185,10 +273,22 @@ export class Sound {
         else { this.tone(260, 80, 0.4, 'sawtooth', 0.12); this.tone(1700, 700, 0.2, 'sine', 0.05); this.noise(0.25, 900, 0.14, 'lowpass'); }
         break;
       case 'tracer': this.tone(1200, 1900, 0.1, 'sine', 0.06); break;
-      case 'chargeLevel': this.tone([0, 660, 880, 1175][ev.level] || 990, 0, 0.14, 'sine', 0.07); if (ev.level === 3) this.tone(1760, 0, 0.1, 'sine', 0.04, 0.05); break;
+      case 'chargeLevel':
+        if (ev.level >= 4) { for (const [f, d] of [[1568, 0], [2093, 0.04], [2637, 0.08], [3136, 0.12]]) this.tone(f, 0, 0.3, 'sine', 0.05, d); this.noise(0.3, 5000, 0.05, 'highpass', 2000); break; }
+        this.tone([0, 660, 880, 1175][ev.level] || 990, 0, 0.14, 'sine', 0.07); if (ev.level === 3) this.tone(1760, 0, 0.1, 'sine', 0.04, 0.05);
+        break;
       case 'burstLevel': this.tone([0, 440, 587, 784][ev.level] || 587, 0, 0.12, 'triangle', 0.07); break;
       case 'meleeCharged': this.tone(520, 1040, 0.12, 'sine', 0.06); break;
-      case 'swing': if (this.limit('swing', 0.04)) this.noise(0.07, 1600, 0.05, 'bandpass', 900); break;
+      case 'swing': {
+        // Blades hiss, the glaive whooshes low and long, Nova's hard-light fists thump the air
+        if (!this.limit('swing', 0.04)) break;
+        const id = ev.id || '';
+        if (id.startsWith('nova_k')) { this.noise(0.08, 900, 0.07, 'bandpass', 400); this.tone(220, 120, 0.07, 'triangle', 0.04); if (id === 'nova_k3') this.tone(90, 45, 0.15, 'sine', 0.1); }
+        else if (id === 'echo_spin' || id === 'echo_rise') { for (let i = 0; i < 4; i++) this.noise(0.08, 1200 + i * 300, 0.06, 'bandpass', 700, i * 0.06); }
+        else if (/b4|charged|riposte|ab3|g3|air3/.test(id)) { this.noise(0.16, 700, 0.09, 'bandpass', 2400); this.tone(180, 90, 0.12, 'sine', 0.05); }
+        else this.noise(0.07, 2600, 0.06, 'bandpass', 5200);
+        break;
+      }
       case 'hit':
         if (!this.limit('hit', 0.025)) break;
         if (ev.heavy) { this.noise(0.12, 700, 0.22, 'lowpass'); this.tone(150, 60, 0.14, 'sine', 0.2); }
@@ -272,6 +372,20 @@ export class Sound {
       case 'focusUp': this.tone(700 + ev.level * 120, 0, 0.08, 'triangle', 0.04); break;
       case 'focusLost': this.tone(520, 260, 0.16, 'triangle', 0.04); break;
       case 'gates': ev.closed ? this.tone(140, 110, 0.5, 'sawtooth', 0.06) : this.tone(220, 660, 0.4, 'triangle', 0.06); break;
+      // Bosses
+      case 'bossIntro': for (const [f, d] of [[73, 0], [110, 0.02], [147, 0.04]]) this.tone(f, f * 0.98, 1.1, 'sawtooth', 0.07, d); this.noise(0.8, 300, 0.1, 'lowpass', 90); this.tone(1100, 550, 0.6, 'sine', 0.03, 0.2); break;
+      case 'bossSlam': this.tone(60, 28, 0.55, 'sine', ev.big ? 0.3 : 0.2); this.noise(0.45, 500, ev.big ? 0.28 : 0.18, 'lowpass', 80); this.noise(0.06, 3500, 0.1, 'highpass'); break;
+      case 'bossPhase': this.tone(90, 45, 1.0, 'sawtooth', 0.12); this.tone(180, 70, 0.9, 'square', 0.05); this.noise(1.0, 1200, 0.18, 'bandpass', 200); this.tone(880, 1760, 0.4, 'sine', 0.04, 0.3); break;
+      case 'bossLaser': this.tone(220, 110, (ev.ticks || 40) / 60, 'sawtooth', 0.08); this.noise((ev.ticks || 40) / 60, 2600, 0.1, 'bandpass', 1800); this.tone(1760, 0, 0.08, 'square', 0.04); break;
+      case 'bossMissiles': for (let i = 0; i < (ev.n || 3); i++) { this.noise(0.12, 1600, 0.08, 'bandpass', 600, i * 0.06); this.tone(400, 900, 0.1, 'triangle', 0.035, i * 0.06); } break;
+      case 'bossDive': this.tone(1800, 300, 0.45, 'sawtooth', 0.05); this.noise(0.45, 900, 0.12, 'bandpass', 3500); break;
+      case 'bossCrash': this.tone(70, 30, 0.5, 'sine', 0.25); this.noise(0.5, 700, 0.24, 'lowpass', 90); for (let i = 0; i < 5; i++) this.tone(600 + Math.random() * 900, 0, 0.05, 'square', 0.03, 0.05 + i * 0.07); break;
+      case 'bossDazed': this.tone(660, 330, 0.3, 'sine', 0.07); this.tone(990, 495, 0.3, 'sine', 0.05); break;
+      case 'bossCall': this.tone(520, 1040, 0.25, 'sawtooth', 0.05); this.tone(780, 1560, 0.25, 'sawtooth', 0.04, 0.12); break;
+      case 'bossDown':
+        for (let i = 0; i < 8; i++) { this.noise(0.25, 700, 0.14, 'lowpass', 120, i * 0.13); this.tone(90, 40, 0.25, 'sine', 0.12, i * 0.13); }
+        this.tone(55, 25, 1.4, 'sine', 0.3, 1.15); this.noise(1.4, 900, 0.3, 'lowpass', 60, 1.15); this.noise(0.1, 5000, 0.14, 'highpass', 0, 1.15);
+        break;
     }
   }
 }

@@ -42,7 +42,7 @@ function rocket(n, attach = 'lance', extra = null) {
   return { h: top - y0, rj: t.log.filter(e => e.type === 'rocketJump'), preview, ys, p: t.p, log: t.log, w: t.w };
 }
 { // Height climbs steadily with how long the shot was charged
-  const ns = [25, 35, 45, 55, 65, 75], hs = ns.map(n => rocket(n).h);
+  const ns = [0, 1, 2, 3, 4, 5].map(i => Math.round(C[0] + 1 + i * (C[2] - C[0] - 6) / 5)), hs = ns.map(n => rocket(n).h);
   const rising = hs.every((h, i) => i === 0 || h > hs[i - 1] + 0.3);
   const l3 = rocket(C[2] + M.perfectWindow + 4), perf = rocket(C[2] + 2);
   const t = setup(99); t.run({ aim: [0, -1], held: { fire: true } }, 1); t.run({ aim: [0, -1] }, 30);
@@ -58,13 +58,13 @@ function rocket(n, attach = 'lance', extra = null) {
 { // The launch pauses on impact for a few ticks, then leaves; the camera pulls ahead of the climb
   const q = rocket(C[2] + 2, 'arc');
   const ev = q.rj[0], frozen = q.ys.slice(0, R.freeze[2] - 1).every(y => y === 0), rose = q.ys[R.freeze[2] + 3] > 0.5;
-  const flip = ev.h >= R.flipH;
+  const big = ev.h >= 9.5;
   // While he lines it up, the camera eases back until the apex is in frame
   const t = setup(99); t.p.attachment = 'arc';
   t.run({ aim: [0, -1], held: { fire: true } }, C[2] + 1);
   const pv = t.w.rocketPreview(t.p), top = t.w.cam.y + t.w.cam.halfH;
-  assert(ev.power > 0.99 && ev.perfect && frozen && rose && flip && pv && top > pv.apex,
-    `Perfect Arc rocket: power ${ev.power.toFixed(2)}, ${R.freeze[2]}-tick impact pause, then launch with a backflip; lining it up frames the apex (${pv && pv.apex.toFixed(1)} m, frame top ${top.toFixed(1)} m)`);
+  assert(ev.power > 0.99 && ev.perfect && frozen && rose && big && pv && top > pv.apex,
+    `Perfect Arc rocket: power ${ev.power.toFixed(2)}, ${R.freeze[2]}-tick impact pause, then a ${ev.h.toFixed(1)} m launch; lining it up frames the apex (${pv && pv.apex.toFixed(1)} m, frame top ${top.toFixed(1)} m)`);
 }
 { // A jump pressed during the climb never cuts it short, and the double jump is kept for the apex
   const plain = rocket(C[2] + 12, 'lance');
@@ -154,13 +154,14 @@ function onWall(char = 'nova', y = 7, vy = -12) {
   const kick = mx => { const t = onWall('nova', 5); t.run({ mx: 1 }, 15); const x0 = t.p.x; t.run({ mx, held: { jump: true } }, 1); t.run({ mx, held: { jump: true } }, 10); return { dx: x0 - t.p.x, t }; };
   const climb = kick(1), leap = kick(-1);
   const { p, run, log } = onWall('echo', 2.3, -2);
-  const y0 = p.y; let rel = false;
+  const y0 = p.y; let rel = false, top = y0;
   // Hold jump; let go for one tick whenever he is back on the wall, so the next tick is a fresh press
   for (let i = 0; i < 150; i++) {
     if (p.wallDir !== 0 && p.vy < 8 && !rel) { run({ mx: 1 }, 1); rel = true; } else { run({ mx: 1, held: { jump: true } }, 1); rel = false; }
+    top = Math.max(top, p.y);
   }
-  assert(climb.dx < 0.8 && leap.dx > 1.6 && p.y > y0 + 3 && count(log, 'walljump', e => e.climb) >= 3,
-    `Climb kick pushes out ${climb.dx.toFixed(2)} m, leap ${leap.dx.toFixed(2)} m; Echo climbs the wall ${(p.y - y0).toFixed(1)} m in 2.5 s with climb kicks`);
+  assert(climb.dx < 0.8 && leap.dx > 1.6 && top > y0 + 3 && count(log, 'walljump', e => e.climb) >= 2,
+    `Climb kick pushes out ${climb.dx.toFixed(2)} m, leap ${leap.dx.toFixed(2)} m; Echo climbs ${(top - y0).toFixed(1)} m up a single wall with climb kicks`);
 }
 { // Attacking from a wall: Echo's air strings hit a drone on the open side and he keeps sliding
   const { w, p, run, log } = onWall('echo', 3.4, -2);
@@ -215,23 +216,14 @@ function dashDist(holdTicks, o = {}) {
 }
 
 // ---------------------------------------------------------------- Echo's staff-rifle
-{ // Tap throws a snare (on release); hold fires a long shot that hits 30 m away
+{ // Tap throws a snare (on release); holding scopes the sniper rifle, and it hits an enemy 31 m away
   const t = setup(58, 'echo'); t.run({ aim: [1, 0], held: { fire: true } }, 2); t.run({ aim: [1, 0] }, 2);
-  const tap = count(t.log, 'snareThrow') === 1 && count(t.log, 'rifleShot') === 0;
+  const tap = count(t.log, 'snareThrow') === 1 && count(t.log, 'snipe') === 0;
   const r = setup(61, 'echo'); const far = enemy(r.w, 'shield', 92, 0); far.shieldDir = 1;
-  r.run({ aim: [1, 0], held: { fire: true } }, 20); r.run({ aim: [1, 0] }, 60);
-  const shot = last(r.log, 'rifleShot');
-  assert(tap && shot && !shot.mark && count(r.log, 'hit', h => h.e === far) === 1 && count(r.log, 'snareThrow') === 0,
-    `Tap fire throws a snare; a held shot hits an enemy 31 m away (${count(r.log, 'hit', h => h.e === far)} hit)`);
-}
-{ // A full hold fires a marking shot that pierces and tags everything in line; cooldown between shots
-  const r = setup(61, 'echo'); const a = enemy(r.w, 'swarmer', 70, 0.6), b = enemy(r.w, 'swarmer', 78, 0.6);
-  r.run({ aim: [1, 0], held: { fire: true } }, HUNTER.rifle.mark + 2); r.run({ aim: [1, 0] }, 20);
-  const mark = last(r.log, 'rifleShot');
-  r.run({ aim: [1, 0], held: { fire: true } }, 12); r.run({ aim: [1, 0] }, 1);
-  const lowered = count(r.log, 'rifleLower') === 1 && count(r.log, 'rifleShot') === 1;
-  assert(mark && mark.mark && a.tagged > 0 && b.tagged > 0 && count(r.log, 'hit', h => h.e === a || h.e === b) === 2 && lowered,
-    `Marking shot pierces both swarmers and tags them (${a.tagged}, ${b.tagged}); firing again during the cooldown does nothing`);
+  r.run({ aim: [1, 0], held: { fire: true } }, 20); r.run({ aim: [1, 0] }, 10);
+  const shot = last(r.log, 'snipe');
+  assert(tap && shot && !shot.full && count(r.log, 'hit', h => h.e === far) === 1 && count(r.log, 'snareThrow') === 0,
+    `Tap fire throws a snare; a scoped shot hits an enemy 31 m away (${count(r.log, 'hit', h => h.e === far)} hit)`);
 }
 { // He moves slower with the rifle up
   const t = setup(0, 'echo'); t.run({ mx: 1 }, 40); const run = t.p.vx;

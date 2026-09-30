@@ -1,4 +1,5 @@
 import { World } from '../game/js/world.js';
+import { GATES } from '../game/js/level.js';
 import { createEnemy } from '../game/js/enemies.js';
 import { SETTINGS } from '../game/js/config.js';
 SETTINGS.novaKit = 'sentinel';   // these cases cover the Pass 1 kit (jab chain); nova-test.mjs covers the Marksman kit
@@ -68,7 +69,7 @@ const count = (log, t) => log.filter(e => e.type === t).length;
   run({ aim: [1, 0], held: { sig: true } }, 1); run({ aim: [1, 0] }, 20);
   assert(count(log, 'lashZip') === 1, `Scarf Lash zips Echo to a heavy enemy (gap=${(b.x - p.x).toFixed(2)})`); }
 
-// Concourse Lock wave progression: wave1 -> wave2 (with Brute) -> cleared opens gates
+// Concourse Lock wave progression: wave1 -> wave2 (with Brute) -> the Lockwarden -> cleared opens gates
 { const w = new World(); const p = w.addPlayer('test', 'nova'); let prev = { held: {} }; const log = [];
   const run = (o, n = 1) => { for (let i = 0; i < n; i++) { const c = mk(prev, o); prev = c; w.step({ 0: c }); log.push(...w.events); w.events.length = 0; } };
   w.teleport('arena'); run({}, 5); run({ mx: 1 }, 60);
@@ -76,6 +77,8 @@ const count = (log, t) => log.filter(e => e.type === t).length;
   const s1 = w.arena.state; killAll(); run({}, 3);
   const s2 = w.arena.state, brute = w.enemies.some(e => e.type === 'brute'); killAll(); run({}, 3);
   for (let i = 0; i < 6; i++) { killAll(); run({}, 3); }
-  run({}, 60);
-  assert(s1 === 'wave1' && s2 === 'wave2' && brute && w.arena.state === 'cleared', `Arena waves progress wave1 -> wave2 (Brute) -> cleared (${s1} -> ${s2} -> ${w.arena.state})`);
+  const s3 = w.arena.state, boss = w.enemies.find(e => e.type === 'warden'), sealed = GATES.L && GATES.R;
+  run({}, 240); killAll(); run({}, 3); run({}, 60);
+  assert(s1 === 'wave1' && s2 === 'wave2' && brute && s3 === 'boss' && !!boss && sealed && w.arena.state === 'cleared' && !GATES.L,
+    `Arena waves progress wave1 -> wave2 (Brute) -> boss (Lockwarden) -> cleared (${s1} -> ${s2} -> ${s3} -> ${w.arena.state})`);
   assert(count(log, 'banner') >= 3, `Arena banners emitted (${log.filter(q=>q.type==='banner').map(q=>q.text).join(' | ')})`); }

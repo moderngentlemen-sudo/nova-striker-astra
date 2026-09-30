@@ -27,7 +27,7 @@ export function createEnemy(type, x, y, extra = {}) {
     armor: T.armor || 0, armorMax: T.armor || 0,
     state: 'idle', st: 0, atk: null, token: null, target: null, cd: 30 + Math.floor(Math.random() * 40),
     hitstop: 0, flash: 0, dead: false, deathT: 0, tagged: 0, stun: 0, slamCd: 120, cycle: 0,
-    aimX: 0, aimY: 0, label: '', light: T.light, flier: !!T.flier, homeX: x, homeY: y, ...extra,
+    aimX: 0, aimY: 0, label: '', light: T.light, flier: !!T.flier, boss: !!T.boss, homeX: x, homeY: y, ...extra,
   };
 }
 
@@ -35,7 +35,7 @@ export function createEnemy(type, x, y, extra = {}) {
 // flaring Echo in range draws them away from nearer teammates.
 export function canTarget(p) { return p.state !== 'downed' && p.state !== 'dead' && !p.veiled; }
 
-function nearestPlayer(e, world, maxD = 40) {
+export function nearestPlayer(e, world, maxD = 40) {
   if (e.tauntT > 0 && e.taunter && canTarget(e.taunter)) return e.taunter;
   let best = null, bd = maxD, flare = null, fd = Math.min(maxD, SCARF.flareRange);
   for (const p of world.players) {
@@ -51,6 +51,7 @@ function setState(e, s) { e.state = s; e.st = 0; }
 
 function releaseToken(e, world) { if (e.token) { world.director.release(e); } }
 
+export function enemyPhysics(e) { physics(e); }
 function physics(e) {
   const T = ENEMY_TYPES[e.type];
   if (T.flier) { e.vx *= 0.93; e.vy *= 0.93; moveBody(e, DT); return; }   // drones drift to a stop
@@ -66,7 +67,11 @@ export function updateEnemy(e, world) {
   if (e.dropT > 0) e.dropT--;   // lets grappled enemies fall through one-way platforms
   if (e.tagged > 0) e.tagged--;
   if (e.tauntT > 0) e.tauntT--;
-  if (e.dead) { e.deathT++; return; }
+  if (e.dead) {
+    e.deathT++;
+    if (e.boss && !e.onGround) { e.vy = Math.max(e.vy - GRAVITY * DT, -14); e.vx *= 0.95; moveBody(e, DT); }   // a downed gunship falls onto the pad
+    return;
+  }
   if (e.y < KILL_Y) {   // fell out of the level (a charge off a ledge, a knockback over the edge)
     e.dead = true; e.deathT = 0; e.hp = 0; world.director.release(e);
     world.emit('kill', { x: e.x, y: e.y, e, owner: null });
@@ -130,7 +135,7 @@ function walkToward(e, target, speed, stopDist) {
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const approach = (v, t, d) => (v < t ? Math.min(v + d, t) : Math.max(v - d, t));
 
-const BEHAVIOUR = {
+export const BEHAVIOUR = {
   swarmer(e, world) {
     const p = nearestPlayer(e, world, 18);
     e.target = p;

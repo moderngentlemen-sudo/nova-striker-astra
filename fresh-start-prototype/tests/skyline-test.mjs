@@ -93,7 +93,7 @@ for (const char of ['nova', 'echo']) {
 }
 { // Every encounter's spawn points are inside the level, above solid ground
   const bad = [];
-  for (const E of ENCOUNTERS) for (const wv of [...E.waves, E.extra || []]) for (const [t, x, y] of wv) {
+  for (const E of ENCOUNTERS) for (const wv of [...(E.waves || []), E.extra || []]) for (const [t, x, y] of wv) {
     if (t === 'drone') continue;
     if (Math.abs(groundBelow(x, y + 0.1) - y) > 0.05) bad.push(`${E.id}:${t}@${x}`);
   }

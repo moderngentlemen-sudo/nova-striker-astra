@@ -1,4 +1,4 @@
-# Nova Striker: fresh-start prototype (Version 7)
+# Nova Striker: fresh-start prototype (Version 8)
 
 **Scope.** This folder is an isolated, hypothetical fresh-start track. It does not replace, cancel, reset or
 change the existing Nova Striker project or any current work, and it is not a decision to restart the
@@ -9,13 +9,15 @@ game-ready art, and all sound and music is synthesized placeholder audio.
 
 A browser prototype of a 2.5D sci-fi action platformer for 1–4 player local co-op.
 
-- **Nova** (Sentinel) starts with the Marksman kit. It has a bracer with four chargeable attachments
-  (Lance, Volley, Arc, Prism), a chargeable secondary blaster, rocket jumps, light boosters and skate-blade
-  boots. His Pass 1 Sentinel kit is in Settings.
-- **Echo** (Pursuit) starts with the Hunter kit. It has twin blades and a glaive, snares, a staff-rifle, and
-  a nano-scarf with three modes (Tether, Veil, Flare). His Pass 1 Pursuit kit is in Settings.
-- **Zones:** Movement Gym, Concourse Lock (an arena), Storm Spire Climb and Skyline Relay (drones, mortars,
-  chargers and a gated two-wave fight).
+- **Nova** (Sentinel) starts with the Marksman kit: a bracer with four chargeable attachments (Lance,
+  Volley, Arc, Prism) and a Level 4 beam, a chargeable secondary blaster, the hard-light Aegis, a
+  close-range combo, rocket jumps, light boosters and skate-blade boots. His Pass 1 Sentinel kit is in
+  Settings.
+- **Echo** (Pursuit) starts with the Hunter kit: twin blades and a glaive, a sniper rifle, snares, staff
+  deflects, and a nano-scarf with three modes (Tether, Veil, Flare). His Pass 1 Pursuit kit is in Settings.
+- **Both** have a chargeable ground pound.
+- **Zones:** Movement Gym, Concourse Lock (an arena ending in the Lockwarden boss), Storm Spire Climb and
+  Skyline Relay (ending in the Stormcaller boss).
 
 ## Run it
 
@@ -35,36 +37,36 @@ browser tab for controllers and rumble, because embedded viewers may block gamep
 | Jump · double jump · wall jump | Space | A or LB |
 | Dash · slide · charged dash | Shift · S + Shift · hold Shift while standing still | B · down + B · hold B |
 | Fire (hold to charge) | Left click or K | RT |
-| Melee (Nova: secondary blaster) | Right click or J | X |
+| Melee (Nova: combo up close, secondary blaster otherwise) | Right click or J | X |
+| Ground pound (hold to charge) | S + melee in the air | Down + X in the air |
 | Parry | Q or L | LT |
-| Suit ability | E, I or middle click | Y |
+| Suit ability (Nova: the Aegis) | E, I or middle click | Y |
 | Switch mode (Nova's attachment, Echo's scarf) | R, U or mouse back | RB |
 | Lock-on (tap to lock or switch, hold to release) | F, O or mouse forward | R3 |
 | Swap character · pause · help | 1/2 or Tab · Esc or P · H | D-pad left/right · Start · View |
 
-Extra gamepads join by pressing any button, up to four players. H shows the full controls in game.
+Extra gamepads join by pressing any button, up to four players. H or View shows the full controls in game.
 
-## What changed in Version 7
+## What changed in Version 8
 
-- **Rocket jumps:** the height grows with charge time, from about 3 m at charge level 1 to about 10 m on a
-  Perfect Release (the Arc goes highest). While you line one up, a marker shows the height. The launch
-  effects are much bigger.
-- **Wall play:** the slide grips, then eases in. The grip is sticky and a slightly late wall jump still
-  works. Climb kicks let you climb a single wall, and leaps push you off. Everyone can shoot and attack from
-  a wall.
-- **Charged dash:** hold dash while standing still to charge it through three levels. Afterimages grow with
-  each level.
-- **Echo's staff-rifle:** hold fire for a long shot, or longer for a piercing marking shot.
-- **Also new:** lock-on, a distinct charge and release look for each attachment, and haptics for
-  controllers and phones.
+- **Nova:** slower charging with a Level 4 sustained beam (keep holding fire past level 3), the hard-light
+  Aegis (it cracks, splinters and shatters, and Overcharges his weapons), and a close-range hard-light
+  combo. Rocket jumps no longer flip him.
+- **Echo:** a sniper rifle with a laser sight that flickers while it searches, holds on a target and turns
+  red at full focus; staff deflects; Zero-style moves (Dash Slash, Rising Glaive, Spin Slash, Wall Slash, a
+  crescent wave).
+- **Both:** a chargeable ground pound (down + melee in the air).
+- **Also new:** less recoil across the board, dust effects, longer impact frames, and two bosses (the
+  Lockwarden and the Stormcaller).
 
 ## Code
 
 `game/js/` has one ES module per concern. The simulation (`world.js`, `player.js`, `enemies.js`,
-`combat.js`, `level.js`) runs on plain data at a fixed 60 Hz and never touches the DOM or three.js. It emits
-events, and these react to them:
+`bosses.js`, `combat.js`, `level.js`) runs on plain data at a fixed 60 Hz and never touches the DOM or
+three.js. It emits events, and these react to them:
 
-- rendering (`render.js`, `rigs.js`, `enemyRigs.js`, `fx.js`, `chargefx.js`, `ghosts.js`)
+- rendering (`render.js`, `rigs.js`, `enemyRigs.js`, `anim.js`, `fx.js`, `chargefx.js`, `beamfx.js`,
+  `aegisfx.js`, `trails.js`, `ghosts.js`)
 - sound (`audio.js`, `music.js`)
 - haptics (`haptics.js`)
 - the HUD and menus (`ui.js`)
@@ -74,7 +76,8 @@ All tuning lives in `config.js`.
 ## Tests
 
 `node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-126 checks plus a random-input soak. The browser screenshot runs were done separately and are not included.
+161 checks plus a random-input soak. The browser screenshot, smoke and performance runs were done separately
+and are not included.
 
 ## Known limits
 

@@ -22,6 +22,7 @@ let started = false, paused = false;
 const ui = new UI(document.getElementById('overlay'), {
   resume: () => setPaused(false),
   zone: id => { world.teleport(id); setPaused(false); },
+  boss: id => { world.bossRush(id); setPaused(false); },
   pick: (p, c) => world.swapCharacter(p, c),
   remove: p => { sound.jet(p, false); world.removePlayer(p.slot); },
 });
@@ -84,9 +85,12 @@ function frame(now) {
   handleMenuEvents();
   tryJoin();
   if (started && !paused && !window.__NS.manual) {
-    acc += dt; let steps = 0;
-    while (acc >= DT && steps < 5) { stepSim(); acc -= DT; steps++; }
-    if (steps === 5) acc = 0;
+    if (view.hitPause > 0) { view.hitPause -= dt; acc = 0; }   // an impact frame's hit-pause holds the world still
+    else {
+      acc += dt; let steps = 0;
+      while (acc >= DT && steps < 5) { stepSim(); acc -= DT; steps++; }
+      if (steps === 5) acc = 0;
+    }
   }
   music.update(dt, started ? world : null, paused);
   sound.update(started && !paused ? world : IDLE);   // charge hums and wall-slide grind

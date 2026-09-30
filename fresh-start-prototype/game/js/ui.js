@@ -1,5 +1,5 @@
 // DOM overlays: start screen, HUD, markers, barks, banners, pause/settings, help, debug.
-import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE } from './config.js';
+import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE, AEGIS } from './config.js';
 
 // Echo's scarf mode chip: every player can read which mode his scarf is in
 function scarfChip(p) {
@@ -11,18 +11,29 @@ function scarfChip(p) {
   return '<span class="chip tether">Tether</span>';
 }
 const scarfCharges = p => `<span class="chip">Scarf ${'◆'.repeat(p.lashCharges)}${'◇'.repeat(ECHO.lashCharges - p.lashCharges)}</span>`;
-import { vbTier, chargeStage, burstStage } from './player.js';
+import { vbTier, chargeStage, burstStage, rifleFocus } from './player.js';
+import { BOSS } from './bosses.js';
 
 // Nova, Marksman kit: loaded attachment, charge stage (the Perfect Release window reads "Release!") and Focus
-const STAGE = { charging: 'charging', L1: 'Level 1', L2: 'Level 2', perfect: 'Release!', L3: 'Level 3' };
+const STAGE = { charging: 'charging', L1: 'Level 1', L2: 'Level 2', perfect: 'Release!', L3: 'Level 3', L4: 'Level 4 · Beam' };
 function marksmanChips(p) {
   const A = ATTACH_LOOK[p.attachment], stage = chargeStage(p), bstage = burstStage(p), f = Math.floor(p.focus);
   const fuel = Math.round(p.fuel / MARKSMAN.boost.fuel * 100);
   return `<span class="chip attach" style="color:${A.tint};box-shadow:inset 0 0 0 1px ${A.tint}">${A.name}</span>` +
-    (STAGE[stage] ? `<span class="chip ${stage === 'perfect' ? 'perfect' : 'ready'}">${STAGE[stage]}</span>` : '') +
+    (p.state === 'beam' && p.beam ? `<span class="chip perfect">Beam ${(p.beam.t / 60).toFixed(1)}s</span>` : '') +
+    (STAGE[stage] ? `<span class="chip ${stage === 'perfect' || stage === 'L4' ? 'perfect' : 'ready'}">${STAGE[stage]}</span>` : '') +
     (STAGE[bstage] ? `<span class="chip ${bstage === 'perfect' ? 'perfect' : 'ready'}">Burst ${STAGE[bstage]}</span>` : '') +
     `<span class="chip focus${f ? ' on' : ''}">Focus ${'◆'.repeat(f)}${'◇'.repeat(MARKSMAN.focus.max - f)}</span>` +
-    `<span class="res fuel" title="Light boosters"><i style="width:${fuel}%"></i></span>`;
+    `<span class="res fuel" title="Light boosters"><i style="width:${fuel}%"></i></span>` + aegisChips(p);
+}
+// The hard-light Aegis (Marksman kit's suit ability): its strength while up, else its cooldown; Overcharge
+// from the damage it soaked, as a bar and a chip
+function aegisChips(p) {
+  const a = p.aegis;
+  const shield = a ? `<span class="chip perfect">Aegis</span><span class="res aegis" title="Aegis strength"><i style="width:${Math.max(0, a.hp / a.max * 100).toFixed(0)}%"></i></span>`
+    : `<span class="chip ${p.aegisCd === 0 ? 'ready' : ''}">Aegis ${p.aegisCd === 0 ? 'ready' : Math.ceil(p.aegisCd / 60) + 's'}</span>`;
+  const over = p.overcharge > 0 ? `<span class="chip over">Overcharged</span><span class="res over" title="Overcharge"><i style="width:${Math.round(p.overcharge / AEGIS.over.max * 100)}%"></i></span>` : '';
+  return shield + over;
 }
 
 // Chips every character can show: a charging dash, and the lock-on target
@@ -30,15 +41,21 @@ const ENEMY_NAMES = { swarmer: 'Swarmer', shield: 'Shieldbearer', sniper: 'Snipe
   drone: 'Drone', mortar: 'Mortar', charger: 'Charger' };
 function commonChips(p) {
   const C = DASH_CHARGE.charge, t = p.state === 'dashCharge' ? p.dashChargeT : 0, L = t >= C[2] ? 3 : t >= C[1] ? 2 : t >= C[0] ? 1 : 0;
+  const pl = p.state === 'pound' && p.pound && p.pound.phase === 'hold' ? p.pound.level : 0;
   return (L ? `<span class="chip ${L === 3 ? 'perfect' : 'ready'}">Dash ${L}</span>` : '') +
+    (pl ? `<span class="chip ${pl === 3 ? 'perfect' : 'ready'}">Pound ${pl}</span>` : '') +
     (p.lockT ? `<span class="chip lock">◎ ${ENEMY_NAMES[p.lockT.type] || 'Target'}</span>` : '');
 }
-// Echo's staff-rifle (Hunter kit): shown while it is up or cooling down
+// Echo's sniper rifle (Hunter kit): its focus while scoped (red at full), the bolt cycling after a shot, and a
+// Riposte chip for the moment a perfect deflect opens one
 function rifleChip(p) {
-  const R = HUNTER.rifle;
-  if (p.rifleT >= R.mark && p.rifleCd === 0) return '<span class="chip perfect">Mark!</span>';
-  if (p.rifleT >= R.raise) return p.rifleCd === 0 ? '<span class="chip ready">Rifle</span>' : `<span class="chip">Rifle ${(p.rifleCd / 60).toFixed(1)}s</span>`;
-  return p.rifleCd > 0 ? `<span class="chip">Rifle ${(p.rifleCd / 60).toFixed(1)}s</span>` : '';
+  const R = HUNTER.rifle, bolt = p.rifleCd > 0 ? `<span class="chip">Bolt ${(p.rifleCd / 60).toFixed(1)}s</span>` : '';
+  const rip = p.riposteT > 0 ? '<span class="chip perfect">Riposte!</span>' : '';
+  if (p.rifleT >= R.raise && p.rifleCd === 0) {
+    const f = rifleFocus(p.rifleT);
+    return (f >= 1 ? '<span class="chip red">Full focus</span>' : `<span class="chip ready">Scope ${Math.round(f * 100)}%</span>`) + rip;
+  }
+  return bolt + rip;
 }
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -76,6 +93,9 @@ export class UI {
     this.labels = h('div', 'labels'); root.appendChild(this.labels);
     this.banner = h('div', 'banner'); this.banner.hidden = true; root.appendChild(this.banner);
     this.toastEl = h('div', 'toast'); this.toastEl.hidden = true; root.appendChild(this.toastEl);
+    // Boss health: name, the bar (with a notch at half, where its second phase starts) and its armor plates
+    this.bossBar = h('div', 'bossbar', '<div class="bname"><b></b><span></span></div><div class="bhp"><i class="bfill"></i><i class="bnotch"></i></div><div class="barmor"></div>');
+    this.bossBar.hidden = true; root.appendChild(this.bossBar); this.bossKey = '';
     this.debug = h('pre', 'debug'); this.debug.hidden = true; root.appendChild(this.debug);
     this.panels = new Map(); this.markers = new Map(); this.barks = []; this.enemyLabels = new Map();
     this.bannerT = 0; this.toastT = 0; this.paused = false; this.helpOpen = false;
@@ -104,9 +124,8 @@ export class UI {
             <li>RT fire (hold to charge) · LT parry</li>
             <li>D-pad left/right swap character · Start pause</li></ul></div>
         </div>
-        <p class="fine">Nova: <kbd>R</kbd> or RB switches bracer attachments (Lance, Volley, Arc, Prism). Hold fire or melee to charge through three levels; let go on the flash for a Perfect Release. Fire a charged shot at your feet to rocket jump: the longer the charge, the higher he goes (the gold line shows how high). After a double jump, press jump again for his light boosters.</p>
-        <p class="fine">Echo's scarf modes: <b>Tether</b> grapples, <b>Veil</b> hides him (his first strike from hiding is an ambush), <b>Flare</b> pulls enemies onto him. <kbd>R</kbd> or RB switches; <kbd>E</kbd> or Y uses the mode. Tap fire to throw a snare; hold it to raise his rifle for a long shot, or longer for a marking shot.</p>
-        <p class="fine">Both: slide down walls and shoot or strike from them; hold dash while standing still to charge it. Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd> or View shows controls, <kbd>Esc</kbd> or Start opens settings and zones.</p>
+        <p class="fine">New in Version 8: Nova's Level 4 beam (keep holding fire past level 3), his hard-light Aegis (<kbd>E</kbd>/Y) and close-range combo; Echo's sniper rifle (hold fire), staff deflects and Zero-style moves; a chargeable ground pound for both (down + melee in the air); and two bosses.</p>
+        <p class="fine">Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd>/View shows every control; <kbd>Esc</kbd>/Start opens settings, zones and the boss fights.</p>
         <p class="fine notice" hidden></p>
         <p class="fine touchnote">This build needs a keyboard or a gamepad. Touch controls are designed separately and arrive with a mobile port.</p>
       </div>`;
@@ -132,6 +151,8 @@ export class UI {
     mk('Concourse Lock', () => this.H.zone('arena'));
     mk('Storm Spire Climb', () => this.H.zone('tower'));
     mk('Skyline Relay', () => this.H.zone('skyline'));
+    mk('Boss: Lockwarden', () => this.H.boss('warden'));
+    mk('Boss: Stormcaller', () => this.H.boss('stormcaller'));
     mk('Controls', () => this.toggleHelp(true));
     card.appendChild(row);
     this.playerList = h('div', 'players'); card.appendChild(this.playerList);
@@ -195,21 +216,23 @@ export class UI {
       <tr><td>Charged dash: hold dash while standing still, aim, let go. Each level goes further; level 2 is briefly invulnerable, level 3 cuts through enemies (afterimages show the level)</td><td>Hold B</td><td>Hold Shift</td></tr>
       <tr><td>Wall slide and wall jump: hold toward a wall to slide down it. Jump while holding toward it (or neutral) to kick up it; hold away to leap off. You can shoot and strike while sliding</td><td>Toward the wall · A</td><td>A/D toward the wall · Space</td></tr>
       <tr><td>Lock-on: press to lock the best target in front; tap again to switch targets, hold to let go. Your aim and homing shots go to the target, and melee steps in toward it</td><td>R3 (click the right stick)</td><td>F, O, or mouse forward button</td></tr>
-      <tr><td>Velocity Break</td><td colspan="2">Melee while dashing, sliding, fast-falling, or just after a dash</td></tr>
-      <tr><td>Melee · charged melee</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
-      <tr><td>Echo launcher · Echo dive</td><td>Up + X · Down + X in the air</td><td>W + melee · S + melee in the air</td></tr>
+      <tr><td>Velocity Break (Echo's Hunter kit: the Dash Slash, a lunging cut that carries him through)</td><td colspan="2">Melee while dashing or sliding, or just after a dash</td></tr>
+      <tr><td>Melee · charged melee (hold, then let go)</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
+      <tr><td>Ground pound: in the air, melee with down held (or aimed straight down). Hold it to charge through three levels while you hang in the air; the landing throws enemies outward</td><td>Down + X in the air · hold</td><td>S + melee in the air · hold</td></tr>
+      <tr><td>Echo, Hunter kit: blade and glaive chain · Rising Glaive (a spinning uppercut that carries him up) · Spin Slash in the air · Wall Slash on a wall · charged glaive swing that looses a crescent wave</td><td>X · up + X · up + X in the air · X on a wall · hold X</td><td>Melee · W + melee · W + melee in the air · melee on a wall · hold</td></tr>
+      <tr><td>Echo deflects: his parry and his glaive swings knock enemy shots back at whoever fired them. A perfect deflect opens a Riposte: melee straight after</td><td>LT · X</td><td>Q or L · melee</td></tr>
       <tr><td>Fire · charge</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
       <tr><td>Aim</td><td>Right stick (free) or left stick (8-way)</td><td>Mouse</td></tr>
       <tr><td>Parry (first 4 frames are perfect)</td><td>LT</td><td>Q or L</td></tr>
-      <tr><td>Suit ability: Nova's Bulwark Pulse / Echo's scarf ability for the current mode</td><td>Y</td><td>E, I, or middle click</td></tr>
+      <tr><td>Suit ability: Nova (Marksman kit) raises the hard-light Aegis for 5 s: it blocks every attack, and the damage it takes Overcharges his weapons (faster charging, harder hits). Press again to detonate it. Nova (Sentinel kit): Bulwark Pulse. Echo: his scarf ability for the current mode</td><td>Y</td><td>E, I, or middle click</td></tr>
       <tr><td>Switch mode: Nova's bracer attachment (Lance, Volley, Arc, Prism) · Echo's scarf mode (Tether, Veil, Flare)</td><td>RB</td><td>R, U, or mouse back button</td></tr>
-      <tr><td>Nova, Marksman kit: fire · hold to charge the loaded attachment through three levels · let go on the flash after level 3 for a Perfect Release (more damage; a Perfect Lance breaks guards)</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
-      <tr><td>Nova, Marksman kit: secondary blaster (Recoil Burst), point-blank pellets that knock enemies back and kick you backward (aim down in the air to hop) · hold to charge it through three levels (level 3 adds a blast)</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
+      <tr><td>Nova, Marksman kit: fire · hold to charge the loaded attachment through three levels · let go on the flash after level 3 for a Perfect Release · keep holding to the Level 4 flash and let go for a sustained beam (steer it with your aim; dash or parry cuts it short)</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
+      <tr><td>Nova, Marksman kit: close to an enemy, melee is his hard-light combo (backhand, elbow, blast punch; an axe kick in the air). Otherwise it is the Recoil Burst: point-blank pellets that knock enemies back and kick him backward (aim diagonally down in the air to hop) · hold to charge it through three levels</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
       <tr><td>Nova: every shot bursts where it lands and splashes nearby enemies. A charged shot bursting on the ground or a wall close to you launches you: aim at your feet to rocket jump. The longer the charge, the higher you go (a gold line shows the height); a Perfect Release goes highest</td><td colspan="2">Aim down, charge, let go</td></tr>
       <tr><td>Nova: light boosters. After your double jump, press and hold jump to hover and climb (the gold bar under his health)</td><td>A or LB (third press)</td><td>Space (third press)</td></tr>
       <tr><td>Nova's skates: you glide and keep your speed; reverse to carve to a stop; crouch at speed for a low glide</td><td colspan="2">Move as usual</td></tr>
       <tr><td>Nova's Focus: each charged shot that lands adds a level (a Perfect Release adds two) and more damage; getting hit clears it</td><td colspan="2">Shown under his health bar</td></tr>
-      <tr><td>Echo, Hunter kit: tap to throw a snare (down + tap plants one) · hold to raise the staff-rifle and let go for a long shot · hold longer (the laser brightens) for a marking shot that pierces and tags every enemy in line</td><td>Tap RT · hold RT</td><td>Tap / hold left click or K</td></tr>
+      <tr><td>Echo, Hunter kit: tap to throw a snare (down + tap plants one) · hold to scope the sniper rifle. Focus builds while you hold: the laser narrows, flickers until it rests on a target, holds solid on one and turns red at full focus. Let go for an instant shot; upper-body hits are critical, and at full focus it pierces everything in line, breaks armor and tags</td><td>Tap RT · hold RT</td><td>Tap / hold left click or K</td></tr>
       <tr><td>Tether mode: tap pulls light enemies or zips you to heavy ones; hold reels a light enemy in or yanks a heavy one off balance</td><td>Y (tap / hold)</td><td>E (tap / hold)</td></tr>
       <tr><td>Veil mode: you fade out while you're not attacking and enemies lose track of you; your first strike from hiding is an ambush that staggers. Attacking or getting hit shows you again. Vanish hides you at once</td><td>Y: Vanish</td><td>E: Vanish</td></tr>
       <tr><td>Flare mode: nearby enemies go for you instead of your team; while they do, parries are easier and Resolve builds faster. Challenge pulls every enemy close by onto you</td><td>Y: Challenge</td><td>E: Challenge</td></tr>
@@ -252,6 +275,7 @@ export class UI {
     if (this.toastT > 0) { this.toastT -= dt; if (this.toastT <= 0) this.toastEl.hidden = true; }
     this.updatePanels(world);
     this.updateMarkers(world, view);
+    this.updateBossBar(world);
     for (const b of this.barks) {
       b.t -= dt;
       const s = view.screenOf(b.p.x, b.p.y + b.p.h + 1.1);
@@ -261,6 +285,21 @@ export class UI {
     }
     this.barks = this.barks.filter(b => b.t > 0);
     if (!this.debug.hidden) this.updateDebug(world, fps);
+  }
+
+  updateBossBar(world) {
+    const e = world.enemies.find(q => q.boss && !q.dead && Math.abs(q.x - world.cam.x) < world.cam.halfW + 14);
+    if (!e) { if (!this.bossBar.hidden) this.bossBar.hidden = true; return; }
+    const B = BOSS[e.type], key = `${e.type}|${e.phase}|${e.armor}|${e.armorMax}|${e.state === 'roar' || e.state === 'intro'}`;
+    this.bossBar.hidden = false;
+    $('.bfill', this.bossBar).style.width = `${Math.max(0, e.hp / e.maxHp * 100).toFixed(1)}%`;
+    if (key !== this.bossKey) {
+      this.bossKey = key;
+      $('.bname b', this.bossBar).textContent = B.name; $('.bname span', this.bossBar).textContent = e.phase === 2 ? 'Phase two' : B.title;
+      $('.barmor', this.bossBar).innerHTML = e.armorMax ? `<span>Armor</span>${'<i class="on"></i>'.repeat(e.armor)}${'<i></i>'.repeat(Math.max(0, e.armorMax - e.armor))}` : '';
+      this.bossBar.classList.toggle('shielded', e.state === 'roar' || e.state === 'intro');
+      this.bossBar.classList.toggle('p2', e.phase === 2);
+    }
   }
 
   updatePanels(world) {
@@ -287,7 +326,7 @@ export class UI {
       else if (p.char === 'nova') {
         const bulwark = `<span class="chip ${p.bulwarkCd === 0 ? 'ready' : ''}">Bulwark ${p.bulwarkCd === 0 ? 'ready' : Math.ceil(p.bulwarkCd / 60) + 's'}</span>`;
         const vb = vbTier(p) ? `<span class="chip vb">VB ${vbTier(p)}</span>` : '';
-        if (SETTINGS.novaKit === 'marksman') sub = marksmanChips(p) + bulwark + vb + commonChips(p);
+        if (SETTINGS.novaKit === 'marksman') sub = marksmanChips(p) + vb + commonChips(p);
         else {
           const ch = p.chargeT >= NOVA.charge2 ? 'RAIL' : p.chargeT >= NOVA.charge1 ? 'LANCE' : p.chargeT > 0 ? 'charging' : '';
           sub = bulwark + (ch ? `<span class="chip ready">${ch}</span>` : '') + vb + commonChips(p);
@@ -375,7 +414,8 @@ export class UI {
     const lines = [`fps ${fps.toFixed(0)} · tick ${world.tick} · tokens melee ${d.melee}/${d.meleeCap} ranged ${d.ranged}/${d.rangedCap} · cam dist ${world.cam.dist.toFixed(1)}`];
     for (const p of world.players) {
       lines.push(`P${p.slot + 1} ${p.char} ${p.state}:${p.st} pos ${p.x.toFixed(2)},${p.y.toFixed(2)} v ${p.vx.toFixed(1)},${p.vy.toFixed(1)} ground ${p.onGround ? 1 : 0} wall ${p.wallDir}${p.wallSliding ? ' slide' : ''} vb ${vbTier(p)} air-dash ${p.airDashes} buf j${p.buf.jump} d${p.buf.dash} m${p.buf.melee} p${p.buf.parry}` +
-        ` · dashC ${p.dashChargeT} rifle ${p.rifleT}/${p.rifleCd} rocket ${p.rocketT} lock ${p.lockT ? p.lockT.type : '-'}`);
+        ` · dashC ${p.dashChargeT} rifle ${p.rifleT}/${p.rifleCd} rocket ${p.rocketT} lock ${p.lockT ? p.lockT.type : '-'}` +
+        ` · beam ${p.beam ? p.beam.t : '-'} aegis ${p.aegis ? p.aegis.hp.toFixed(0) : p.aegisCd} over ${p.overcharge.toFixed(0)} pound ${p.pound ? p.pound.phase + p.pound.level : '-'}`);
     }
     this.debug.textContent = lines.join('\n');
   }

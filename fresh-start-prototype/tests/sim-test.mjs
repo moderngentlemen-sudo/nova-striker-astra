@@ -31,8 +31,14 @@ for (const ch of ['nova', 'echo']) {
   // Velocity Break: dash then melee should stop hard
   run({}, 60); p.x = 2; run({}, 5);
   run({ held: { dash: true }, mx: 1 }, 1); run({ mx: 1 }, 3); run({ held: { melee: true } }, 1);
-  assert(p.state === 'vb', `${ch} melee during dash starts Velocity Break (state=${p.state}, tier=${p.vbInfo && p.vbInfo.tier})`);
-  run({}, 3); assert(Math.abs(p.vx) < 0.5, `${ch} Velocity Break hard stop (vx=${p.vx.toFixed(2)})`);
+  if (ch === 'echo') {
+    // Echo (Hunter kit): the Velocity Break is his Dash Slash, a lunge that carries on through
+    assert(p.state === 'dashslash' && p.slash.tier >= 1, `echo melee during dash starts the Dash Slash (tier ${p.slash && p.slash.tier})`);
+    const x1 = p.x; run({}, 6); assert(p.x - x1 > 0.8, `echo Dash Slash carries on through (${(p.x - x1).toFixed(2)} m in 6 ticks)`);
+  } else {
+    assert(p.state === 'vb', `${ch} melee during dash starts Velocity Break (state=${p.state}, tier=${p.vbInfo && p.vbInfo.tier})`);
+    run({}, 3); assert(Math.abs(p.vx) < 0.5, `${ch} Velocity Break hard stop (vx=${p.vx.toFixed(2)})`);
+  }
 }
 
 // 2) Arena: walk in, gates close, fight with scripted mashing, no exceptions
@@ -66,7 +72,7 @@ for (const ch of ['nova', 'echo']) {
   p.x = 24; p.y = 0; let intercepts = 0, shots = 0, rails = 0, errs = 0;
   for (let t = 0; t < 60 * 20; t++) {
     const fire = t % 10 < 1;
-    const o = { aim: [1, 0.1], held: { fire: t > 600 ? (t % 90 < 80) : fire } };
+    const o = { aim: [1, 0.1], held: { fire: t > 600 ? (t % 140 < 125) : fire } };   // long enough for level 3, short of the beam
     try { run(o, 1); } catch (err) { errs++; if (errs < 3) console.log(err.stack); }
     // top charge level: the Rail (level 2) in the Sentinel kit, a level 3 attachment shot in the Marksman kit
     for (const ev of w.events) { if (ev.type === 'intercept') intercepts++; if (ev.type === 'shot') { shots++; if (ev.level === (ev.attach ? 3 : 2)) rails++; } }

@@ -1,5 +1,5 @@
 // Combat resolution: melee hitboxes, projectiles, barriers, shockwaves, damage and parries.
-import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN } from './config.js';
+import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT } from './config.js';
 import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus } from './player.js';
 import { pointInSolid, LEVEL_X0, LEVEL_X1, KILL_Y } from './level.js';
 
@@ -30,7 +30,12 @@ export function resolveHitboxes(world) {
       for (const e of world.enemies) {
         if (e.dead || set.has(e.id) || !overlap(hb, hurtbox(e))) continue;
         set.add(e.id);
-        hitEnemy(world, e, hb, 'melee');
+        // Radial hits (landing shockwaves, the Aegis bursts, ground pounds) push each enemy away from their
+        // centre. Bursts and pound shockwaves count as blasts (a shield cannot stop them); a pound that lands
+        // a hit still counts as a connected strike for its recovery.
+        const hit = hb.radial ? { ...hb, kb: [(sign(e.x - hb.cx) || 1) * Math.abs(hb.kb[0]), hb.kb[1]] } : hb;
+        const res = hitEnemy(world, e, hit, hb.aegisBurst || hb.scatter ? 'blast' : 'melee');
+        if (hb.scatter && hb.owner && (res === 'hit' || res === 'kill')) hb.owner.hitConfirm = true;
       }
     } else {
       for (const p of world.players) {
@@ -50,6 +55,8 @@ export function hitEnemy(world, e, hit, source) {
   if (e.dead) return 'none';
   const owner = hit.owner;
   const cx = e.x, cy = e.y + e.h * 0.55;
+  // A boss arriving or roaring into its second phase shrugs everything off
+  if (e.invuln > 0) { world.emit('blocked', { x: cx, y: cy, e }); return 'blocked'; }
   // Veil ambush: the first melee hit after striking from hiding breaks guard and armor and staggers
   const ambush = source === 'melee' && owner && owner.kind === 'player' && owner.ambushT > 0;
   if (ambush) owner.ambushT = 0;
@@ -91,9 +98,10 @@ export function hitEnemy(world, e, hit, source) {
     if (owner) owner.hitstop = Math.max(owner.hitstop, stop);
     e.hitstop = stop + 1;
   } else e.hitstop = Math.max(e.hitstop, 2);
+  if (e.boss) e.hitstop = Math.min(e.hitstop, 2);   // a combo never freezes a boss in place
 
   world.emit('hit', { x: cx, y: cy, e, owner, heavy: heavyHit, tier: hit.vbTier || 0, source, dmg });
-  if (hit.vbTier === 3 || (hit.rail && e.type === 'brute')) world.emit('impact', { x: cx, y: cy, big: true });
+  if (hit.vbTier === 3 || (hit.rail && (e.type === 'brute' || e.boss))) world.emit('impact', { x: cx, y: cy, big: true });
 
   if (ambush) { world.emit('ambush', { x: cx, y: cy, e, owner }); world.bark(owner, 'ambush', 0.3); }
   if (e.hp <= 0) { kill(world, e, owner); return 'kill'; }
@@ -101,6 +109,10 @@ export function hitEnemy(world, e, hit, source) {
   const canMove = !['post', 'turret', 'sniper', 'mortar'].includes(T);
   if (ambush && T !== 'post' && T !== 'turret') {
     if (e.state !== 'stagger') stagger(world, e, T === 'brute' ? 120 : 90);
+  } else if (hit.scatter && e.light && canMove && !e.flier && !armored) {
+    // A ground pound's scatter blast throws light enemies outward in an arc
+    if (e.state === 'windup' || e.state === 'aim' || e.state === 'lock') world.director.release(e);
+    e.state = 'launched'; e.st = 0; e.vy = hit.kb[1]; e.vx = hit.kb[0]; e.poise = 0;
   } else if (e.poise >= e.poiseMax) {
     stagger(world, e, T === 'brute' ? 120 : T === 'shield' ? 90 : 60);
   } else if (!armored && e.state !== 'stagger' && !(e.state === 'snared' && !hit.launcher) && (T === 'swarmer' || T === 'shield' || T === 'sniper' || T === 'drone')) {
@@ -114,13 +126,14 @@ export function hitEnemy(world, e, hit, source) {
       e.state = 'hitstun'; e.st = 0; e.stun = T === 'swarmer' ? 16 : 12;
     }
   }
-  if (canMove && !armored && hit.kb) {
+  if (canMove && !armored && hit.kb && !e.boss) {
     if (e.state !== 'launched') { e.vx = hit.kb[0]; if (hit.kb[1] > 0) e.vy = Math.max(e.vy, hit.kb[1] * 0.6); }
   }
   return 'hit';
 }
 
 function stagger(world, e, ticks) {
+  if (e.boss) { if (e.staggerCd > 0 || e.invuln > 0) return; ticks = 150; e.staggerCd = 420; e.atk = null; }
   world.director.release(e);
   e.state = 'stagger'; e.st = 0; e.stun = ticks; e.poise = 0;
   world.emit('stagger', { x: e.x, y: e.y + e.h * 0.6, e });
@@ -130,12 +143,27 @@ function kill(world, e, owner) {
   e.dead = true; e.deathT = 0; e.hp = 0;
   world.director.release(e);
   world.emit('kill', { x: e.x, y: e.y + e.h / 2, e, owner });
+  if (e.boss) world.emit('bossDown', { e, x: e.x, y: e.y + e.h / 2, owner });
 }
 
 // ---- Players taking hits ---------------------------------------------------------------
 
 export function hitPlayer(world, p, hit) {
   if (p.state === 'dead' || p.state === 'downed') return 'ignored';
+  // Nova's Aegis blocks every attack (unblockables too) for him and anyone inside it
+  const guard = world.shieldFor ? world.shieldFor(p) : null;
+  if (guard) {
+    const o = hit.owner, from = hit.proj ? hit.proj : hit.at ? hit.at : o ? { x: o.x, y: o.y + (o.h || 1) * 0.5 } : { x: p.x + p.facing, y: p.y + 1 };
+    const diff = DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal;
+    world.absorbAegis(guard, (hit.dmg || 0) * diff.dmg, from.x, from.y, hit.instance !== undefined ? 'i' + hit.instance : undefined);
+    // Heavy melee rebounds off hard light: a charging Charger is dazed as if it hit a wall
+    if (o && o.kind === 'enemy' && !hit.proj && hit.heavy) {
+      o.poise += 30;
+      if (o.state === 'charge') { o.state = 'dazed'; o.st = 0; o.vx = -o.facing * 4; world.emit('chargeCrash', { e: o }); }
+      if (o.boss && o.state === 'dive') o.parried = 2;   // a diving Stormcaller crashes off the hard light
+    }
+    return 'shielded';
+  }
   const attacker = hit.owner;
   const unblockable = hit.cat === 'unblockable' || hit.unblockable;
   const pos = { x: p.x, y: p.y + p.h * 0.6 };
@@ -154,6 +182,7 @@ export function hitPlayer(world, p, hit) {
         if (p.hp <= 0) { world.downPlayer(p); return 'hit'; }
       }
       if (attacker && attacker.kind === 'enemy' && !hit.proj) {
+        if (attacker.boss) attacker.parried = perfect ? 2 : 1;   // bosses react on their next tick (bosses.js)
         attacker.poise += perfect ? 60 : 25;
         attacker.hitstop = perfect ? 8 : 4;
         if (attacker.poise >= attacker.poiseMax) stagger(world, attacker, attacker.type === 'brute' ? 120 : 80);
@@ -189,11 +218,12 @@ export function hitPlayer(world, p, hit) {
       addResolve(p, 8); p.lastResolveHitT = world.tick;
     }
   } else { p.chargeT = 0; if (p.focus > 0) loseFocus(p, world); }
-  p.rifleT = 0; p.dashChargeT = 0;
+  p.rifleT = 0; p.dashChargeT = 0; p.burstT = 0;
   p.mercy = MERCY_TICKS; p.hitstop = 4;
   world.emit('playerHit', { ...pos, p, dmg, heavy: !!hit.heavy, armored });
   if (p.hp <= 0) { p.hp = 0; world.downPlayer(p); return 'hit'; }
   if (!armored) {
+    if (p.beam) world.endBeam(p, 'hit');
     p.state = 'hitstun'; p.st = 0; p.stun = hit.heavy || unblockable ? 24 : 14;
     p.vx = hit.kb ? hit.kb[0] : 0; p.vy = hit.kb ? hit.kb[1] : 3;
     p.dash = null; p.lash = null; p.zip = null; p.meleeCharged = false;
@@ -236,13 +266,30 @@ function projectileHits(world, pr) {
     }
   } else {
     for (const p of world.players) {
-      if (p.state === 'dead' || p.state === 'downed' || !circleBox(pr, hurtbox(p))) continue;
+      if (p.state === 'dead' || p.state === 'downed') continue;
+      if (canDeflect(p, pr)) { world.deflect(p, pr); return; }
+      if (!circleBox(pr, hurtbox(p))) continue;
       if (pr.blast) { detonate(world, pr, pr.x, pr.y, null, false); pr.dead = true; return; }   // mortar shells burst on contact
       const res = hitPlayer(world, p, { dmg: pr.dmg, heavy: pr.heavy, cat: pr.heavy ? 'heavy' : 'standard',
         kb: [sign(pr.vx) * 6, 3], owner: pr.owner, proj: pr });
       if (res !== 'ignored') { pr.dead = true; return; }
     }
   }
+}
+
+// Echo (Hunter kit) knocks back an enemy shot that reaches his staff: during the first DEFLECT.window ticks
+// of a parry (all round him), or in front of him while a `deflect` staff swing is out. Shells that burst
+// (unblockable) cannot be deflected.
+function canDeflect(p, pr) {
+  if (p.char !== 'echo' || SETTINGS.echoKit !== 'hunter' || pr.blast || pr.team !== 'e') return false;
+  const cx = p.x, cy = p.y + p.h * 0.6, d = Math.hypot(pr.x - cx, pr.y - cy);
+  if (p.state === 'parry' && p.parryT <= DEFLECT.window) return d < DEFLECT.reach + pr.r;
+  const m = p.move;
+  if (p.state === 'attack' && m && m.deflect && p.st >= m.su - 1 && p.st <= m.su + m.ac + 1) {
+    const front = m.spin || (pr.x - cx) * p.facing > -0.3;
+    return front && d < DEFLECT.reach + 0.7 + pr.r;
+  }
+  return false;
 }
 
 // Marksman kit: the first piece of a charged release to land earns Focus for the whole shot
@@ -307,6 +354,15 @@ export function updateProjectiles(world) {
       if (pointInSolid(pr.x, pr.y)) {
         if (hitWall(world, pr, ox, oy)) break;
         continue;
+      }
+      if (pr.team === 'e' && world.aegisAt) {
+        const guard = world.aegisAt(pr.x, pr.y, pr.r);
+        if (guard) {
+          // Stopped at the hard light: a shell bursts on it, everything else is absorbed
+          world.absorbAegis(guard, pr.blast ? pr.blast.dmg : pr.dmg, pr.x, pr.y);
+          if (pr.blast) world.emit('enemyBlast', { x: pr.x, y: pr.y, r: pr.blast.r * 0.6 });
+          pr.dead = true; break;
+        }
       }
       for (const b of world.barriers) {
         if (!crossesBarrier(b, ox, oy, pr.x, pr.y)) continue;

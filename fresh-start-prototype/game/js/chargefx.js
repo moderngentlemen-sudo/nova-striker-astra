@@ -7,9 +7,10 @@
 // Presentation only: reads the sim, never changes it.
 import * as THREE from 'three';
 import { toWorld, planeDir } from './space.js';
-import { pointInSolid } from './level.js';
+import { pointInSolid, rayCast, rayBoxT } from './level.js';
 import { MARKSMAN, ATTACH_LOOK, CHARS, HUNTER, DASH_CHARGE, NOVA } from './config.js';
-import { chargeStage, burstStage, marksman, rocketHeight } from './player.js';
+import { chargeStage, burstStage, marksman, rocketHeight, rifleFocus, chest } from './player.js';
+import { hurtbox } from './combat.js';
 
 const WHITE = new THREE.Color('#ffffff');
 const Y = new THREE.Vector3(0, 1, 0);
@@ -17,7 +18,7 @@ const RIBBON_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, transparent
 // Ribbon look per projectile kind: points kept, half-width (m)
 const TRAIL = {
   lance: [8, 0.13], rail: [11, 0.2], dart: [6, 0.05], shell: [10, 0.12], prism: [8, 0.12], shard: [4, 0.045],
-  rifle: [7, 0.055], markShot: [11, 0.12],
+  rifle: [7, 0.055], markShot: [11, 0.12], deflected: [9, 0.12],
 };
 
 // A camera-facing strip through the last few positions of something fast, fading toward the tail
@@ -160,26 +161,37 @@ export class ChargeFX {
     const stage = chargeStage(p), bstage = mk ? burstStage(p) : '';
     const f = mk ? Math.min(1, p.chargeT / C[2]) : Math.min(1, p.chargeT / NOVA.charge2);
     const fb = mk ? Math.min(1, p.burstT / B[2]) : 0;
-    const level = mk ? (p.chargeT >= C[2] ? 3 : p.chargeT >= C[1] ? 2 : p.chargeT >= C[0] ? 1 : 0) : (p.chargeT >= NOVA.charge2 ? 2 : p.chargeT >= NOVA.charge1 ? 1 : 0);
-    this.apexMarker(p, S, world, view);
+    const L4 = MARKSMAN.beam.at, l4 = mk && p.chargeT >= L4, f4 = mk ? Math.max(0, Math.min(1, (p.chargeT - C[2]) / (L4 - C[2]))) : 0;
+    const level = l4 ? 4 : mk ? (p.chargeT >= C[2] ? 3 : p.chargeT >= C[1] ? 2 : p.chargeT >= C[0] ? 1 : 0) : (p.chargeT >= NOVA.charge2 ? 2 : p.chargeT >= NOVA.charge1 ? 1 : 0);
+    if (!l4) this.apexMarker(p, S, world, view);
     if (f <= 0 && fb <= 0) return;
-    const burst = fb > f, k = Math.max(f, fb), perfect = stage === 'perfect' || bstage === 'perfect';
-    const attach = mk ? p.attachment : 'lance';
-    const tint = burst ? '#ffcf7a' : mk ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
+    const burst = fb > f, k = Math.max(f, fb) + (burst ? 0 : 0.45 * f4), perfect = stage === 'perfect' || bstage === 'perfect';
+    const attach = mk ? p.attachment : 'lance', over = p.overcharge > 0;
+    let tint = burst ? '#ffcf7a' : mk ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
+    if (over || l4) tint = '#' + new THREE.Color(tint).lerp(WHITE, l4 ? 0.55 : 0.3).getHexString();   // Overcharge and Level 4 burn whiter
     const at = this.muzzle(p, rig, this.v);
-    const t = this.t, pulse = 1 + Math.sin(t * (perfect ? 55 : 18)) * (perfect ? 0.22 : 0.06 * k);
-    const big = !burst && attach === 'arc' ? 1.3 : !burst && attach === 'prism' ? 0.6 : 1;   // the Prism's crystal is the show
-    // The orb and its white-hot core grow with the charge
-    S.orb.position.copy(at); S.orb.material.color.set(perfect ? '#fff4d6' : burst ? '#ff9f40' : attach === 'prism' ? '#ffd889' : tint);
-    S.orb.scale.setScalar((0.16 + 0.55 * k) * big * pulse); S.orb.material.opacity = 0.65 + 0.3 * k; S.orb.visible = true;
+    const t = this.t, pulse = 1 + Math.sin(t * (perfect || l4 ? 55 : 18)) * (perfect ? 0.22 : l4 ? 0.14 : 0.06 * k);
+    const big = !burst && attach === 'arc' ? 1.3 : !burst && attach === 'prism' && !l4 ? 0.6 : 1;   // the Prism's crystal is the show
+    // The orb and its white-hot core grow with the charge (and keep swelling on the way to Level 4)
+    S.orb.position.copy(at); S.orb.material.color.set(perfect || l4 ? '#fff4d6' : burst ? '#ff9f40' : attach === 'prism' ? '#ffd889' : tint);
+    S.orb.scale.setScalar((0.16 + 0.55 * k) * big * pulse); S.orb.material.opacity = 0.65 + 0.3 * Math.min(1, k); S.orb.visible = true;
     S.core.position.copy(at); S.core.material.color.set('#ffffff'); S.core.scale.setScalar((0.1 + 0.3 * k) * big * pulse); S.core.visible = true;
     if (level >= 2 || perfect || (burst && fb >= B[1] / B[2])) {
-      S.halo.position.copy(at); S.halo.material.color.set(perfect ? '#ffffff' : tint);
-      S.halo.scale.setScalar((0.5 + 0.5 * k) * big * (perfect ? 1.3 + Math.sin(t * 40) * 0.2 : 1)); S.halo.material.rotation = t * 3;
-      S.halo.material.opacity = perfect ? 0.95 : 0.55; S.halo.visible = true;
+      S.halo.position.copy(at); S.halo.material.color.set(perfect || l4 ? '#ffffff' : tint);
+      S.halo.scale.setScalar((0.5 + 0.5 * k) * big * (perfect ? 1.3 + Math.sin(t * 40) * 0.2 : l4 ? 1.5 + Math.sin(t * 24) * 0.12 : 1)); S.halo.material.rotation = t * (l4 ? 9 : 3);
+      S.halo.material.opacity = perfect || l4 ? 0.95 : 0.55; S.halo.visible = true;
     }
+    if (!burst && mk && f4 > 0) {
+      // On the way to Level 4: arcs of energy crackle off the orb, more and more of them
+      for (let i = 0; i < 1 + f4 * 3; i++) {
+        if (Math.random() > 0.35 + 0.5 * f4) continue;
+        const a = Math.random() * Math.PI * 2, r = 0.25 + 0.3 * f4, P = this.fx.particle(this.v2.copy(at), Math.random() < 0.6 ? '#ffffff' : tint, 0.1 + 0.08 * f4, 0.07);
+        planeDir(p.x, Math.cos(a) * r / 0.07, Math.sin(a) * r / 0.07, P.v); P.drag = 0.8; P.grav = 0;
+      }
+    }
+    if (l4) this.beamPreview(p, S, at);
     // Energy drawn in from around the muzzle, faster with each level
-    const rate = 0.6 + (burst ? 2 : level) * 0.9 + (perfect ? 2 : 0);
+    const rate = 0.6 + (burst ? 2 : Math.min(level, 3)) * 0.9 + (perfect ? 2 : 0) + (l4 ? 2.5 : 0) + (over ? 0.8 : 0);
     const dir = planeDir(p.x, p.aimX, p.aimY, this.dir).normalize();   // its own vector: inward() reuses v2
     for (let i = 0; i < rate; i++) {
       if (Math.random() > rate - i) break;
@@ -193,11 +205,11 @@ export class ChargeFX {
         this.inward(at, tv.x, tv.y, tv.z, Math.random() < 0.3 ? '#ffffff' : tint, 0.15, 0.2);
       }
     }
-    if (burst) return;
+    if (burst || l4) return;
     if (attach === 'lance' && level >= 3) {
       // Level 3 Lance: a sight line down the aim
       const end = this.v3.copy(at).addScaledVector(dir, 6);
-      this.span(S.sight, at, end); S.sight.material.opacity = perfect ? 0.85 : 0.35; S.sight.material.color.set(perfect ? '#ffffff' : '#fff1c9');
+      this.span(S.sight, at, end); S.sight.material.opacity = perfect ? 0.85 : 0.35; S.sight.material.color.set(perfect ? '#ffffff' : '#fff1c9'); S.sight.scale.x = S.sight.scale.z = 1;
     } else if (attach === 'volley') {
       // Volley: one orbiting mote per dart the release would fire
       const n = MARKSMAN.volley.darts[perfect ? 'perfect' : Math.max(1, level)], r = 0.28 + 0.12 * k;
@@ -213,6 +225,14 @@ export class ChargeFX {
       S.crystal.position.copy(at).addScaledVector(dir, 0.25); S.crystal.rotation.set(S.spin * 0.7, S.spin, 0); S.crystal.scale.setScalar(0.7 + 1.6 * k); S.crystal.visible = true;
       if (Math.random() < 0.08 + 0.2 * k) this.flash(this.v3.copy(at).add(this.v2.set((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, 0.05)), 'star', ATTACH_LOOK.prism.tint, 0.25 + 0.3 * k, 0.12, 1.2);
     }
+  }
+
+  // Level 4 is ready: a flickering white guide line where the beam will go, to the first wall
+  beamPreview(p, S, at) {
+    const c = chest(p), h = rayCast(c.x + p.aimX * 0.6, c.y + p.aimY * 0.6, p.aimX, p.aimY, MARKSMAN.beam.range);
+    const end = toWorld(h.x, h.y, 0.25, this.v3);
+    this.span(S.sight, at, end); S.sight.material.color.set('#ffffff');
+    S.sight.material.opacity = 0.35 + 0.3 * Math.abs(Math.sin(this.t * 22)); S.sight.scale.x = S.sight.scale.z = 1.4;
   }
 
   // A particle that flies from `at + (ox, oy, oz)` into `at` over its life
@@ -266,33 +286,43 @@ export class ChargeFX {
   }
 
   // ---- Echo ----
+  // The sniper's laser follows the exact line the shot will take: to the first wall, or the first enemy in the
+  // way. Searching (nothing under it) it flickers; resting on an enemy it holds solid; fully charged it turns
+  // red. Focus narrows it from a wide faint band to a thin line. On the crit zone (upper body) the dot becomes
+  // a sharp star.
   echoRifle(p, S, rig, world) {
     const R = HUNTER.rifle;
     if (p.rifleT < R.raise || p.state === 'attack') return;
-    const ready = p.rifleCd === 0, mark = p.rifleT >= R.mark, k = Math.min(1, (p.rifleT - R.raise) / (R.mark - R.raise));
-    const at = this.muzzle(p, rig, this.v);
-    // Laser sight: from the rifle tip along the aim to the first wall or enemy
-    const c = { x: p.x, y: p.y + p.h * 0.62 };
-    let d = 0, hitE = null; const step = 0.25;
-    for (; d < 40; d += step) {
-      const x = c.x + p.aimX * d, y = c.y + p.aimY * d;
-      if (pointInSolid(x, y)) break;
-      hitE = world.enemies.find(e => !e.dead && x > e.x - e.w / 2 && x < e.x + e.w / 2 && y > e.y && y < e.y + e.h);
-      if (hitE) break;
+    const ready = p.rifleCd === 0, k = rifleFocus(p.rifleT), full = k >= 1;
+    const at = this.muzzle(p, rig, this.v), c = chest(p), x0 = c.x + p.aimX * 0.9, y0 = c.y + p.aimY * 0.9;
+    let tEnd = rayCast(x0, y0, p.aimX, p.aimY, R.range).t, hitE = null;
+    for (const e of world.enemies) {
+      if (e.dead) continue;
+      const hb = hurtbox(e), h = rayBoxT(x0, y0, p.aimX, p.aimY, hb.x0 - 0.06, hb.y0 - 0.06, hb.x1 + 0.06, hb.y1 + 0.06);
+      if (h && h.t < tEnd) { tEnd = h.t; hitE = e; }
     }
-    const end = toWorld(c.x + p.aimX * d, c.y + p.aimY * d, 0.25, this.v2);
+    const crit = hitE && y0 + p.aimY * (tEnd + 0.15) > hitE.y + hitE.h * R.critZone;
+    const end = toWorld(x0 + p.aimX * tEnd, y0 + p.aimY * tEnd, 0.25, this.v2);
     this.span(S.laser, at, end);
-    S.laser.material.color.set(mark ? '#ffe0b0' : '#ff9a1f');
-    S.laser.material.opacity = !ready ? 0.12 : mark ? 0.75 + Math.sin(this.t * 30) * 0.15 : 0.22 + 0.25 * k;
-    S.laser.scale.x = S.laser.scale.z = mark ? 2.2 : 1;
-    S.laserDot.position.copy(end); S.laserDot.material.color.set(hitE ? '#ffffff' : '#ff9a1f');
-    S.laserDot.scale.setScalar((hitE ? 0.45 : 0.25) * (mark ? 1.4 : 1)); S.laserDot.visible = ready;
-    // Charge glint at the tip
-    S.orb.position.copy(at); S.orb.material.color.set(mark ? '#fff4d6' : CHARS.echo.energy);
-    S.orb.scale.setScalar((0.12 + 0.3 * k) * (mark ? 1.2 + Math.sin(this.t * 30) * 0.15 : 1)); S.orb.material.opacity = ready ? 0.9 : 0.35; S.orb.visible = true;
+    const red = '#ff2414', col = full ? red : '#ff9a1f';
+    // Searching: a nervous flicker with dropouts. On a target: steady.
+    const search = !hitE, flick = search ? (Math.random() < 0.18 ? 0.15 : 0.55 + Math.random() * 0.45) : 1;
+    S.laser.material.color.set(col);
+    S.laser.material.opacity = !ready ? 0.1 : (full ? 0.85 : 0.2 + 0.45 * k) * flick;
+    S.laser.scale.x = S.laser.scale.z = full ? 1.6 : 3.4 - 2.6 * k;
+    S.laserDot.position.copy(end);
+    const dotTex = crit ? this.tex.star : this.tex.glow;
+    if (S.laserDot.material.map !== dotTex) { S.laserDot.material.map = dotTex; S.laserDot.material.needsUpdate = true; }
+    S.laserDot.material.color.set(full ? red : hitE ? '#ffffff' : '#ff9a1f'); S.laserDot.material.opacity = flick;
+    S.laserDot.material.rotation = crit ? this.t * 4 : 0;
+    S.laserDot.scale.setScalar((hitE ? 0.45 : 0.25) * (full ? 1.4 : 1) * (crit ? 1.9 : 1)); S.laserDot.visible = ready;
+    // Charge glint at the tip; a red scope flare when fully charged
+    S.orb.position.copy(at); S.orb.material.color.set(full ? red : CHARS.echo.energy);
+    S.orb.scale.setScalar((0.12 + 0.3 * k) * (full ? 1.2 + Math.sin(this.t * 30) * 0.15 : 1)); S.orb.material.opacity = ready ? 0.9 : 0.35; S.orb.visible = true;
+    if (full && ready) { S.halo.position.copy(at); S.halo.material.color.set(red); S.halo.scale.setScalar(0.55 + Math.sin(this.t * 18) * 0.08); S.halo.material.rotation = this.t * 2; S.halo.material.opacity = 0.8; S.halo.visible = true; }
     if (ready && Math.random() < 0.3 + 0.5 * k) {
       const a = Math.random() * Math.PI * 2, r = 0.5 + Math.random() * 0.4, tv = planeDir(p.x, Math.cos(a) * r, Math.sin(a) * r, this.v3);
-      this.inward(at, tv.x, tv.y, tv.z, CHARS.echo.energy, 0.12, 0.16);
+      this.inward(at, tv.x, tv.y, tv.z, full ? red : CHARS.echo.energy, 0.12, 0.16);
     }
   }
 
@@ -316,11 +346,12 @@ export class ChargeFX {
   // ---- Events ----
   levelUp(p, rig, level, kind) {
     const at = kind === 'dash' ? toWorld(p.x, p.y + 0.8, 0.2, this.v) : this.muzzle(p, rig, this.v);
-    const tint = kind === 'burst' ? '#ffcf7a' : kind === 'dash' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
+    const tint = kind === 'burst' ? '#ffcf7a' : kind === 'dash' || kind === 'pound' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
       : marksman(p) ? ATTACH_LOOK[p.attachment].tint : CHARS.nova.energy;
     const top = level >= 3;
     this.flash(at, 'ring', top ? '#ffffff' : tint, 0.35 + level * 0.18, 0.18, 3.2);
     this.flash(at, 'star', '#ffffff', 0.35 + level * 0.25, 0.14, 1.5);
+    if (level >= 4) { this.flash(at, 'glow', '#fff1c9', 1.6, 0.2, 1.8); this.shockRing(at.clone(), new THREE.Vector3(0, 0, 1), '#ffffff', 0.3, 1.4, 0.25, 0); }
     for (let i = 0; i < 8 + level * 5; i++) {
       const a = Math.random() * Math.PI * 2, sp = 3 + level * 1.5, P = this.fx.particle(at, Math.random() < 0.4 ? '#ffffff' : tint, 0.16, 0.22);
       planeDir(p.x, Math.cos(a) * sp, Math.sin(a) * sp, P.v); P.drag = 0.88; P.grav = 0;
@@ -344,7 +375,7 @@ export class ChargeFX {
       P.v.copy(dir).multiplyScalar(sp).add(this.v2.set((Math.random() - 0.5) * sp * spread, (Math.random() - 0.5) * sp * spread, (Math.random() - 0.5) * sp * spread * 0.5));
       P.drag = 0.86; P.grav = 3;
     }
-    if ((attach === 'lance' && (L >= 3 || perfect)) || ev.mark) {
+    if (!ev.beam && ((attach === 'lance' && (L >= 3 || perfect)) || ev.mark)) {
       const m = this.line(perfect ? '#ffffff' : ev.mark ? '#ffe0b0' : '#fff1c9', perfect ? 0.06 : 0.04);
       this.span(m, at, this.v3.copy(at).addScaledVector(dir, ev.mark ? 22 : 16));
       this.flashes.push({ m, life: 0.14, max: 0.14, base: 0.9, dispose: true });
@@ -375,14 +406,15 @@ export class ChargeFX {
 
   // ---- Ribbon trails behind charged projectiles ----
   wantsTrail(pr) {
+    if (pr.deflected) return true;
     if (pr.team !== 'p' || !TRAIL[pr.kind]) return false;
     return pr.kind === 'rifle' || pr.kind === 'markShot' || (pr.level || 0) >= 1;
   }
   trail(pr, pos) {
     let r = this.trails.get(pr);
     if (!r) {
-      const [n, w] = TRAIL[pr.kind], lv = pr.level || 1;
-      const col = pr.perfect ? '#fff4d6' : pr.kind === 'rifle' || pr.kind === 'markShot' ? (pr.kind === 'markShot' ? '#ffc070' : CHARS.echo.energy)
+      const [n, w] = TRAIL[pr.deflected ? 'deflected' : pr.kind], lv = pr.deflected ? 1 : pr.level || 1;
+      const col = pr.deflected ? CHARS.echo.energy : pr.perfect ? '#fff4d6' : pr.kind === 'rifle' || pr.kind === 'markShot' ? (pr.kind === 'markShot' ? '#ffc070' : CHARS.echo.energy)
         : pr.kind === 'dart' ? ATTACH_LOOK.volley.tint : pr.kind === 'shell' ? ATTACH_LOOK.arc.tint : pr.kind === 'prism' || pr.kind === 'shard' ? ATTACH_LOOK.prism.tint : ATTACH_LOOK.lance.tint;
       r = new Ribbon(this.scene, n, w * (0.8 + 0.15 * lv) * (pr.perfect ? 1.3 : 1), col);
       this.trails.set(pr, r);

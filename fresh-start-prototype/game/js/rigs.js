@@ -2,8 +2,7 @@
 // defining features: Nova's Sentinel Bracer and visor helmet; Echo's scarf, collar, gauntlets, staff).
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { CHARS, MOVES, SCARF, SETTINGS, ATTACH_LOOK, DASH_CHARGE, HUNTER } from './config.js';
-import { chargeStage, burstStage } from './player.js';
+import { CHARS, ATTACH_LOOK } from './config.js';
 
 const rbox = (w, h, d, r = 0.05) => new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
 const cap = (r, len) => new THREE.CapsuleGeometry(r, len, 4, 12);
@@ -152,8 +151,17 @@ export function buildPlayerRig(charId) {
     const moduleMat = new THREE.MeshStandardMaterial({ color: ATTACH_LOOK.lance.tint, emissive: ATTACH_LOOK.lance.tint, emissiveIntensity: 2.2, roughness: 0.3 });
     const module = mesh(rbox(0.07, 0.1, 0.09, 0.02), moduleMat, 0.11, 0.09, 0); bracer.add(module);
     extra.module = module; extra.moduleMat = moduleMat;
+    // Close range: hard light forms a faceted gauntlet over each fist, and a greave over the lead boot for
+    // the air kick. Hidden until a strike needs it.
+    const hardMat = new THREE.MeshStandardMaterial({ color: '#fff4d6', emissive: c.energy, emissiveIntensity: 2.6, transparent: true, opacity: 0.82, roughness: 0.15, flatShading: true });
+    extra.gauntlets = [armN, armF].map(a => {
+      const g = new THREE.Mesh(new THREE.IcosahedronGeometry(0.13, 0), hardMat); g.position.set(0.02, -0.05, 0); g.scale.set(1.1, 1.3, 1); g.visible = false; a.end.add(g); return g;
+    });
+    const greave = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15, 0), hardMat); greave.position.set(0.08, -0.03, 0); greave.scale.set(1.7, 0.9, 1); greave.visible = false;
+    legN.end.add(greave); extra.greave = greave; extra.hardMat = hardMat;
     // Back pack
     spine.add(mesh(rbox(0.14, 0.3, 0.3, 0.05), M.trim, -0.22, 0.4));
+    extra.edges = { fistN: [armN.joint, armN.end, 0.55], fistF: [armF.joint, armF.end, 0.55], boot: [legN.joint, legN.end, 0.5] };
   } else {
     // Gauntlet multi-tools
     for (const a of [armN, armF]) {
@@ -179,6 +187,10 @@ export function buildPlayerRig(charId) {
     tipA.rotation.z = -Math.PI / 2; tipB.rotation.z = Math.PI / 2; tipA.scale.z = tipB.scale.z = 0.35;
     hand.add(tipA); hand.add(tipB); extra.glaive = [tipA, tipB];
     const staffTip = group(1.05, 0, 0); hand.add(staffTip); extra.staffTip = staffTip;   // rifle muzzle (front tip)
+    const staffTail = group(-1.05, 0, 0); hand.add(staffTail);
+    const bladeTipN = group(0.02, -0.67, 0), bladeTipF = group(0.02, -0.67, 0); armN.end.add(bladeTipN); armF.end.add(bladeTipF);
+    // Weapon edges for swing trails: [base, tip, how far out from the base the trail starts (0-1)]
+    extra.edges = { bladeN: [armN.end, bladeTipN, 0.15], bladeF: [armF.end, bladeTipF, 0.15], glaiveA: [hand, staffTip, 0.4], glaiveB: [hand, staffTail, 0.4] };
     hand.visible = false; extra.hand = hand;
     extra.backStaff = back; extra.handStaff = hand;
     // Utility belt
@@ -197,7 +209,7 @@ export function buildPlayerRig(charId) {
   extra.blades = blades; extra.jets = jets;
   root.traverse(o => { if (o.isMesh) o.receiveShadow = false; });
   const rig = { root, flip, body, hips, spine, head, collar, armN, armF, legN, legF, extra, mats: M, char: charId, phase: 0, cur: {}, scarf: null, heads, headMode: null,
-    flipAng: 0, stretch: 0, lastVy: 0, wasGround: true, lastRocketT: 0 };
+    yaw: 0, stretch: 0, lastVy: 0, wasGround: true, lastRocketT: 0, wasCrouch: false };
   rig.setHead = mode => {
     if (nova || rig.headMode === mode) return;
     rig.headMode = mode; heads.helmet.visible = mode === 'helmet'; heads.mask.visible = mode === 'mask'; heads.hair.visible = mode !== 'helmet';
@@ -225,167 +237,4 @@ export function buildPlayerRig(charId) {
     }
   };
   return rig;
-}
-
-// ---- Procedural animation --------------------------------------------------------------
-
-const J = ['spine', 'shN', 'elN', 'shF', 'elF', 'hipN', 'knN', 'hipF', 'knF', 'hipY', 'bodyZ'];
-
-function basePose() {
-  return { spine: 0.04, shN: 0.12, elN: 0.3, shF: -0.1, elF: 0.3, hipN: 0.04, knN: -0.08, hipF: -0.04, knF: -0.08, hipY: 0.95, bodyZ: 0 };
-}
-
-function staffMove(id) { return id && MOVES[id] && MOVES[id].staff; }
-// Rocket backflip: a big, near-vertical launch, while he is not busy shooting
-function rocketFlipping(p) { return !!p.rocketFlip && p.rocketT > 0 && p.rocketT <= 50 && !p.onGround && !(p.chargeT > 0 || p.burstT > 0 || p.fireCd > 0 || p.recoilT > 0); }
-const dashLevelOf = p => (p.state !== 'dashCharge' ? 0 : p.dashChargeT >= DASH_CHARGE.charge[2] ? 3 : p.dashChargeT >= DASH_CHARGE.charge[1] ? 2 : p.dashChargeT >= DASH_CHARGE.charge[0] ? 1 : 0);
-
-export function animatePlayer(rig, p, dt, t) {
-  const P = basePose();
-  const run = Math.abs(p.vx);
-  let snap = 0.3;
-  const st = p.state;
-  const aimAng = Math.atan2(p.aimY, Math.abs(p.aimX) < 1e-3 ? 1e-3 : p.aimX * p.facing);
-  const moveId = p.moveId;
-  if (st === 'downed' || st === 'dead') {
-    P.bodyZ = 1.45; P.hipY = 0.2; P.shN = 2.6; P.shF = 2.2; P.hipN = 0.2; P.hipF = -0.1; snap = 0.2;
-  } else if (st === 'slide') {
-    P.hipY = 0.5; P.spine = -0.35; P.hipN = 1.4; P.knN = -0.15; P.hipF = -0.2; P.knF = -1.5; P.shN = -0.6; P.shF = -0.9; snap = 0.5;
-  } else if (st === 'dashCharge') {
-    // Coiled low, weight forward, arms swept back; trembling once the charge is strong
-    const k = Math.min(1, p.dashChargeT / DASH_CHARGE.charge[0]);
-    P.hipY = 0.95 - 0.3 * k; P.spine = 0.1 + 0.45 * k; P.hipN = 0.4 + 0.9 * k; P.knN = -0.3 - 1.5 * k; P.hipF = -0.2 - 0.45 * k; P.knF = -0.2 - 0.5 * k;
-    P.shN = -0.4 - 0.7 * k; P.elN = 0.5; P.shF = -0.6 - 0.7 * k; P.elF = 0.5; snap = 0.35;
-    if (p.dashChargeT >= DASH_CHARGE.charge[1]) P.hipY += (Math.random() - 0.5) * (p.dashChargeT >= DASH_CHARGE.charge[2] ? 0.035 : 0.018);
-  } else if (st === 'dash' || st === 'zip') {
-    P.spine = 0.55; P.hipN = -0.4; P.knN = -0.9; P.hipF = -0.9; P.knF = -0.5; P.shN = -1.0; P.shF = -1.2; P.elN = 0.2; snap = 0.5;
-    const dy = st === 'dash' && p.dash ? p.dash.dy : Math.sign(p.vy) * 0.4;
-    P.bodyZ = Math.atan2(dy, 1) * 0.8;
-  } else if (st === 'dive') {
-    P.spine = 1.0; P.bodyZ = -0.7; P.hipN = -0.3; P.hipF = -0.6; P.knN = -1.0; P.knF = -1.2; P.shN = 2.4; P.shF = 2.2; snap = 0.5;
-  } else if (st === 'vb') {
-    const k = Math.min(1, p.st / 3);
-    P.spine = 0.35 * k; P.hipN = 0.7; P.knN = -0.6; P.hipF = -0.6; P.knF = -0.3; P.hipY = 0.82;
-    if (p.char === 'nova') { P.shN = 1.57; P.elN = 0.05; P.shF = 0.9; P.elF = 1.2; }
-    else { P.shN = 2.6 - 1.6 * k; P.shF = 2.4 - 1.5 * k; P.elN = 0.3; P.elF = 0.4; }
-    snap = 0.65;
-  } else if (st === 'attack' && p.move) {
-    const m = p.move, u = p.st;
-    const wind = u < m.su, act = u >= m.su && u < m.su + m.ac;
-    const k = wind ? u / m.su : act ? 1 : 1 - Math.min(1, (u - m.su - m.ac) / m.rc) * 0.6;
-    snap = 0.6;
-    if (moveId === 'nova_air' ) { P.hipN = wind ? 0.4 : 1.6 * k; P.knN = -0.1; P.hipF = -0.3; P.knF = -0.8; P.shN = 0.8; P.shF = 1.2; }
-    else if (moveId === 'nova_shove' || moveId === 'nova_brace') { P.spine = wind ? -0.1 : 0.35; P.shN = wind ? 0.6 : 1.55; P.shF = wind ? 0.5 : 1.45; P.elN = wind ? 1.4 : 0.15; P.elF = wind ? 1.4 : 0.2; P.hipN = 0.6; P.knN = -0.5; P.hipF = -0.5; }
-    else if (m.cross) { P.shN = wind ? 0.4 : 1.65 * k; P.shF = wind ? 0.3 : 1.55 * k; P.elN = wind ? 1.4 : 0.15; P.elF = wind ? 1.5 : 0.2; P.spine = wind ? 0 : 0.28; }
-    else if (m.offhand || moveId === 'nova_jab2' || moveId === 'echo_g2' || moveId === 'echo_air2') { P.shF = wind ? 0.3 : 1.6 * k; P.elF = wind ? 1.5 : 0.1; P.shN = 0.4; P.elN = 1.2; P.spine = 0.2; }
-    else if (m.launcher) { P.shN = wind ? -0.3 : 2.9 * k; P.shF = wind ? -0.2 : 2.7 * k; P.elN = 0.2; P.elF = 0.3; P.spine = wind ? 0.3 : -0.2; P.hipY = wind ? 0.8 : 0.95; }
-    else if (moveId === 'echo_charged') { P.shN = wind ? 3.0 : 0.7; P.shF = wind ? 2.9 : 0.6; P.elN = 0.2; P.elF = 0.3; P.spine = wind ? -0.25 : 0.55; P.hipN = 0.7; P.knN = -0.7; P.hipF = -0.5; P.hipY = 0.85; }
-    else if (staffMove(moveId)) { P.shN = wind ? 2.4 : 0.5 + 1.2 * (1 - k); P.shF = wind ? 2.3 : 0.4 + 1.1 * (1 - k); P.elN = 0.2; P.elF = 0.2; P.spine = wind ? -0.15 : 0.4; }
-    else { P.shN = wind ? 0.3 : 1.6 * k; P.elN = wind ? 1.5 : 0.1; P.shF = 0.5; P.elF = 1.2; P.spine = wind ? 0 : 0.22; }
-  } else if (st === 'parry') {
-    P.shN = 1.3; P.elN = 1.7; P.shF = 1.1; P.elF = 1.8; P.spine = -0.08; P.hipN = 0.3; P.knN = -0.4; P.hipY = 0.9; snap = 0.7;
-  } else if (st === 'hitstun') {
-    P.spine = -0.4; P.shN = 0.9; P.shF = 1.3; P.elN = 0.6; P.hipN = 0.3; P.knN = -0.5; snap = 0.5;
-  } else if (st === 'bulwark') {
-    P.spine = 0.15; P.shN = aimAng + Math.PI / 2 + P.spine; P.elN = 0.02; P.shF = 0.7; P.elF = 1.1; P.hipN = 0.5; P.knN = -0.4; P.hipF = -0.4; snap = 0.7;
-  } else if (st === 'lash') {
-    P.spine = 0.2; P.shN = aimAng + Math.PI / 2 + P.spine; P.elN = 0.05; P.shF = 0.3; snap = 0.6;
-  } else if (!p.onGround) {
-    const flipping = rocketFlipping(p);
-    // Back to the wall: the far hand reaches back to it, the near (weapon) arm stays free, one boot drags
-    if (flipping) { P.hipN = 1.7; P.knN = -2.3; P.hipF = 1.5; P.knF = -2.1; P.shN = 0.9; P.elN = 1.7; P.shF = 0.7; P.elF = 1.8; P.spine = 0.4; snap = 0.5; }
-    else if (p.wallSliding) { P.shF = -2.2; P.elF = 0.35; P.shN = 0.55; P.elN = 0.9; P.hipN = 0.75; P.knN = -1.25; P.hipF = -0.35; P.knF = -0.45; P.spine = -0.12; snap = 0.4; }
-    else if (p.rocketT > 0 && p.vy > 4) { P.hipN = 0.5; P.knN = -0.9; P.hipF = -0.2; P.knF = -0.6; P.shN = -0.5; P.shF = -0.7; P.elN = 0.2; P.elF = 0.2; P.spine = -0.05; }
-    else if (p.vy > 0) { P.hipN = 0.9; P.knN = -1.4; P.hipF = 0.25; P.knF = -0.8; P.shN = 1.6; P.shF = 1.2; P.spine = 0.1; }
-    else { P.hipN = 0.35; P.knN = -0.45; P.hipF = -0.25; P.knF = -0.7; P.shN = 1.0; P.shF = 0.8; P.spine = 0.06; }
-  } else if (p.crouch) {
-    P.hipY = 0.62; P.hipN = 1.1; P.knN = -1.9; P.hipF = 0.8; P.knF = -1.7; P.spine = 0.25; P.shN = 0.4; P.shF = 0.3;
-  } else if (run > 0.6) {
-    const back = p.vx * p.facing < 0;
-    rig.phase += dt * run * 1.75 * (back ? -1 : 1);
-    const s = Math.sin(rig.phase), c = Math.cos(rig.phase), amp = Math.min(1, run / 7);
-    P.hipN = s * 0.85 * amp; P.hipF = -s * 0.85 * amp;
-    P.knN = -Math.max(0, -c) * 1.3 * amp - 0.12; P.knF = -Math.max(0, c) * 1.3 * amp - 0.12;
-    P.shN = -s * 0.75 * amp; P.shF = s * 0.75 * amp; P.elN = 0.8; P.elF = 0.8;
-    P.spine = (back ? 0.02 : 0.2) * amp; P.hipY = 0.95 - Math.abs(c) * 0.05;
-  } else {
-    P.spine = 0.04 + Math.sin(t * 2) * 0.012;
-  }
-
-  // Aiming layer: Nova's bracer arm and Echo's staff-rifle follow the aim while shooting
-  const rifle = p.char === 'echo' && (p.rifleT >= HUNTER.rifle.raise || (p.rifleCd > 0 && (p.rifleCdMax || 0) - p.rifleCd < 14));
-  const shooting = (p.chargeT > 0 || p.fireCd > 0 || p.recoilT > 0 || rifle || (p.aimFree && p.char === 'nova')) && ['normal', 'dash', 'slide'].includes(st) && !rocketFlipping(p);
-  if (p.recoilT > 4) P.spine -= 0.15 * (p.recoilT - 4) / 6;   // Recoil Burst kick
-  if (shooting) {
-    P.shN = aimAng + Math.PI / 2 + P.spine; P.elN = 0.02;
-    if (p.char === 'echo') { P.shF = aimAng + Math.PI / 2 + P.spine - 0.25; P.elF = 0.5; }
-  }
-
-  const cur = rig.cur;
-  for (const k of J) cur[k] = cur[k] === undefined ? P[k] : cur[k] + (P[k] - cur[k]) * snap;
-  // Rocket backflip: one full turn in the first part of a big launch. If something cuts it short, the
-  // body finishes the turn forward instead of unwinding.
-  if (rocketFlipping(p)) {
-    const e = Math.min(1, (50 - p.rocketT) / 28);
-    rig.flipAng = Math.PI * 2 * (1 - (1 - e) * (1 - e));
-    cur.bodyZ = rig.flipAng;
-    if (e >= 1) { rig.flipAng = 0; cur.bodyZ = 0; }
-  } else if (rig.flipAng > 0) { cur.bodyZ = rig.flipAng - Math.PI * 2; rig.flipAng = 0; }
-  // Squash and stretch: a stretch on a rocket launch, a squash on a hard landing
-  if (p.rocketT > rig.lastRocketT) rig.stretch = 0.12 + 0.14 * (p.rocketPow || 0);
-  if (p.onGround && !rig.wasGround && rig.lastVy < -15) rig.stretch = -Math.min(0.16, (-rig.lastVy - 12) * 0.012);
-  rig.lastRocketT = p.rocketT; rig.wasGround = p.onGround; if (!p.onGround) rig.lastVy = p.vy;
-  rig.stretch *= Math.exp(-dt * 9);
-  const sy = 1 + rig.stretch, sxz = 1 / Math.sqrt(sy);
-  rig.body.scale.set(sxz, sy, sxz);
-  rig.spine.rotation.z = -cur.spine;
-  rig.armN.top.rotation.z = cur.shN; rig.armN.joint.rotation.z = cur.elN;
-  rig.armF.top.rotation.z = cur.shF; rig.armF.joint.rotation.z = cur.elF;
-  rig.legN.top.rotation.z = cur.hipN; rig.legN.joint.rotation.z = cur.knN;
-  rig.legF.top.rotation.z = cur.hipF; rig.legF.joint.rotation.z = cur.knF;
-  rig.hips.position.y = cur.hipY;
-  rig.body.rotation.z = cur.bodyZ;
-  rig.body.position.y = st === 'downed' || st === 'dead' ? 0.1 : 0;
-
-  // Suit details
-  if (p.char === 'nova') {
-    const ex = rig.extra;
-    const open = st === 'bulwark' ? Math.min(1, p.st / 3) * (p.st < 12 ? 1 : Math.max(0, 1 - (p.st - 12) / 3)) : 0;
-    const s = Math.max(0.001, open);
-    ex.shield.scale.set(s, s, s);
-    // The suit's energy lines brighten with each charge level (either weapon) and flash during a Perfect Release window
-    const mk = SETTINGS.novaKit === 'marksman';
-    const LV = { L1: 1, L2: 2, L3: 3, perfect: 3 };
-    const stage = chargeStage(p), bstage = mk ? burstStage(p) : '';
-    const charge = Math.max(LV[stage] || 0, LV[bstage] || 0, dashLevelOf(p)), flash = stage === 'perfect' || bstage === 'perfect';
-    rig.mats.energy.emissiveIntensity = 2.2 + charge * 1.2 + (p.chargeT > 0 || p.burstT > 0 || p.dashChargeT > 0 ? Math.sin(t * 30) * 0.4 : 0) + (flash ? 2.5 : 0);
-    ex.jets.forEach(j => { j.visible = !!p.thrusting; j.scale.set(1, 0.8 + Math.random() * 0.5, 1); });
-    ex.module.visible = mk; ex.blades.forEach(b => { b.visible = mk; });
-    if (mk && ex.moduleTint !== p.attachment) {
-      const c = ATTACH_LOOK[p.attachment].tint; ex.moduleTint = p.attachment; ex.moduleMat.color.set(c); ex.moduleMat.emissive.set(c);
-    }
-  } else {
-    const ex = rig.extra;
-    const staffOut = (st === 'attack' && staffMove(moveId)) || (st === 'vb') || st === 'dive' || ((p.fireCd > 0 || p.chargeT > 0 || p.tracerCd > 60 || rifle) && ['normal', 'dash', 'slide'].includes(st));
-    ex.handStaff.visible = staffOut; ex.backStaff.visible = !staffOut;
-    // Rifle hold: the staff turns to lie along the forearm, pushed forward like a rifle barrel
-    const rifleHold = rifle && staffOut && !(st === 'attack' || st === 'vb' || st === 'dive');
-    ex.hand.rotation.z = rifleHold ? -Math.PI / 2 : 0; ex.hand.position.y = rifleHold ? -0.32 : -0.02;
-    ex.glaive[1].visible = !rifleHold && SETTINGS.echoKit === 'hunter';
-    const hunter = SETTINGS.echoKit === 'hunter';
-    const bladeOut = st === 'attack' && p.move && p.move.blade;
-    ex.blade.visible = !!bladeOut && (hunter ? true : !p.move.offhand);
-    ex.bladeF.visible = !!bladeOut && hunter;
-    ex.glaive[0].visible = hunter;
-    ex.backTips.forEach(g => { g.visible = hunter; });
-    ex.beltSnares.forEach((g, i) => { g.visible = hunter && i < p.snares; });
-    rig.setHead(SETTINGS.echoHead || 'helmet');
-    const flare = p.scarfMode === 'flare' && p.state !== 'downed';
-    rig.mats.energy.emissiveIntensity = 2.0 + p.resolve / 50 + (flare ? 1.1 + Math.sin(t * 9) * 0.45 : 0) + dashLevelOf(p) * 1.1
-      + (p.rifleT >= HUNTER.rifle.mark ? 1.2 + Math.sin(t * 24) * 0.5 : 0);
-    const veil = p.scarfMode === 'veil' && p.state !== 'downed' ? Math.min(1, p.veilCharge / SCARF.veilFade) : 0;
-    let ck = rig.cloak + (veil - rig.cloak) * (veil > rig.cloak ? 0.25 : 0.45);
-    if (Math.abs(ck - veil) < 0.01) ck = veil;
-    rig.setCloak(ck);
-  }
 }

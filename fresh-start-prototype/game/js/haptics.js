@@ -3,7 +3,8 @@
 // first player's events buzz the phone through navigator.vibrate when their controller cannot rumble
 // (Android browsers; iOS Safari has no vibration API, and pages embedded in another site may be
 // blocked from vibrating). Keyboard and mouse have nothing to shake.
-import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER } from './config.js';
+import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER, POUND } from './config.js';
+import { rifleFocus } from './player.js';
 
 // [strong motor 0-1, weak motor 0-1, milliseconds, priority]. Lower-priority effects never cut off a
 // stronger one that is still playing.
@@ -15,9 +16,16 @@ const FX = {
   hit: ev => (ev.heavy ? [0.35, 0.6, 80, 1] : [0.08, 0.35, 40, 1]),
   kill: () => [0.2, 0.55, 70, 2],
   chargeLevel: ev => level(ev.level), burstLevel: ev => level(ev.level), dashLevel: ev => level(ev.level),
-  rifleRaise: () => [0, 0.2, 30, 1], rifleMark: () => [0.2, 0.55, 70, 2],
+  rifleRaise: () => [0, 0.2, 30, 1], rifleFocus: () => [0.2, 0.55, 70, 2],
   shot: ev => (ev.level ? [Math.min(1, 0.2 + 0.2 * ev.level + (ev.perfect ? 0.25 : 0)), 0.4 + 0.1 * ev.level, 70 + 30 * ev.level, 3] : null),
-  rifleShot: ev => (ev.mark ? [0.55, 0.6, 130, 3] : [0.25, 0.4, 70, 2]),
+  snipe: ev => [0.45 + 0.45 * ev.f, 0.55 + 0.2 * ev.f, 100 + 80 * ev.f, 3], crit: () => [0.2, 0.6, 50, 2],
+  deflect: ev => (ev.perfect ? [0.3, 0.9, 100, 3] : [0.12, 0.6, 60, 2]),
+  dashSlash: ev => [0.25 + 0.15 * ev.tier, 0.5, 80 + 20 * ev.tier, 2], crescent: () => [0.2, 0.5, 70, 2], pogo: () => [0.1, 0.5, 50, 2],
+  poundStart: () => [0, 0.3, 40, 1], poundLevel: ev => level(ev.level), poundDrop: () => [0.1, 0.35, 60, 1],
+  poundLand: ev => [Math.min(1, 0.5 + 0.17 * ev.level), Math.min(1, 0.6 + 0.12 * ev.level), 140 + 50 * ev.level, 3],
+  beamStart: () => [0.7, 0.9, 220, 3], beamEnd: () => [0.1, 0.3, 80, 1],
+  aegisOn: () => [0.15, 0.5, 90, 2], aegisHit: ev => [0.2 + Math.min(0.5, ev.dmg * 0.02), 0.5, 60, 2],
+  aegisOff: ev => (ev.why === 'break' ? [0.7, 0.8, 220, 3] : ev.why === 'detonate' ? [0.85, 0.85, 240, 3] : [0, 0.2, 60, 1]),
   rocketJump: ev => { const k = ev.power || 0.5; return [Math.min(1, 0.6 + 0.4 * k), Math.min(1, 0.5 + 0.4 * k), 180 + 220 * k, 4]; },
   dash: ev => (ev.level ? [0.2 + 0.2 * ev.level, 0.45, 80 + 40 * ev.level, 2] : [0, 0.22, 35, 1]),
   walljump: () => [0, 0.25, 30, 1],
@@ -31,12 +39,15 @@ const FX = {
   lockOn: () => [0, 0.3, 35, 1], lockSwitch: () => [0, 0.2, 25, 1], lockOff: () => [0, 0.12, 25, 1],
   challenge: () => [0.1, 0.4, 60, 2], vanish: () => [0.1, 0.4, 60, 2],
 };
+// Boss moments everyone feels, on every pad at once
+const ALL = { bossSlam: ev => (ev.big ? [0.8, 0.6, 220, 3] : [0.5, 0.45, 140, 2]), bossPhase: () => [0.9, 0.8, 380, 4], bossCrash: () => [0.7, 0.5, 200, 3], bossDown: () => [1, 1, 700, 4], bossIntro: () => [0.4, 0.5, 300, 2] };
 function level(L) { return L >= 3 ? [0.35, 0.7, 80, 2] : L === 2 ? [0.15, 0.45, 55, 2] : [0, 0.3, 45, 2]; }
 
 // How far along a player's current charge is (0-1), or -1 when nothing is charging
 function chargeOf(p) {
   if (p.state === 'dashCharge') return p.dashChargeT >= DASH_CHARGE.tap ? Math.min(1, p.dashChargeT / DASH_CHARGE.charge[2]) : -1;
-  if (p.char === 'echo') { const R = HUNTER.rifle; return p.rifleT >= R.raise ? Math.min(1, (p.rifleT - R.raise) / (R.mark - R.raise)) : -1; }
+  if (p.state === 'pound' && p.pound && p.pound.phase === 'hold' && p.pound.held && p.pound.t > POUND.windup) return Math.min(1, p.pound.t / POUND.charge[2]);
+  if (p.char === 'echo') return p.rifleT >= HUNTER.rifle.raise ? rifleFocus(p.rifleT) : -1;
   if (p.chargeT > 0) return Math.min(1, p.chargeT / (SETTINGS.novaKit === 'marksman' ? MARKSMAN.charge[2] : NOVA.charge2));
   if (p.burstT > 0) return Math.min(1, p.burstT / MARKSMAN.burst.charge[2]);
   return -1;
@@ -89,6 +100,7 @@ export class Haptics {
   }
 
   onEvent(ev) {
+    if (ALL[ev.type] && this.world) { const e = ALL[ev.type](ev); for (const p of this.world.players) this.play(p, e[0], e[1], e[2], e[3]); return; }
     const make = FX[ev.type]; if (!make) return;
     const who = ev.type === 'hit' || ev.type === 'kill' || ev.type === 'intercept' ? ev.owner : ev.p;
     if (!who || who.kind !== 'player') return;
@@ -100,10 +112,15 @@ export class Haptics {
 
   // While a charge builds, a faint rumble that grows with it (controllers only; phones stay quiet)
   update(world) {
+    this.world = world;
     if (!SETTINGS.haptics) return;
     const t = this.now();
     for (const p of world.players) {
       if (p.state === 'downed' || p.state === 'dead' || !this.canRumble(this.pad(p.device))) continue;
+      if (p.state === 'beam' && p.beam) {   // the beam shakes the pad the whole time it fires
+        if (t - (this.humT[p.device] || 0) >= 110) { this.humT[p.device] = t; this.play(p, 0.35, 0.55, 130, 1); }
+        continue;
+      }
       const k = chargeOf(p);
       if (k < 0.3 || t - (this.humT[p.device] || 0) < 110) continue;
       this.humT[p.device] = t;

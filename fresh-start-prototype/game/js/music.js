@@ -36,6 +36,7 @@ export function musicIntensity(world) {
   const cam = world.cam; let near = 0, heavy = false;
   for (const e of world.enemies) {
     if (e.dead || e.type === 'post' || e.type === 'turret') continue;
+    if (e.boss && Math.abs(e.x - cam.x) < cam.halfW + 14) return 2;   // a boss fight is always full intensity
     if (Math.abs(e.x - cam.x) < cam.halfW + 8 && Math.abs(e.y - cam.y) < cam.halfH + 10) {
       near++;
       if (e.type === 'brute' || e.type === 'charger' || e.type === 'mortar') heavy = true;

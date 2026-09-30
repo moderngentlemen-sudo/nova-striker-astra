@@ -1,10 +1,11 @@
 // World: owns every entity, runs the fixed-tick simulation, and emits events for
 // rendering, audio and UI. Nothing in here touches the DOM or Three.js.
-import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK } from './config.js';
-import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked } from './level.js';
-import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage } from './player.js';
+import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT } from './config.js';
+import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT } from './level.js';
+import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows } from './player.js';
 import { createEnemy, updateEnemy } from './enemies.js';
-import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus } from './combat.js';
+import { spawnBoss, BOSS } from './bosses.js';
+import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus, hurtbox } from './combat.js';
 import { EMPTY_CMD } from './input.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
@@ -69,7 +70,7 @@ export class World {
     if (far) { spec.splash = MARKSMAN.round.splash; spec.ttl = MARKSMAN.life; }
     this.spawnProjectile({ team: 'p', owner: p, x: c.x + ax * 0.7, y: c.y + ay * 0.7, vx: ax * spec.speed, vy: ay * spec.speed,
       ttl: Math.round(NOVA.shotRange / spec.speed * 60), intercept: true, homing: level > 0, level, ...spec });
-    if (level === 2) { p.vx -= ax * 4; if (!p.onGround) p.vy = Math.max(p.vy, 1.5); }
+    if (level === 2 && !p.onGround) p.vy = Math.max(p.vy, 1.5);   // a mid-air shot briefly holds him up (no push-back)
     else if (level === 1 && !p.onGround) p.vy = Math.max(p.vy, 0.5);
     this.emit('shot', { p, level, x: c.x + ax * 0.7, y: c.y + ay * 0.7 });
   }
@@ -79,7 +80,8 @@ export class World {
   // family also carries how long the shot was charged (chargeT), which sets the rocket jump height.
   fireAttachment(p, kind, level, perfect, chargeT = MARKSMAN.charge[level - 1]) {
     const M = MARKSMAN, c = chest(p), ax = p.aimX, ay = p.aimY;
-    const x = c.x + ax * 0.7, y = c.y + ay * 0.7, fm = focusMult(p);
+    const over = spendOvercharge(p);   // Aegis Overcharge: a stronger release
+    const x = c.x + ax * 0.7, y = c.y + ay * 0.7, fm = focusMult(p) * over;
     const mult = fm * (perfect ? M.perfectMult : 1);
     const family = { focused: false, rocketed: false, perfect, chargeT, attach: kind, level };
     const base = { team: 'p', owner: p, x, y, level, perfect, family, intercept: true, ttl: M.life };
@@ -90,7 +92,6 @@ export class World {
         r: L.r * (perfect ? 1.2 : 1), dmg: L.dmg * mult, poise: L.poise * mult, kb: L.kb, pierce: true, homing: true,
         armorBreak: !!L.armorBreak || perfect, rail: !!L.rail || perfect, interceptHeavy: true, kind: level === 3 ? 'rail' : 'lance',
         splash: splash(L.splash) });
-      if (L.recoil) p.vx -= ax * L.recoil;
       if (!p.onGround) p.vy = Math.max(p.vy, level === 3 ? 1.5 : 0.5);
     } else if (kind === 'volley') {
       const V = M.volley, key = perfect ? 'perfect' : level, n = V.darts[key], fan = V.fan[key], a0 = Math.atan2(ay, ax);
@@ -116,7 +117,7 @@ export class World {
         dmg: S.dmg * mult, poise: S.poise * mult, kb: 3, homing: true, interceptHeavy: true, kind: 'prism', splash: splash(S.splash),
         prism: { shards: S.shards, bounces: S.bounces + (perfect ? P.perfectBounces : 0), mult } });
     }
-    this.emit('shot', { p, level, attach: kind, perfect, x, y, ax, ay });
+    this.emit('shot', { p, level, attach: kind, perfect, x, y, ax, ay, over: over > 1 });
     if (perfect) { this.emit('perfectRelease', { p, x, y, attach: kind }); this.bark(p, 'perfect_shot', 0.25); }
   }
 
@@ -130,9 +131,10 @@ export class World {
       return Math.hypot(x - nx, y - ny) <= r;
     };
     if (team === 'e') {
+      const id = this.newInstance();
       for (const q of this.players) {
         if (q.state === 'dead' || q.state === 'downed' || !reach(q, spec.r)) continue;
-        hitPlayer(this, q, { owner, dmg: spec.dmg, unblockable: true, cat: 'unblockable', heavy: true, kb: [(sign(q.x - x) || 1) * 7, 6] });
+        hitPlayer(this, q, { owner, dmg: spec.dmg, unblockable: true, cat: 'unblockable', heavy: true, kb: [(sign(q.x - x) || 1) * 7, 6], instance: id, at: { x, y } });
       }
       this.emit('enemyBlast', { x, y, r: spec.r });
       return;
@@ -176,7 +178,7 @@ export class World {
     p.dashCarry = true; p.fastFall = false;   // keeps the launch: no rise cut, momentum carries
     const power = Math.min(1, k / Math.sqrt(2 * GRAVITY * R.perfect));
     const h = dy > 0 ? apexGain(dy * k) : 0;
-    p.rocketT = 50; p.rocketPow = power; p.rocketFlip = h >= R.flipH && Math.abs(dx) < 0.5;
+    p.rocketT = 50; p.rocketPow = power;
     p.hitstop = Math.max(p.hitstop, R.freeze[power < 0.45 ? 0 : power < 0.8 ? 1 : 2]);
     this.emit('rocketJump', { p, x, y, k, h, power, perfect, level: family ? family.level : 3, dx, dy });
   }
@@ -186,7 +188,8 @@ export class World {
   // marker); the real launch is worked out when the shot bursts.
   rocketPreview(p) {
     const M = MARKSMAN, R = M.rocket;
-    if (!marksman(p) || p.chargeT < M.charge[0] || p.aimY > -0.6 || !['normal', 'slide'].includes(p.state)) return null;
+    // (A Level 4 charge fires the beam instead, so it has no rocket jump to preview)
+    if (!marksman(p) || p.chargeT < M.charge[0] || p.chargeT >= M.beam.at || p.aimY > -0.6 || !['normal', 'slide'].includes(p.state)) return null;
     const gy = groundBelow(p.x, p.y + 0.1);
     if (gy === -Infinity) return null;
     const stage = chargeStage(p), perfect = stage === 'perfect', level = p.chargeT >= M.charge[2] ? 3 : p.chargeT >= M.charge[1] ? 2 : 1;
@@ -200,6 +203,145 @@ export class World {
     const k = Math.sqrt(2 * GRAVITY * H) * (1 - R.falloff * Math.min(1, near)) * air;
     const up = Math.max(p.vy, k);
     return { x: p.x, y: p.y, apex: p.y + apexGain(up), level, perfect, h: H };
+  }
+
+  // ---- Nova: the Level 4 beam ----
+  // Every tick: trace the beam to the first wall (a Prism beam bounces once), erase enemy shots it touches,
+  // and every `pulse` ticks hit every enemy in it. Attachments add their flavour.
+  beamTick(p) {
+    const B = MARKSMAN.beam, b = p.beam, c = chest(p);
+    const segs = []; let sx = c.x + b.dx * 0.6, sy = c.y + b.dy * 0.6, dx = b.dx, dy = b.dy;
+    const bounces = b.attach === 'prism' ? B.prism.bounces : 0;
+    for (let i = 0; i <= bounces; i++) {
+      const h = rayCast(sx, sy, dx, dy, B.range);
+      segs.push({ x0: sx, y0: sy, x1: h.x, y1: h.y, wall: h.wall, nx: h.nx, ny: h.ny });
+      if (!h.wall || i === bounces) break;
+      const dot = dx * h.nx + dy * h.ny; dx -= 2 * dot * h.nx; dy -= 2 * dot * h.ny;
+      sx = h.x + h.nx * 0.05; sy = h.y + h.ny * 0.05;
+    }
+    b.segs = segs; b.pulse++;
+    const near = (x, y, r) => segs.some(g => distToSeg(x, y, g) < r);
+    for (const pr of this.projectiles) if (pr.team === 'e' && !pr.dead && near(pr.x, pr.y, B.width + pr.r)) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
+    if (b.pulse % B.pulse === 1) {
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        const hb = hurtbox(e);
+        if (!segs.some(g => segHitsBox(g, hb, B.width))) continue;
+        const last = b.armor.get(e.id), ab = last === undefined || b.pulse - last >= B.armorEvery;
+        if (ab) b.armor.set(e.id, b.pulse);
+        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign(b.dx) * 3, 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, 'proj');
+        if (res === 'hit' || res === 'kill') awardFocus(this, { owner: p, family: b.family });
+      }
+    }
+    const end = segs[segs.length - 1];
+    if (b.attach === 'arc' && b.pulse % B.arc.every === 0) {
+      this.explode({ owner: p, x: end.x1, y: end.y1, spec: { ...B.arc.blast, dmg: B.arc.blast.dmg * b.mult, poise: B.arc.blast.poise * b.mult, armorBreak: true }, level: 2, kind: 'blast' });
+    }
+    if (b.attach === 'volley' && b.pulse % B.volley.every === 0) {
+      const V = MARKSMAN.volley, a = Math.atan2(b.dy, b.dx) + (Math.random() - 0.5) * 0.9, sx0 = c.x + b.dx * 0.7, sy0 = c.y + b.dy * 0.7;
+      const target = this.nearestEnemyInCone(sx0, sy0, b.dx, b.dy, V.seekRange, V.seekCone);
+      this.spawnProjectile({ team: 'p', owner: p, x: sx0, y: sy0, vx: Math.cos(a) * V.speed, vy: Math.sin(a) * V.speed, ttl: MARKSMAN.life, r: V.r,
+        dmg: V.dmg * b.mult, poise: V.poise * b.mult, kb: 2, kind: 'dart', level: 4, family: b.family, intercept: true, interceptHeavy: false,
+        splash: { ...V.splash }, seek: { target, delay: 4, until: V.seekFor, turn: V.turn, age: 0 } });
+    }
+  }
+  endBeam(p, why) {
+    if (!p.beam) return;
+    this.emit('beamEnd', { p, why });
+    p.beam = null;
+  }
+
+  // ---- Nova: the hard-light Aegis ----
+  raiseAegis(p) {
+    const A = AEGIS;
+    p.aegis = { hp: A.hp, max: A.hp, t: A.ticks, seen: new Set() };
+    this.emit('aegisOn', { p });
+  }
+  // Ends it: 'break' (damage) shatters it outward, 'detonate' (pressed again) blasts it outward on purpose
+  endAegis(p, why) {
+    const S = p.aegis; if (!S) return;
+    const A = AEGIS, c = chest(p), frac = Math.max(0, S.hp / S.max);
+    p.aegis = null; p.aegisCd = A.cd;
+    if (why === 'break' || why === 'detonate') {
+      const B = why === 'break' ? A.shatter : A.detonate, k = why === 'detonate' ? 0.5 + 0.5 * frac : 1;
+      this.spawnHitbox({ owner: p, team: 'p', x0: c.x - B.r, x1: c.x + B.r, y0: c.y - B.r, y1: c.y + B.r, dmg: B.dmg * k, poise: B.poise * k,
+        kb: [B.kb, 5], radial: true, cx: c.x, armorBreak: true, instance: this.newInstance(), aegisBurst: true });
+      if (why === 'detonate') { p.overcharge = Math.min(A.over.max, p.overcharge + A.detonate.over * frac); p.overT = A.over.hold; }
+    }
+    this.emit('aegisOff', { p, why, x: c.x, y: c.y, frac });
+  }
+  detonateAegis(p) { this.endAegis(p, 'detonate'); }
+  // The Nova whose Aegis shelters this player (their own, or one they stand inside), if any
+  shieldFor(q) {
+    for (const n of this.players) {
+      if (!n.aegis || n.state === 'dead' || n.state === 'downed') continue;
+      if (n === q) return n;
+      const a = chest(n), b = chest(q);
+      if (Math.hypot(a.x - b.x, a.y - b.y) < AEGIS.radius) return n;
+    }
+    return null;
+  }
+  // The Aegis a point (a shot of radius r) has reached, if any
+  aegisAt(x, y, r) {
+    for (const n of this.players) {
+      if (!n.aegis || n.state === 'dead' || n.state === 'downed') continue;
+      const c = chest(n);
+      if (Math.hypot(x - c.x, y - c.y) < AEGIS.radius + r) return n;
+    }
+    return null;
+  }
+  // The Aegis takes a hit coming from (fx, fy): damage to the hard light becomes Overcharge. `key` makes
+  // one attack (a hitbox, a blast) count once even when it reaches several players inside.
+  absorbAegis(n, dmg, fx, fy, key) {
+    const S = n.aegis; if (!S) return;
+    if (key !== undefined) { if (S.seen.has(key)) return; S.seen.add(key); }
+    const A = AEGIS, c = chest(n);
+    let dx = fx - c.x, dy = fy - c.y; const m = Math.hypot(dx, dy) || 1; dx /= m; dy /= m;
+    S.hp -= dmg;
+    n.overcharge = Math.min(A.over.max, n.overcharge + dmg * A.over.perDmg); n.overT = A.over.hold;
+    this.emit('aegisHit', { p: n, x: c.x + dx * A.radius, y: c.y + dy * A.radius, dx, dy, dmg, frac: Math.max(0, S.hp / S.max) });
+    if (S.hp <= 0) this.endAegis(n, 'break');
+  }
+
+  // ---- Echo: sniper rifle and staff deflect ----
+  // An instant shot down the level. Focus f (0-1) sets damage and poise; an upper-body hit is a critical;
+  // at full focus it pierces everything in line, breaks armor and tags. No recoil: he stays where he is.
+  fireSniper(p, f) {
+    const R = HUNTER.rifle, c = chest(p), ax = p.aimX, ay = p.aimY, full = f >= 1;
+    const x0 = c.x + ax * 0.9, y0 = c.y + ay * 0.9, wall = rayCast(x0, y0, ax, ay, R.range);
+    const line = [];
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const hb = hurtbox(e), h = rayBoxT(x0, y0, ax, ay, hb.x0 - 0.06, hb.y0 - 0.06, hb.x1 + 0.06, hb.y1 + 0.06);
+      if (h && h.t <= wall.t) line.push({ e, t: h.t });
+    }
+    line.sort((a, b) => a.t - b.t);
+    const dmg = R.minDmg + (R.maxDmg - R.minDmg) * f * f, poise = R.poise[0] + (R.poise[1] - R.poise[0]) * f;
+    let endT = wall.t, crits = 0, n = 0;
+    for (const { e, t } of line) {
+      const hy = y0 + ay * (t + 0.15), crit = hy > e.y + e.h * R.critZone;
+      const res = hitEnemy(this, e, { owner: p, dmg: dmg * (crit ? R.crit : 1), poise: poise * (crit ? 1.3 : 1), kb: [sign(ax) * R.kb * (0.5 + f), 2],
+        vx: ax, armorBreak: full, rail: full, snipe: true }, 'proj');
+      n++;
+      if (crit && res !== 'blocked') { crits++; this.emit('crit', { p, e, x: x0 + ax * t, y: hy }); }
+      if (full && !e.dead) { e.tagged = Math.max(e.tagged, R.tag); this.emit('tag', { x: e.x, y: e.y + e.h, e }); }
+      if (!full || res === 'blocked') { endT = t; break; }
+    }
+    this.emit('snipe', { p, x0, y0, x1: x0 + ax * endT, y1: y0 + ay * endT, ax, ay, f, full, crits, n, wall: endT === wall.t && wall.wall });
+  }
+  // Echo's staff knocks an enemy shot back toward whoever fired it, as his own, faster; a perfect parry
+  // hits harder and opens a riposte
+  deflect(p, pr) {
+    const D = DEFLECT, perfect = p.state === 'parry' && p.parryT <= parryWindows(p).perfect;
+    const src = pr.owner && pr.owner.kind === 'enemy' && !pr.owner.dead ? pr.owner : null, sp = Math.hypot(pr.vx, pr.vy) * D.speed;
+    let vx = -pr.vx * D.speed, vy = -pr.vy * D.speed;
+    if (src) { const dx = src.x - pr.x, dy = src.y + src.h * 0.6 - pr.y, m = Math.hypot(dx, dy) || 1; vx = dx / m * sp; vy = dy / m * sp; }
+    const heavy = !!pr.heavy;
+    Object.assign(pr, { team: 'p', owner: p, vx, vy, dmg: (heavy ? D.dmg.heavy : D.dmg.standard) * (perfect ? D.perfect : 1), poise: heavy ? 40 : 20, kb: 5,
+      hitSet: new Set(), deflected: true, intercept: false, heavy: false, homing: false, ttl: Math.max(pr.ttl, 120), gravity: 0 });
+    if (p.state === 'parry' && !p.parryResult) { p.parryResult = perfect ? 'perfect' : 'normal'; p.st = 0; p.hitstop = perfect ? 5 : 3; }
+    if (perfect) { p.riposteT = 20; addResolve(p, 12); } else addResolve(p, 6);
+    this.emit('deflect', { p, x: pr.x, y: pr.y, perfect, heavy });
   }
 
   // Prism rounds split into shards that fan out along (dx, dy); shards skip the enemy that split them
@@ -217,8 +359,8 @@ export class World {
   }
 
   // Recoil Burst, Nova's secondary blaster (Marksman melee): point-blank pellets, level 0 for the
-  // quick press or 1-3 when charged. The kick pushes Nova back along the aim; aiming down in the air
-  // turns it into a hop, once per jump. Level 3 adds a blast at the muzzle.
+  // quick press or 1-3 when charged. The one weapon that keeps its kick: it pushes Nova back along the aim,
+  // and aimed diagonally down in the air it is a hop, once per jump. Level 3 adds a blast at the muzzle.
   fireBurst(p, level, perfect = false) {
     const B = MARKSMAN.burst, S = level ? B[level] : B.tap, c = chest(p), ax = p.aimX, ay = p.aimY, a0 = Math.atan2(ay, ax);
     const x = c.x + ax * 0.5, y = c.y + ay * 0.5, mult = perfect ? MARKSMAN.perfectMult : 1;
@@ -243,13 +385,6 @@ export class World {
     this.spawnProjectile({ team: 'p', owner: p, x: c.x + p.aimX * 0.7, y: c.y + p.aimY * 0.7, vx: p.aimX * ECHO.boltSpeed, vy: p.aimY * ECHO.boltSpeed,
       ttl: 36, r: 0.15, dmg: ECHO.boltDmg, poise: 8, kb: 2, kind: 'bolt' });
     this.emit('shot', { p, level: 0, bolt: true, x: c.x, y: c.y });
-  }
-  // Echo's staff-rifle (Hunter kit): one fast round down the whole level; the marking shot pierces and tags
-  fireRifle(p, mark) {
-    const R = HUNTER.rifle, c = chest(p), ax = p.aimX, ay = p.aimY, x = c.x + ax * 0.9, y = c.y + ay * 0.9;
-    this.spawnProjectile({ team: 'p', owner: p, x, y, vx: ax * R.speed, vy: ay * R.speed, ttl: MARKSMAN.life, r: mark ? 0.17 : 0.12,
-      dmg: mark ? R.markDmg : R.dmg, poise: mark ? R.markPoise : R.poise, kb: R.kb, pierce: mark, mark, kind: mark ? 'markShot' : 'rifle' });
-    this.emit('rifleShot', { p, x, y, ax, ay, mark });
   }
   fireTracer(p) {
     const c = chest(p);
@@ -524,12 +659,16 @@ export class World {
   }
   swapCharacter(p, charId) {
     if (p.thrusting) this.emit('thrustOff', { p });
+    if (p.aegis) this.endAegis(p, 'swap');
+    if (p.beam) this.endBeam(p, 'swap');
     setCharacter(p, charId);
     this.emit('swap', { p });
   }
 
   downPlayer(p) {
     if (p.lockT) this.setLock(p, null, 'downed');
+    if (p.aegis) this.endAegis(p, 'down');
+    if (p.beam) this.endBeam(p, 'down');
     p.hp = 0; p.chargeT = 0; p.meleeCharged = false; p.dash = null; p.lash = null; p.zip = null; p.rifleT = 0; p.dashChargeT = 0;
     p.veiled = false; p.veilCharge = 0; p.ambushT = 0;
     p.state = 'downed'; p.st = 0; p.revive = 0; p.autoRevive = 0;
@@ -563,6 +702,7 @@ export class World {
       p.hp = p.maxHp; p.strain = 0; p.state = 'normal'; p.st = 0; p.secondWind = true; p.mercy = 60;
       p.h = CHARS[p.char].height; p.lastSafeX = p.x; p.lastSafeY = p.y; p.resolve = 0; p.chargeT = 0;
       p.veiled = false; p.veilCharge = 0; p.veilBreakT = 0; p.ambushT = 0; p.focus = 0;
+      p.aegis = null; p.aegisCd = 0; p.overcharge = 0; p.beam = null;
     });
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = [];
     for (const p of this.players) p.leash = null;
@@ -592,9 +732,31 @@ export class World {
   }
 
   resetArena() {
+    const boss = this.arena.state === 'boss' || this.arena.state === 'bossReady';
     this.enemies = this.enemies.filter(e => e.zone !== 'arena');
     GATES.L = false; GATES.R = false;
-    this.arena = { state: 'idle' };
+    this.arena = { state: boss ? 'bossReady' : 'idle' };   // a wipe in the boss fight comes back to the boss
+  }
+
+  // The Concourse Lock's last wave: the Lockwarden drops in
+  startWarden() {
+    this.arena.state = 'boss';
+    spawnBoss(this, 'warden', 87, 12, { zone: 'arena' });   // drops in beside the dais, not onto it
+    this.emit('banner', { text: BOSS.warden.name, sub: BOSS.warden.title });
+  }
+
+  // Straight to a boss fight (pause menu): the arena's boss, or the beacon's with the relay already won
+  bossRush(id) {
+    if (id === 'warden') {
+      this.teleport('arena'); this.arena.state = 'bossReady';
+      for (const p of this.players) { p.x = 64.5 + p.slot * 0.8; p.prevX = p.x; }
+      return;
+    }
+    for (const S of this.encounters) { S.state = S.def.boss ? 'idle' : 'cleared'; for (const g of S.def.gates || []) GATES[g] = false; }
+    this.enemies = this.enemies.filter(e => e.zone !== 'skyline');
+    this.checkpoint = CHECKPOINTS.findIndex(c => c.x === 302); this.wipeT = 0;
+    this.resetToCheckpoint();
+    this.emit('banner', { text: 'Skyline Relay', sub: 'The beacon pad' });
   }
 
   spawnGym() {
@@ -638,7 +800,7 @@ export class World {
     this.updateCamera();
     this.updateEncounters();
 
-    this.enemies = this.enemies.filter(e => !(e.dead && e.deathT > 45));
+    this.enemies = this.enemies.filter(e => !(e.dead && e.deathT > (e.boss ? 84 : 45)));   // a boss stays for its explosions
     if (this.tick % 120 === 0) {
       const keep = this.instanceSeq - 400;
       for (const k of this.hitSets.keys()) if (k < keep) this.hitSets.delete(k);
@@ -683,6 +845,12 @@ export class World {
       const pv = p.chargeT > 0 && this.rocketPreview(p);
       if (pv) y1 = Math.max(y1, pv.apex + 0.6);
       if (p.rocketT > 0 && p.vy > 0) { y1 = Math.max(y1, p.y + apexGain(p.vy) * 0.85 + p.h * 0.5); y0 = Math.min(y0, p.y - 2); }
+    }
+    // A boss in the fight stays in the frame
+    const mid = (x0 + x1) / 2;
+    for (const e of this.enemies) {
+      if (!e.boss || e.dead || Math.abs(e.x - mid) > 24) continue;
+      x0 = Math.min(x0, e.x - e.w / 2); x1 = Math.max(x1, e.x + e.w / 2); y0 = Math.min(y0, e.y); y1 = Math.max(y1, Math.min(e.y + e.h, y0 + 16));
     }
     const tanH = Math.tan((SETTINGS.fov * Math.PI / 180) / 2);
     const needW = (x1 - x0) + 9, needH = (y1 - y0) + 7;
@@ -749,9 +917,18 @@ export class World {
         this.emit('banner', { text: 'Wave 2', sub: 'The Brute holds the lock.' });
       }
     } else if (A.state === 'wave2') {
+      if (!this.enemies.some(e => e.zone === 'arena' && !e.dead)) this.startWarden();
+    } else if (A.state === 'bossReady') {
+      // After a wipe in the boss fight, walking back in goes straight to the boss
+      if (this.players.some(p => p.state !== 'dead' && p.x > ARENA_TRIGGER_X && p.x < 96)) {
+        GATES.L = true; GATES.R = true; this.emit('gates', { closed: true });
+        for (const p of this.players) if (p.x < 63) { p.x = 64 + p.slot * 0.8; p.y = 0; p.vx = 0; p.vy = 0; }
+        this.startWarden();
+      }
+    } else if (A.state === 'boss') {
       if (!this.enemies.some(e => e.zone === 'arena' && !e.dead)) {
         A.state = 'cleared'; GATES.L = false; GATES.R = false;
-        this.emit('banner', { text: 'Lock broken', sub: 'Gates open. Storm Spire climb ahead.' });
+        this.emit('banner', { text: 'Lockwarden destroyed', sub: 'Gates open. Storm Spire climb ahead.' });
         this.emit('gates', { closed: false });
         const talker = this.activePlayers()[Math.floor(Math.random() * Math.max(1, this.activePlayers().length))];
         this.bark(talker, 'lock_broken', 1, true);
@@ -768,6 +945,19 @@ export class World {
   }
 }
 
+// Distance from a point to a beam segment, and whether a thick segment touches a box
+function distToSeg(x, y, g) {
+  const vx = g.x1 - g.x0, vy = g.y1 - g.y0, L = vx * vx + vy * vy;
+  const t = L > 1e-9 ? Math.max(0, Math.min(1, ((x - g.x0) * vx + (y - g.y0) * vy) / L)) : 0;
+  return Math.hypot(x - (g.x0 + vx * t), y - (g.y0 + vy * t));
+}
+function segHitsBox(g, b, w) {
+  const vx = g.x1 - g.x0, vy = g.y1 - g.y0, L = Math.hypot(vx, vy);
+  if (L < 1e-6) return false;
+  const h = rayBoxT(g.x0, g.y0, vx / L, vy / L, b.x0 - w, b.y0 - w, b.x1 + w, b.y1 + w);
+  return !!h && h.t <= L;
+}
+
 // Skyline Relay: data-driven encounters (level.js ENCOUNTERS)
 World.prototype.updateSkyline = function (n) {
   const here = x0 => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0);
@@ -775,7 +965,9 @@ World.prototype.updateSkyline = function (n) {
     const E = S.def;
     if (S.state === 'idle') {
       if (!here(E.trigger)) continue;
-      S.state = 'active'; S.wave = 0; this.spawnWave(S, n);
+      S.state = 'active'; S.wave = 0;
+      if (E.boss) S.boss = spawnBoss(this, E.boss, E.bossAt[0], E.bossAt[1], { zone: 'skyline', enc: E.id });
+      else this.spawnWave(S, n);
       if (E.gates) {
         for (const g of E.gates) GATES[g] = true;
         // Anyone still outside the gate is brought in, as in the Concourse Lock
@@ -784,14 +976,18 @@ World.prototype.updateSkyline = function (n) {
       }
       this.emit('banner', { text: E.banner[0], sub: E.banner[1] });
     } else if (S.state === 'active') {
+      if (E.boss && S.boss && S.boss.dead && S.state === 'active') {
+        // The boss is down: its drones go with it
+        for (const e of this.enemies) if (e.enc === E.id && !e.dead && e.add) { e.hp = 0; e.dead = true; e.deathT = 0; this.emit('kill', { x: e.x, y: e.y + e.h / 2, e, owner: null }); }
+      }
       const alive = this.enemies.filter(e => e.enc === E.id && !e.dead).length;
-      const last = S.wave >= E.waves.length - 1;
+      const last = E.boss ? true : S.wave >= E.waves.length - 1;
       if (!last && alive <= 1) {
         S.wave++; this.spawnWave(S, n);
         const b = E.waveBanners && E.waveBanners[S.wave];
         if (b) this.emit('banner', { text: b[0], sub: b[1] });
       } else if (last && alive === 0) {
-        S.state = 'cleared';
+        S.state = 'cleared'; if (E.boss) this.bossClearedT = this.tick;
         if (E.gates) { for (const g of E.gates) GATES[g] = false; this.emit('gates', { closed: false }); }
         if (E.cleared) {
           this.emit('banner', { text: E.cleared[0], sub: E.cleared[1] });
@@ -801,7 +997,8 @@ World.prototype.updateSkyline = function (n) {
       }
     }
   }
-  if (!this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X)) {
+  // The route completes once every encounter is won (a few seconds after a boss falls, so the banners don't collide)
+  if (!this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X) && this.tick - (this.bossClearedT ?? -1e9) > 150) {
     this.routeDone = true;
     this.emit('banner', { text: 'Route complete', sub: 'You reached the end of this build.' });
   }
