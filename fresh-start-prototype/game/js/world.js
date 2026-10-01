@@ -1,14 +1,16 @@
 // World: owns every entity, runs the fixed-tick simulation, and emits events for
 // rendering, audio and UI. Nothing in here touches the DOM or Three.js.
-import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT } from './config.js';
+import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL } from './config.js';
 import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid } from './level.js';
-import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen } from './player.js';
+import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate } from './player.js';
 import { createEnemy, updateEnemy, ENEMY_TYPES } from './enemies.js';
 import { spawnBoss, BOSS } from './bosses.js';
 import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus, hurtbox } from './combat.js';
 import { EMPTY_CMD } from './input.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
+// How tall each of Fix's gadgets stands (what enemy shots and strikes can hit)
+const GADGET_H = { pylon: 1.3, sentry: 0.95, coil: 1.6, pad: 0.3 };
 // Height gained by a body launched upward at v with no rise cut, as the fixed-tick integration plays it out
 const apexGain = v => Math.max(0, v * v / (2 * GRAVITY) - v * DT / 2);
 
@@ -29,12 +31,26 @@ const BARKS = {
     lash_save: ['Mine now!', 'Over here!'], lock_broken: ["That's how it's done."],
     challenge: ['Eyes on me!', 'Come on, all of you!'], ambush: ['Missed me?', 'Right behind you.'],
   },
+  ram: {
+    intercept_save: ['Behind me.'], saved_reply: ['Appreciated.', 'Good eye.'],
+    perfect: ['Not getting through.'], revive: ['Up. Stay behind me.', 'On your feet. I hold the line.'],
+    revived: ['Still standing.', 'Back to the front.'], lash_reply: ['Good pull.'], lash_save: ['Hold on.'], lock_broken: ['Line holds.'],
+    challenge_reply: ['Bring them to me.', 'I will take the rest.'], provoke: ['Over here!', 'Come and try me!'],
+    guardian: ['I have your back.', 'Stay close to me.'], perfect_guard: ['Denied.', 'Back at you.'],
+  },
+  fix: {
+    intercept_save: ['Got it!'], saved_reply: ['Thanks! Owe you one.'], perfect: ['Ha! Clean.'],
+    revive: ['Jump-start! Up you get.', 'Patched. Back in it.'], revived: ['Back in business.', 'Who fixed me? Thanks.'],
+    lash_reply: ['Neat trick.'], lash_save: ['Gotcha!'], lock_broken: ['Tools down. Nice work.'],
+    challenge_reply: ['Keep them busy, I will patch you after.'], gadget: ['Deploying!', 'Built it.'], upgrade: ['Tuned up.', 'Better than new.'],
+  },
 };
 
 export class World {
   constructor() {
     this.players = []; this.enemies = []; this.projectiles = []; this.hitboxes = [];
     this.barriers = []; this.shockwaves = []; this.events = []; this.scheduled = []; this.snares = []; this.wells = []; this.ultCast = null;
+    this.gadgets = []; this.pickups = [];
     this.hitSets = new Map(); this.tick = 0; this.instanceSeq = 1;
     this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
     this.arena = { state: 'idle' }; this.towerSpawned = false;
@@ -827,8 +843,12 @@ export class World {
     return p;
   }
   removePlayer(slot) {
+    const gone = this.players.find(p => p.slot === slot);
+    if (gone) this.leaveRole(gone);
     this.players = this.players.filter(p => p.slot !== slot);
     this.wells = this.wells.filter(w => this.players.includes(w.owner));
+    for (const p of this.players) if (p.link && p.link.q === gone) this.endLink(p, 'gone');
+    for (const b of this.barriers) if (b.owner === gone) b.ttl = 0;
     if (this.ultCast) { this.ultCast.members = this.ultCast.members.filter(m => this.players.includes(m)); if (!this.ultCast.members.length) this.ultCast = null; }
     this.emit('leave', { slot });
   }
@@ -837,14 +857,27 @@ export class World {
     if (p.thrusting) this.emit('thrustOff', { p });
     if (p.aegis) this.endAegis(p, 'swap');
     if (p.beam) this.endBeam(p, 'swap');
+    this.leaveRole(p);
     setCharacter(p, charId);
     this.emit('swap', { p });
   }
 
+  // What a RAM or a Fix leaves behind when they swap out or leave: a charge in progress lets go of its pile,
+  // a link ends, a leap is cut short, his Bulwark Wall comes down, and a Fix's gadgets pack up
+  leaveRole(p) {
+    if (p.rush) this.endRush(p, 'cancel');
+    if (p.link) this.endLink(p, 'swap');
+    p.leap = null;
+    for (const b of this.barriers) if (b.kind === 'rampart' && b.owner === p) b.ttl = 0;
+    for (const g of this.gadgets) if (g.owner === p && !g.dead) { g.dead = true; this.emit('gadgetEnd', { g, why: 'gone' }); }
+  }
   downPlayer(p) {
     if (p.lockT) this.setLock(p, null, 'downed');
     if (p.aegis) this.endAegis(p, 'down');
     if (p.beam) this.endBeam(p, 'down');
+    if (p.rush) this.endRush(p, 'cancel');
+    if (p.link) this.endLink(p, 'down');
+    p.leap = null; p.patch = null; p.tossArmed = false; p.fixRevive = false; p.reviveBy = null; p.reviveGain = 0;
     p.hp = 0; p.chargeT = 0; p.meleeCharged = false; p.dash = null; p.lash = null; p.zip = null; p.rifleT = 0; p.dashChargeT = 0;
     p.dodge = null; p.pound = null; p.burstT = 0; p.subArmed = false;
     p.veiled = false; p.veilCharge = 0; p.ambushT = 0;
@@ -866,6 +899,7 @@ export class World {
   }
   revivePlayer(p, by, frac) {
     p.state = 'normal'; p.st = 0; p.hp = Math.round(p.maxHp * frac); p.mercy = 90; p.revive = 0;
+    p.fixRevive = false; p.reviveBy = null; p.reviveGain = 0;
     p.h = CHARS[p.char].height; p.crouch = !hasHeadroom(p.x, p.y, p.w, p.h);
     this.emit('revived', { p, by });
     if (by) { this.bark(by, 'revive', 1, true); this.schedule(40, () => this.bark(p, 'revived', 1, true)); }
@@ -881,8 +915,12 @@ export class World {
       p.veiled = false; p.veilCharge = 0; p.veilBreakT = 0; p.ambushT = 0; p.focus = 0;
       p.aegis = null; p.aegisCd = 0; p.overcharge = 0; p.beam = null;
       p.dodge = null; p.pound = null; p.burstT = 0; p.subArmed = false; p.ultRun = null; p.lockSuspend = false;
+      p.rush = null; p.link = null; p.leap = null; p.patch = null; p.tossArmed = false; p.integrity = RAM.guard.integrity; p.guardBroken = false; p.kinetic = 0;
+      p.plate = 0; p.overclockT = 0; p.tuneT = 0; p.braceT = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start); p.fixRevive = false; p.reviveGain = 0;
     });
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = []; this.wells = []; this.ultCast = null;
+    this.gadgets = []; this.pickups = [];
+    for (const e of this.enemies) if (e.state === 'plowed') { e.state = 'idle'; e.plowBy = null; }
     for (const p of this.players) p.leash = null;
     if (this.arena.state !== 'cleared') this.resetArena();
     if (this.towerSpawned && this.enemies.some(e => e.zone === 'tower' && !e.dead)) {
@@ -951,6 +989,575 @@ export class World {
     this.bark(p, 'perfect', 0.3);
   }
 
+  // ---- RAM: the Rampart, the Breach Cannon, the Ram Charge, and his abilities ----
+  // The cannon on his shoulder: a heavy slug on a tap (level 0), or a Breach Shot (levels 1-3) that punches
+  // through `pierce` enemies; level 3 bursts at the end of its flight (endBlast)
+  fireSlug(p, level) {
+    const C = RAM.cannon, S = level ? C[level] : C.slug, c = chest(p), ax = p.aimX, ay = p.aimY;
+    const x = c.x + ax * 0.95, y = c.y + 0.3 + ay * 0.95;
+    this.spawnProjectile({ team: 'p', owner: p, x, y, vx: ax * S.speed, vy: ay * S.speed, ttl: S.ttl, r: S.r, dmg: S.dmg, poise: S.poise, kb: S.kb, kbY: 2,
+      pierce: !!S.pierce, pierceLeft: S.pierce || 0, armorBreak: !!S.armorBreak, intercept: true, interceptHeavy: level >= 1, level,
+      kind: level ? 'breach' : 'slug', endBlast: S.blast || null });
+    p.shootT = 12;
+    this.emit('shot', { p, level, x, y, ax, ay, cannon: true });
+  }
+
+  // Which way the Rampart covers: a point is in front of it
+  guardFaces(p, x, y) { const c = chest(p), [nx, ny] = p.guardDir; return (x - c.x) * nx + (y - c.y) * ny > -0.25; }
+  // The guarding RAM whose shield a shot crossed between two points, coming from in front of it (so it covers
+  // everyone behind him), if any
+  rampartCross(ox, oy, x, y, r) {
+    const G = RAM.guard;
+    for (const p of this.players) {
+      if (p.char !== 'ram' || p.state !== 'guard' || p.guardBroken) continue;
+      const c = chest(p), [nx, ny] = p.guardDir, bx = c.x + nx * G.reach, by = c.y + ny * G.reach;
+      const s0 = (ox - bx) * nx + (oy - by) * ny, s1 = (x - bx) * nx + (y - by) * ny;
+      if (s0 < -r || s1 > r) continue;
+      const t = s0 - s1 > 1e-6 ? Math.max(0, Math.min(1, s0 / (s0 - s1))) : 0;
+      const cx = ox + (x - ox) * t, cy = oy + (y - oy) * t;
+      if (Math.abs((cx - bx) * -ny + (cy - by) * nx) <= G.half + r) return p;
+    }
+    return null;
+  }
+  // A shot stopped by the Rampart: absorbed (Integrity, Kinetic), or on a Perfect Guard sent straight back at
+  // whoever fired it, faster, as his. A shell bursts on it harmlessly.
+  blockShot(p, pr) {
+    const G = RAM.guard, perfect = p.guardT <= G.perfect;
+    const diff = DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal;
+    if (perfect && !pr.blast) {
+      const src = pr.owner && pr.owner.kind === 'enemy' && !pr.owner.dead ? pr.owner : null, sp = Math.hypot(pr.vx, pr.vy) * G.reflect;
+      let vx = -pr.vx * G.reflect, vy = -pr.vy * G.reflect;
+      if (src) { const dx = src.x - pr.x, dy = src.y + src.h * 0.6 - pr.y, m = Math.hypot(dx, dy) || 1; vx = dx / m * sp; vy = dy / m * sp; }
+      Object.assign(pr, { team: 'p', owner: p, vx, vy, dmg: Math.max(3, pr.dmg * 0.6) * (pr.heavy ? 1.6 : 1), poise: pr.heavy ? 45 : 22, kb: 6,
+        hitSet: new Set(), deflected: true, reflected: true, intercept: false, heavy: false, homing: false, ttl: Math.max(pr.ttl, 120), gravity: 0 });
+      this.guardResult(p, 0, true, pr.x, pr.y, false);
+      return 'reflect';
+    }
+    pr.dead = true;
+    if (pr.blast) this.emit('enemyBlast', { x: pr.x, y: pr.y, r: pr.blast.r * 0.6 });
+    this.guardResult(p, (pr.blast ? pr.blast.dmg : pr.dmg) * diff.dmg, perfect, pr.x, pr.y, !!pr.heavy || !!pr.blast);
+    return 'block';
+  }
+  // A blocked hit: the Integrity it costs, the Kinetic it stores, ultimate charge; a broken shield
+  guardResult(p, dmg, perfect, x, y, heavy) {
+    const G = RAM.guard, rate = boostRate(p);
+    p.blockT = 0;
+    if (perfect) {
+      p.kinetic = Math.min(100, p.kinetic + G.perfectKinetic * rate);
+      gainUlt(p, ULT.gain.perfect, this);
+      this.emit('perfectGuard', { p, x, y, heavy });
+      this.bark(p, 'perfect_guard', 0.3);
+      return;
+    }
+    p.integrity -= dmg;
+    p.kinetic = Math.min(100, p.kinetic + dmg * G.kinetic * rate);
+    gainUlt(p, dmg * ULT.gain.blocked, this);
+    this.emit('guardBlock', { p, x, y, dmg, heavy, frac: Math.max(0, p.integrity / G.integrity) });
+    if (heavy && p.onGround) p.vx = -p.facing * 3.5;   // a heavy blow shoves him back a step
+    if (p.integrity <= 0) {
+      p.integrity = 0; p.guardBroken = true; p.guardOffT = 0;
+      p.state = 'hitstun'; p.st = 0; p.stun = G.brokenStun; p.vx = -p.facing * 4; p.vy = 2;
+      this.emit('rampartBreak', { p, x, y });
+    }
+  }
+
+  // Kinetic Release: the Rampart dumps its stored Kinetic as a cone of force along the guard
+  kineticRelease(p) {
+    const K = RAM.release, k = Math.min(1, p.kinetic / 100), c = chest(p), [nx, ny] = p.guardDir;
+    const at = a => a[0] + (a[1] - a[0]) * k;
+    const r = at(K.r), dmg = at(K.dmg), poise = at(K.poise), kb = at(K.kb), cos = Math.cos(K.cone);
+    const ox = c.x + nx * 0.6, oy = c.y + ny * 0.6;
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const hb = hurtbox(e), qx = Math.max(hb.x0, Math.min(ox, hb.x1)), qy = Math.max(hb.y0, Math.min(oy, hb.y1));
+      const dx = qx - ox, dy = qy - oy, d = Math.hypot(dx, dy);
+      if (d > r || (d > 0.9 && (dx * nx + dy * ny) / d < cos)) continue;
+      hitEnemy(this, e, { owner: p, dmg, poise, kb: [(sign(e.x - p.x) || p.facing) * kb, 4 + 4 * k], armorBreak: k >= 0.5, heavy: true, ram: true }, 'pulse');
+    }
+    for (const pr of this.projectiles) {
+      if (pr.team !== 'e' || pr.dead) continue;
+      const dx = pr.x - ox, dy = pr.y - oy, d = Math.hypot(dx, dy) || 1e-3;
+      if (d < r && (dx * nx + dy * ny) / d > cos) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
+    }
+    p.kinetic = 0;
+    this.emit('kineticRelease', { p, x: ox, y: oy, nx, ny, r, k, cone: K.cone });
+  }
+
+  // The Ram Charge, after he has moved this tick: what is in front of him is scooped up (light enemies, and
+  // from RAM.rush.heavyFrom heavy ones too) and carried along, stacked against the shield. A boss or a rooted
+  // enemy stops it with a heavy hit; a wall (for him or for the pile) stops it with a slam.
+  ramPlow(p) {
+    const R = RAM.rush, r = p.rush; if (!r) return;
+    const L = r.level, dir = r.dx, front = p.x + dir * p.w / 2;
+    for (const e of this.enemies) {
+      if (e.dead || r.hit.has(e) || e.state === 'plowed') continue;
+      const ax0 = dir > 0 ? front - 0.3 : front - R.reach, ax1 = dir > 0 ? front + R.reach : front + 0.3;
+      if (e.x + e.w / 2 < ax0 || e.x - e.w / 2 > ax1 || e.y > p.y + p.h - 0.1 || e.y + e.h < p.y + 0.15) continue;
+      r.hit.add(e);
+      const rooted = e.boss || ['post', 'turret', 'sniper', 'mortar'].includes(e.type), heavy = !e.light;
+      if (rooted || (heavy && L < R.heavyFrom)) {
+        hitEnemy(this, e, { owner: p, dmg: R.bonk.dmg[L], poise: R.bonk.poise[L], kb: [dir * 6, 2], armorBreak: L >= 2, heavy: true, ram: true }, 'pulse');
+        this.endRush(p, 'bonk', e); p.state = 'normal'; p.st = 0;
+        return;
+      }
+      hitEnemy(this, e, { owner: p, dmg: R.catchDmg[L], poise: R.poise[L], kb: [dir * 3, 0], armorBreak: L >= 2, ram: true }, 'pulse');
+      if (e.dead) continue;
+      this.director.release(e);
+      e.state = 'plowed'; e.st = 0; e.plowBy = p; r.carried.push(e);
+      if (r.carried.length === 1) p.hitstop = Math.max(p.hitstop, 2);
+      this.emit('plowCatch', { p, e, level: L });
+    }
+    this.carryPile(p, r.carried, dir);
+    const jam = r.carried.some(e => !e.dead && !hasHeadroom(e.x, e.y + 0.05, e.w, e.h - 0.1));
+    if (p.hitWall || jam) { this.endRush(p, 'wall'); p.state = 'normal'; p.st = 0; p.vx = 0; }
+  }
+  // Carried enemies are stacked in front of him, at his feet; a pile that runs into a wall pushes him back
+  carryPile(p, pile, dir) {
+    let off = p.x + dir * p.w / 2;
+    for (const e of pile) {
+      if (e.dead) continue;
+      e.prevX = e.x; e.prevY = e.y;
+      e.x = off + dir * (e.w / 2 + 0.06); off += dir * (e.w + 0.06);
+      e.y = p.y; e.vx = p.vx; e.vy = 0;
+    }
+  }
+  // The charge ends: at a wall the pile is slammed into it (a big hit, and they reel); otherwise it is
+  // thrown on ahead of him. Hitting something he can't move bounces him back a step.
+  endRush(p, why, bonked = null) {
+    const r = p.rush; if (!r) return;
+    const R = RAM.rush, L = r.level, dir = r.dx;
+    const pile = r.carried.filter(e => !e.dead && e.state === 'plowed');
+    if (why === 'wall' && pile.length) {
+      // the pile can't stay inside the wall: back him off until it fits
+      for (let i = 0; i < 24 && pile.some(e => !hasHeadroom(e.x, e.y + 0.05, e.w, e.h - 0.1)); i++) { p.x -= dir * 0.1; this.carryPile(p, pile, dir); }
+    }
+    for (const e of pile) {
+      e.plowBy = null;
+      if (why === 'wall') {
+        hitEnemy(this, e, { owner: p, dmg: R.splat.dmg[L], poise: R.splat.poise[L], kb: [-dir * 2, 2], armorBreak: true, heavy: true, ram: true }, 'pulse');
+        if (e.dead) continue;
+        this.director.release(e); e.state = 'stagger'; e.st = 0; e.stun = R.splat.stun; e.poise = 0; e.vx = -dir * 2;
+        this.emit('stagger', { x: e.x, y: e.y + e.h * 0.6, e });
+      } else if (why === 'cancel') { e.state = 'hitstun'; e.st = 0; e.stun = 16; }
+      else { e.state = 'launched'; e.st = 0; e.vx = dir * R.end.kb[0] * (1 + 0.15 * L); e.vy = R.end.kb[1]; }
+    }
+    if (why === 'wall' && pile.length) this.emit('ramSplat', { p, x: p.x + dir * (p.w / 2 + 0.6), y: p.y + 1, n: pile.length, level: L });
+    if (why === 'bonk') { p.vx = -dir * 4; p.hitstop = Math.max(p.hitstop, 4); this.emit('ramBonk', { p, e: bonked, x: p.x + dir * p.w / 2, y: p.y + 1.2, level: L }); }
+    p.rush = null;
+    this.emit('rushEnd', { p, why, n: pile.length });
+  }
+
+  // Bulwark Wall: a hard-light wall planted in front of him (one at a time). It is a barrier: enemy shots stop
+  // at it, the team's pass through it boosted (combat.updateProjectiles), and enemies can't get through it
+  // (wallBlock) until it breaks.
+  raiseWall(p) {
+    const W = RAM.wall;
+    for (const b of this.barriers) if (b.kind === 'rampart' && b.owner === p) b.ttl = 0;
+    let x = p.x + p.facing * W.dist;
+    for (let i = 0; i < 6 && pointInSolid(x, p.y + 0.5); i++) x -= p.facing * 0.3;   // against a wall it goes up close
+    const gy = groundBelow(x, p.y + 0.5), base = gy > -Infinity && p.y - gy < 4 ? gy : p.y;
+    this.barriers.push({ kind: 'rampart', owner: p, x, y: base + W.half, nx: p.facing, ny: 0, half: W.half, ttl: W.ticks, max: W.ticks, hp: W.hp, maxHp: W.hp, hitT: 0 });
+    p.wallCd = W.cd;
+    this.emit('wallUp', { p, x, y: base });
+  }
+  // An enemy that would pass through a Bulwark Wall is held on its own side (a boss smashes it)
+  wallBlock(e) {
+    for (const b of this.barriers) {
+      if (b.kind !== 'rampart' || b.ttl <= 0) continue;
+      if (e.y > b.y + b.half || e.y + e.h < b.y - b.half) continue;
+      const hw = e.w / 2, s1 = e.x - b.x;
+      if (e.boss) { if (Math.abs(s1) < hw) { b.hp = 0; b.ttl = 0; } continue; }
+      const side = sign(e.prevX - b.x) || sign(s1) || 1;
+      if (side * s1 < hw) { e.x = b.x + side * (hw + 0.02); if (e.vx * side < 0) e.vx = 0; }
+    }
+  }
+  // The Bulwark Wall standing between an attacker and a player, if any (the wall takes the strike)
+  wallBetween(a, q) {
+    for (const b of this.barriers) {
+      if (b.kind !== 'rampart' || b.ttl <= 0 || (a.x - b.x) * (q.x - b.x) >= 0) continue;
+      if (q.y > b.y + b.half || q.y + q.h < b.y - b.half) continue;
+      return b;
+    }
+    return null;
+  }
+  hurtWall(b, dmg, x, y) {
+    b.hp -= dmg; b.hitT = 8;
+    this.emit('wallHit', { b, x, y, frac: Math.max(0, b.hp / b.maxHp) });
+    if (b.hp <= 0) b.ttl = 0;
+  }
+
+  // Guardian Link: to the teammate who needs it most (the most hurt, then the nearest), leaping to their side
+  // first when they are far
+  startLink(p) {
+    const L = RAM.link;
+    let best = null, bs = Infinity;
+    for (const q of this.players) {
+      if (q === p || q.state === 'dead' || q.state === 'downed') continue;
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (d > L.range) continue;
+      const s = d - 12 * (1 - q.hp / q.maxHp) + (this.guardianOf(q) ? 6 : 0);
+      if (s < bs) { bs = s; best = q; }
+    }
+    if (!best) { this.emit('linkNone', { p }); return; }
+    p.linkCd = L.cd;
+    if (Math.hypot(best.x - p.x, best.y - p.y) > L.leapAt && p.state !== 'ult') {
+      if (p.rush) this.endRush(p, 'cancel');
+      const T = L.leapTicks * DT, dy = best.y - p.y;
+      p.leap = { q: best, t: 0, side: sign(best.x - p.x) || 1, tx: best.x, ty: best.y };
+      Object.assign(p, { state: 'leap', st: 0, vy: Math.min(30, Math.max(11, (dy + 0.5 * GRAVITY * T * T) / T)), onGround: false, crouch: false,
+        dash: null, dodge: null, pound: null, chargeT: 0, dashChargeT: 0, meleeCharged: false });
+      this.emit('leap', { p, q: best });
+    } else this.makeLink(p, best);
+  }
+  makeLink(p, q) {
+    if (p.link && p.link.q !== q) this.endLink(p, 'replaced');
+    p.link = { q, t: RAM.link.ticks };
+    addPlate(q, RAM.link.plate);
+    this.emit('link', { p, q });
+    this.bark(p, 'guardian', 0.5);
+  }
+  // The leap lands: enemies close by are shoved away, and the link is made
+  landLeap(p) {
+    const L = RAM.link, leap = p.leap; p.leap = null;
+    p.state = 'normal'; p.st = 0; p.vx *= 0.2;
+    this.spawnHitbox({ owner: p, team: 'p', x0: p.x - L.land.r, x1: p.x + L.land.r, y0: p.y - 0.3, y1: p.y + 1.9, dmg: L.land.dmg, poise: L.land.poise,
+      kb: [9, 5], radial: true, cx: p.x, instance: this.newInstance(), scatter: true });
+    this.emit('leapLand', { p, x: p.x, y: p.y });
+    const q = leap && leap.q;
+    if (q && this.players.includes(q) && q.state !== 'dead' && q.state !== 'downed') this.makeLink(p, q);
+  }
+  tickLink(p) {
+    const k = p.link, q = k.q;
+    if (--k.t <= 0 || !this.players.includes(q) || q.state === 'dead' || q.state === 'downed' || p.state === 'downed' || p.state === 'dead' ||
+      Math.hypot(q.x - p.x, q.y - p.y) > RAM.link.breakAt) this.endLink(p, k.t <= 0 ? 'expire' : 'break');
+  }
+  endLink(p, why) { if (!p.link) return; const q = p.link.q; p.link = null; this.emit('linkEnd', { p, q, why }); }
+  // The RAM linked to this player, if any
+  guardianOf(q) { for (const g of this.players) if (g.link && g.link.q === q && g.state !== 'downed' && g.state !== 'dead') return g; return null; }
+  // His share of a hit on the teammate he guards (his Plating first; it can put him down)
+  linkHit(g, amount, from) {
+    let dmg = amount;
+    if (g.plate > 0) { const a = Math.min(g.plate, dmg); g.plate -= a; dmg -= a; }
+    g.hp -= dmg; gainUlt(g, amount * ULT.gain.taken, this);
+    this.emit('linkHit', { p: g, q: from, dmg: amount });
+    if (g.hp <= 0) { g.hp = 0; this.downPlayer(g); }
+  }
+
+  // Provoke: every enemy close by turns on him (a sniper mid-aim too) and attacks sooner; he braces, and the
+  // roar shoves light enemies right beside him
+  provoke(p) {
+    const P = RAM.provoke, c = chest(p); let n = 0;
+    for (const e of this.enemies) {
+      if (e.dead || e.type === 'post' || e.type === 'turret') continue;
+      const d = Math.hypot(e.x - c.x, e.y + e.h / 2 - c.y);
+      if (d > P.range) continue;
+      e.taunter = p; e.tauntT = P.ticks; e.target = p; n++;
+      if (e.type === 'sniper' && (e.state === 'aim' || e.state === 'lock')) { e.aimX = p.x; e.aimY = p.y + 1.2; }
+      if (e.cd > 20) e.cd = 20;
+      this.emit('taunted', { e, by: p });
+      if (d < P.shove.r + e.w / 2 && e.light && !e.boss && !e.flier && e.state !== 'plowed') {
+        this.director.release(e); e.state = 'launched'; e.st = 0; e.vx = (sign(e.x - p.x) || p.facing) * P.shove.kb; e.vy = 5;
+      }
+    }
+    p.braceT = P.ticks; p.provokeCd = P.cd;
+    this.emit('provoke', { p, x: c.x, y: c.y, n, r: P.range });
+    this.bark(p, 'provoke', 0.6);
+  }
+
+  // Seismic Slam: shockwaves run out both ways along the floor from where the shield struck
+  spawnQuake(p, Q) {
+    for (const dir of [1, -1]) {
+      this.shockwaves.push({ owner: p, team: 'p', x: p.x + dir * (p.w / 2 + 0.5), y: p.y, dir, speed: Q.speed, ttl: Q.ttl, dmg: Q.dmg, poise: Q.poise, h: Q.h,
+        instance: this.newInstance() });
+    }
+    this.emit('quake', { p, x: p.x + p.facing * 1.0, y: p.y });
+  }
+  // Hydraulic Uplift: enemy shots in the sweep of the rising shield (in front of him and over his head) go
+  sweepShots(p) {
+    const x0 = p.facing > 0 ? p.x - 0.6 : p.x - 2.4, x1 = p.facing > 0 ? p.x + 2.4 : p.x + 0.6, y0 = p.y + 0.4, y1 = p.y + p.h + 1.8;
+    for (const pr of this.projectiles) {
+      if (pr.team !== 'e' || pr.dead || pr.x < x0 || pr.x > x1 || pr.y < y0 || pr.y > y1) continue;
+      pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y });
+    }
+  }
+
+  // ---- Fix: the Rivet Gun, the Patch Beam, gadgets and power-ups ----
+  fireRivet(p, i) {
+    const R = FIX.rivet, c = chest(p), a = Math.atan2(p.aimY, p.aimX) + (i - 1) * 0.035;
+    const x = c.x + p.aimX * 0.7, y = c.y + p.aimY * 0.7;
+    this.spawnProjectile({ team: 'p', owner: p, x, y, vx: Math.cos(a) * R.speed, vy: Math.sin(a) * R.speed, ttl: R.ttl, r: R.r, dmg: R.dmg, poise: R.poise, kb: 1.5,
+      intercept: true, interceptHeavy: false, kind: 'rivet', level: 0 });
+    p.shootT = 10;
+    this.emit('shot', { p, level: 0, x, y, ax: p.aimX, ay: p.aimY, rivet: true });
+  }
+  // A Hot Rivet: it sticks in what it hits (an enemy, or a wall) and bursts after its fuse (combat.js)
+  fireHotRivet(p, level) {
+    const H = FIX.rivet.hot, c = chest(p), x = c.x + p.aimX * 0.7, y = c.y + p.aimY * 0.7, L = level - 1;
+    this.spawnProjectile({ team: 'p', owner: p, x, y, vx: p.aimX * H.speed, vy: p.aimY * H.speed, ttl: H.ttl, r: H.r, dmg: H.dmg[L], poise: H.poise[L], kb: 2,
+      intercept: true, interceptHeavy: level >= 2, kind: 'hotRivet', level, stick: { fuse: H.fuse, blast: H.blast[L] } });
+    p.shootT = 12;
+    this.emit('shot', { p, level, x, y, ax: p.aimX, ay: p.aimY, rivet: true });
+  }
+
+  heal(q, amount, from = null) {
+    if (!(amount > 0) || q.state === 'dead' || q.state === 'downed') return 0;
+    const before = q.hp; q.hp = Math.min(q.maxHp, q.hp + amount);
+    if (q.strain) q.strain = Math.max(0, Math.min(q.strain, q.maxHp - q.hp));
+    const healed = q.hp - before;
+    if (from && from !== q && healed > 0) gainUlt(from, healed * ULT.gain.heal, this);
+    return healed;
+  }
+  // Fix's ground pound: a repair pulse from the landing
+  repairPulse(p, x, y, r, amount) {
+    for (const q of this.players) if (q.state !== 'dead' && q.state !== 'downed' && Math.hypot(q.x - x, q.y - y) <= r) this.heal(q, amount, p);
+    this.emit('repairPulse', { p, x, y, r });
+  }
+  // Torque Slam: a ring of sparks that stuns light enemies and drones
+  sparkRing(p, S) {
+    const x = p.x + p.facing * 0.9, y = p.y + 0.5;
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const hb = hurtbox(e), qx = Math.max(hb.x0, Math.min(x, hb.x1)), qy = Math.max(hb.y0, Math.min(y, hb.y1));
+      if (Math.hypot(qx - x, qy - y) > S.r) continue;
+      const res = hitEnemy(this, e, { owner: p, dmg: S.dmg, poise: S.poise, kb: [(sign(e.x - x) || p.facing) * 3, 2], shock: true, stun: S.stun }, 'blast');
+      if (res !== 'none' && !e.dead && e.light && !e.boss && e.armor <= 0 && e.state !== 'plowed') {
+        this.director.release(e); e.state = 'hitstun'; e.st = 0; e.stun = S.stun; e.shockT = S.stun;
+      }
+    }
+    this.emit('sparkRing', { p, x, y, r: S.r });
+  }
+
+  // The Patch Beam's target: the teammate who needs it most within range (a downed one first, then the most
+  // hurt, then the nearest; not one behind where she aims). The current one is kept while it is in reach.
+  patchTarget(p, keep) {
+    const B = FIX.beam;
+    let best = null, bs = Infinity;
+    for (const q of this.players) {
+      if (q === p || q.state === 'dead') continue;
+      const d = Math.hypot(q.x - p.x, q.y + q.h * 0.5 - (p.y + p.h * 0.5));
+      if (d > (q === keep ? B.keep : B.range)) continue;
+      let s = d - (q.state === 'downed' ? 30 : 12 * (1 - q.hp / q.maxHp)) - (q === keep ? 4 : 0);
+      if (p.aimFree && Math.abs(p.aimX) > 0.3 && (q.x - p.x) * p.aimX < -1.5) s += 8;
+      if (s < bs) { bs = s; best = q; }
+    }
+    return best;
+  }
+  patchTick(p) {
+    const B = FIX.beam, P = p.patch; P.t++;
+    let q = P.target;
+    const valid = q && this.players.includes(q) && q.state !== 'dead' && Math.hypot(q.x - p.x, q.y - p.y) <= B.keep;
+    // Every half second it looks again in case someone needs it more
+    if (!valid || P.t % 30 === 0) {
+      const n = this.patchTarget(p, valid ? q : null);
+      if (n !== q) { P.target = q = n; this.emit('patchTarget', { p, q }); }
+    }
+    if (!q) { P.self = true; this.heal(p, B.self / 60); return; }
+    P.self = false;
+    if (q.state === 'downed') { q.reviveGain = (q.reviveGain || 0) + B.revive; q.fixRevive = true; q.reviveBy = p; return; }
+    if (this.heal(q, B.heal / 60, p) <= 0) addPlate(q, B.plateRate / 60, B.plate);
+    q.tuneT = Math.max(q.tuneT, 3);
+  }
+
+  // Gadgets
+  deployGadget(p) {
+    const kind = p.gadgetSel, G = FIX.gadget[kind];
+    if (p.scrap < G.cost) { this.emit('noScrap', { p, kind, cost: G.cost }); return false; }
+    let x = p.x + p.facing * 0.95;
+    for (let i = 0; i < 4 && pointInSolid(x, p.y + 0.4); i++) x -= p.facing * 0.3;
+    const gy = groundBelow(x, p.y + 0.3);
+    if (gy === -Infinity) { this.emit('noScrap', { p, kind, cost: G.cost, spot: true }); return false; }   // nothing to stand it on
+    const old = this.gadgets.find(g => g.owner === p && g.kind === kind && !g.dead);
+    if (old) { old.dead = true; this.emit('gadgetEnd', { g: old, why: 'moved' }); }
+    p.scrap -= G.cost;
+    const g = { id: this.newInstance(), kind, owner: p, x, y: p.y, py: p.y, gy, vy: 0, landed: p.y - gy < 0.05, level: 1, pts: 0, t: 0, life: G.life[0],
+      hp: G.hp, maxHp: G.hp, cd: 24, rocketCd: 50, aim: p.facing, aimY: 0, dead: false, h: GADGET_H[kind] };
+    if (g.landed) g.y = gy;
+    this.gadgets.push(g);
+    this.emit('gadgetDeploy', { p, g });
+    this.bark(p, 'gadget', 0.25);
+    return true;
+  }
+  // Jack-Up's jack, left behind as a spring pad (one at a time)
+  placePad(p) {
+    for (const g of this.gadgets) if (g.owner === p && g.kind === 'pad') g.dead = true;
+    const gy = groundBelow(p.x, p.y + 0.3);
+    if (gy === -Infinity || p.y - gy > 0.3) return;
+    this.gadgets.push({ id: this.newInstance(), kind: 'pad', owner: p, x: p.x, y: gy, py: gy, gy, vy: 0, landed: true, level: 1, pts: 0, t: 0, life: FIX.pad.life,
+      hp: 999, maxHp: 999, dead: false, h: GADGET_H.pad });
+    this.emit('padPlace', { p, x: p.x, y: gy });
+  }
+  // One of her gadgets (not a pad) close in front of her: melee is then the wrench
+  gadgetNear(p) {
+    return this.gadgets.some(g => g.owner === p && g.kind !== 'pad' && !g.dead && (g.x - p.x) * p.facing > -0.6 && Math.abs(g.x - p.x) < 1.9 && Math.abs(g.y - p.y) < 1.6);
+  }
+  // A gadget an enemy shot (radius r at x, y) has reached
+  gadgetAt(x, y, r) {
+    for (const g of this.gadgets) {
+      if (g.dead || g.kind === 'pad') continue;
+      const nx = Math.max(g.x - 0.4, Math.min(x, g.x + 0.4)), ny = Math.max(g.y, Math.min(y, g.y + g.h));
+      if (Math.hypot(x - nx, y - ny) < r) return g;
+    }
+    return null;
+  }
+  hurtGadget(g, dmg) {
+    if (g.dead || g.kind === 'pad') return;
+    g.hp -= dmg; g.hitT = 8;
+    this.emit('gadgetHit', { g, dmg });
+    if (g.hp <= 0) { g.dead = true; this.emit('gadgetEnd', { g, why: 'broken' }); }
+  }
+  // A wrench hit: two raise a gadget a level (up to 3), refreshing it; at level 3 they repair it and buy it time
+  wrenchGadget(g, p) {
+    if (g.dead || g.kind === 'pad') return;
+    const G = FIX.gadget[g.kind];
+    if (g.level < 3) {
+      if (++g.pts >= 2) { g.pts = 0; g.level++; g.t = 0; g.life = G.life[g.level - 1]; g.hp = g.maxHp; this.emit('gadgetUp', { p, g }); this.bark(p, 'upgrade', 0.3); }
+      else this.emit('gadgetWrench', { p, g });
+    } else { g.hp = g.maxHp; g.t = Math.max(0, g.t - 120); this.emit('gadgetWrench', { p, g, max: true }); }
+  }
+  // An Amp Coil's field, worked out before anyone acts: allies inside charge and fill their bars faster
+  ampField() {
+    for (const p of this.players) p.ampK = 1;
+    for (const g of this.gadgets) {
+      if (g.kind !== 'coil' || g.dead || !g.landed) continue;
+      const C = FIX.gadget.coil, L = g.level - 1;
+      for (const p of this.players) if (p.state !== 'dead' && Math.hypot(p.x - g.x, p.y + p.h * 0.5 - (g.y + 0.8)) <= C.r[L]) p.ampK = Math.max(p.ampK, C.rate[L]);
+    }
+  }
+  updateGadgets() {
+    for (const g of this.gadgets) {
+      if (g.dead) continue;
+      const o = g.owner;
+      if (!this.players.includes(o) || o.char !== 'fix') { g.dead = true; this.emit('gadgetEnd', { g, why: 'gone' }); continue; }
+      g.py = g.y;
+      if (!g.landed) {
+        g.vy -= GRAVITY * DT; g.y += g.vy * DT;
+        if (g.y <= g.gy) { g.y = g.gy; g.vy = 0; g.landed = true; this.emit('gadgetLand', { g }); }
+      }
+      if (g.hitT > 0) g.hitT--;
+      if (++g.t >= g.life) { g.dead = true; this.emit('gadgetEnd', { g, why: 'expire' }); continue; }
+      if (!g.landed) continue;
+      const L = g.level - 1;
+      if (g.kind === 'pylon') this.pylonTick(g, L);
+      else if (g.kind === 'sentry') this.sentryTick(g, L);
+      else if (g.kind === 'pad') this.padTick(g);
+    }
+    this.gadgets = this.gadgets.filter(g => !g.dead);
+  }
+  // Patch Pylon: heals everyone in its field; a downed teammate inside it gets back up on their own, slowly;
+  // at level 3 it builds Plating on anyone at full health
+  pylonTick(g, L) {
+    const P = FIX.gadget.pylon;
+    for (const q of this.players) {
+      if (q.state === 'dead' || Math.hypot(q.x - g.x, q.y + q.h * 0.5 - (g.y + 0.7)) > P.r[L]) continue;
+      if (q.state === 'downed') { q.reviveGain = (q.reviveGain || 0) + P.revive[L]; q.fixRevive = true; q.reviveBy = q.reviveBy || g.owner; continue; }
+      if (this.heal(q, P.heal[L] / 60, g.owner) <= 0 && P.plate[L]) addPlate(q, P.plate[L] / 60, P.plateMax);
+    }
+  }
+  // Sentry: the nearest enemy in sight and in range; a bolt every few ticks, and at level 3 a homing rocket too
+  sentryTick(g, L) {
+    const S = FIX.gadget.sentry, ox = g.x, oy = g.y + 0.78;
+    if (g.cd > 0) g.cd--; if (g.rocketCd > 0) g.rocketCd--;
+    let best = null, bd = S.range[L];
+    for (const e of this.enemies) {
+      if (e.dead || e.type === 'post') continue;
+      const ex = e.x, ey = e.y + e.h * 0.55, d = Math.hypot(ex - ox, ey - oy);
+      if (d < bd && !segmentBlocked(ox, oy, ex, ey)) { bd = d; best = e; }
+    }
+    g.target = best;
+    if (!best) return;
+    const dx = best.x - ox, dy = best.y + best.h * 0.55 - oy, m = Math.hypot(dx, dy) || 1;
+    g.aim = dx / m; g.aimY = dy / m;
+    if (g.cd <= 0) {
+      this.spawnProjectile({ team: 'p', owner: g.owner, x: ox + g.aim * 0.45, y: oy + g.aimY * 0.45, vx: g.aim * S.speed, vy: g.aimY * S.speed, ttl: 60, r: 0.1,
+        dmg: S.dmg[L], poise: S.poise, kb: 1.5, kind: 'sentryBolt', intercept: true, interceptHeavy: false, gadget: true });
+      g.cd = S.every[L];
+      this.emit('sentryShot', { g, x: ox + g.aim * 0.45, y: oy + g.aimY * 0.45 });
+    }
+    if (L >= 2 && g.rocketCd <= 0) {
+      const R = S.rocket;
+      this.spawnProjectile({ team: 'p', owner: g.owner, x: ox, y: oy + 0.2, vx: g.aim * R.speed * 0.5, vy: R.speed * 0.6, ttl: 150, r: 0.14, dmg: 0, poise: 0,
+        kind: 'sentryRocket', intercept: false, blast: { ...R.blast }, seek: { target: best, delay: 8, until: 150, turn: 0.12, age: 0 }, gadget: true });
+      g.rocketCd = R.every;
+      this.emit('sentryRocket', { g, x: ox, y: oy + 0.2 });
+    }
+  }
+  // Spring pad: whoever comes down onto it is bounced high (their double jump and air dash back); light enemies
+  // standing on it are thrown up
+  padTick(g) {
+    const P = FIX.pad;
+    for (const q of this.players) {
+      if (q.padCd > 0 || !['normal', 'guard', 'patch', 'attack'].includes(q.state) || q.vy > 0.5) continue;
+      if (Math.abs(q.x - g.x) > (P.w + q.w) / 2 || q.y < g.y - 0.05 || q.y > g.y + 0.45) continue;
+      q.vy = P.bounce; q.onGround = false; q.coyote = 0; q.jumpsUsed = 0; q.airDashes = 1; q.airRise = true; q.airDodge = true;
+      q.dashCarry = true; q.fastFall = false; q.padCd = 20;
+      this.emit('padBounce', { p: q, g, x: g.x, y: g.y });
+    }
+    for (const e of this.enemies) {
+      if (e.dead || !e.light || e.flier || e.boss || e.state === 'launched' || e.state === 'plowed') continue;
+      if (Math.abs(e.x - g.x) > (P.w + e.w) / 2 || Math.abs(e.y - g.y) > 0.3) continue;
+      this.director.release(e); e.state = 'launched'; e.st = 0; e.vy = P.enemyBounce; e.vx = 0;
+      this.emit('padBounce', { e, g, x: g.x, y: g.y });
+    }
+  }
+
+  // Power-ups: tossed to the nearest teammate in front (it homes in on them), or dropped at her feet
+  tossPower(p) {
+    const kind = p.powerSel, P = FIX.power;
+    if (p.scrap < P.cost) { this.emit('noScrap', { p, kind, cost: P.cost }); return false; }
+    p.scrap -= P.cost;
+    let target = null, bd = P.range;
+    for (const q of this.players) {
+      if (q === p || q.state === 'dead' || q.state === 'downed') continue;
+      const dx = q.x - p.x, d = Math.hypot(dx, q.y - p.y);
+      if (d < bd && (dx * p.facing > -1 || d < 2.5)) { bd = d; target = q; }
+    }
+    const c = chest(p), x = c.x + p.facing * 0.4, y = c.y + 0.25;
+    this.pickups.push({ id: this.newInstance(), kind, owner: p, x, y, px: x, py: y, vx: target ? (sign(target.x - p.x) || p.facing) * P.speed * 0.6 : p.facing * 2.5,
+      vy: target ? P.lift : 4, target, t: 0, life: P.life, rest: false, dead: false });
+    this.emit('powerToss', { p, kind, q: target, x, y });
+    return true;
+  }
+  updatePickups() {
+    const P = FIX.power;
+    for (const k of this.pickups) {
+      k.px = k.x; k.py = k.y; k.t++;
+      if (k.target && (k.target.state === 'dead' || k.target.state === 'downed' || !this.players.includes(k.target))) k.target = null;
+      if (k.target) {
+        // a pass that speeds up into their hands
+        const q = k.target, dx = q.x - k.x, dy = q.y + q.h * 0.55 - k.y, d = Math.hypot(dx, dy) || 1, sp = Math.min(26, P.speed + k.t * 0.5);
+        k.vx += (dx / d * sp - k.vx) * 0.25; k.vy += (dy / d * sp - k.vy) * 0.25;
+        k.x += k.vx * DT; k.y += k.vy * DT;
+      } else if (!k.rest) {
+        k.vy -= P.gravity * DT; const nx = k.x + k.vx * DT, ny = k.y + k.vy * DT;
+        if (pointInSolid(nx, k.y)) k.vx *= -0.3; else k.x = nx;
+        const g = groundBelow(k.x, k.y + 0.05);
+        if (k.vy <= 0 && g > -Infinity && ny - 0.18 <= g) { k.y = g + 0.18; k.vy = 0; k.vx = 0; k.rest = true; } else k.y = ny;
+        if (k.y < KILL_Y) k.dead = true;
+      }
+      for (const q of this.players) {
+        if (k.dead || q.state === 'dead' || q.state === 'downed' || (q === k.owner && k.t < P.ownerDelay)) continue;
+        if (Math.abs(q.x - k.x) < q.w / 2 + P.grab * 0.5 && k.y > q.y - 0.4 && k.y < q.y + q.h + 0.4) { this.applyPower(q, k.kind, k.owner); k.dead = true; }
+      }
+      if (!k.dead && --k.life <= 0) { k.dead = true; this.emit('powerFade', { x: k.x, y: k.y, kind: k.kind }); }
+    }
+    this.pickups = this.pickups.filter(k => !k.dead);
+  }
+  applyPower(q, kind, from) {
+    const P = FIX.power;
+    if (kind === 'overclock') q.overclockT = Math.max(q.overclockT, P.overclock.ticks);
+    else if (kind === 'plating') addPlate(q, P.plating.plate);
+    else this.heal(q, P.medkit.heal, from);
+    this.emit('powerUp', { p: q, kind, from });
+  }
+  // An enemy fell: Fix picks up Scrap from it if she is close
+  onKill(e) {
+    for (const p of this.players) {
+      if (p.char !== 'fix' || p.state === 'dead' || p.state === 'downed' || Math.hypot(p.x - e.x, p.y - e.y) > FIX.scrap.killRange) continue;
+      p.scrap = Math.min(FIX.scrap.max, p.scrap + FIX.scrap.kill);
+      this.emit('scrap', { p, x: e.x, y: e.y + e.h / 2 });
+    }
+  }
+
   // ---- Ultimates (ULT) ----
   // A full bar and both triggers: the call. The world freezes for ULT.cast ticks while the caster powers up;
   // teammates with a full bar can pull both triggers to join (each join keeps the call open ULT.join more).
@@ -966,6 +1573,8 @@ export class World {
   }
   enterUlt(p) {
     if (p.beam) this.endBeam(p, 'ult');
+    if (p.rush) this.endRush(p, 'cancel');
+    p.leap = null; p.patch = null; p.tossArmed = false;
     if (p.thrusting) { p.thrusting = false; this.emit('thrustOff', { p }); }
     if (p.leash) this.releaseLeash(p);
     Object.assign(p, { state: 'ult', st: 0, ultRun: null, dash: null, dodge: null, pound: null, lash: null, zip: null, slash: null, chargeT: 0, burstT: 0,
@@ -999,6 +1608,14 @@ export class World {
       let dx = p.aimX, dy = p.aimY;
       if (p.lockT && !p.lockT.dead) { const ex = p.lockT.x - c.x, ey = p.lockT.y + p.lockT.h * 0.55 - c.y, m = Math.hypot(ex, ey) || 1; dx = ex / m; dy = ey / m; }
       p.ultRun = { kind: 'nova', t: 0, power, dx, dy, pulse: 0, segs: null };
+    } else if (p.char === 'ram') {
+      // Siege Breaker: the charge runs the way he aims (toward the lock-on target if he has one)
+      let dx = Math.abs(p.aimX) > 0.2 ? sign(p.aimX) : p.facing;
+      if (p.lockT && !p.lockT.dead) dx = sign(p.lockT.x - p.x) || dx;
+      p.facing = dx;
+      p.ultRun = { kind: 'ram', t: 0, power, dx, carried: [], hit: new Set(), slamT: 0, blocked: false };
+    } else if (p.char === 'fix') {
+      p.ultRun = { kind: 'fix', t: 0, power, podX: p.x, podY: p.y };
     } else {
       // Thousand Cuts: the targets are picked now and the cuts shared out among them, nearest first
       const E = ULT.echo, d = e => Math.hypot(e.x - c.x, e.y + e.h / 2 - c.y);
@@ -1018,7 +1635,95 @@ export class World {
     const R = p.ultRun;
     if (!R) { p.vx = 0; p.vy = p.onGround ? -0.5 : 0; return; }
     R.t++;
-    if (R.kind === 'nova') this.ultNova(p, R); else this.ultEcho(p, R);
+    if (R.kind === 'nova') this.ultNova(p, R);
+    else if (R.kind === 'ram') this.ultRam(p, R);
+    else if (R.kind === 'fix') this.ultFix(p, R);
+    else this.ultEcho(p, R);
+  }
+  // Siege Breaker: he braces while a colossal hard-light ram's head forms on the shield, Fortifying the team,
+  // then charges along the floor scooping up every enemy in his path (ultRamCarry, after he moves) until a
+  // wall, a boss or the end of the charge, and slams the pile down
+  ultRam(p, R) {
+    const U = ULT.ram, t = R.t, fall = () => { p.vy = p.onGround ? -0.5 : Math.max(p.vy - GRAVITY * DT, -MAX_FALL); };
+    p.facing = R.dx;
+    if (t === 1) {
+      for (const q of this.players) if (q.state !== 'dead' && q.state !== 'downed') addPlate(q, U.fortify);
+      this.emit('fortify', { p, members: this.players.filter(q => q.state !== 'dead' && q.state !== 'downed') });
+    }
+    if (R.slamT) { p.vx *= 0.7; fall(); if (t >= R.slamT + U.end) this.finishUlt(p); return; }
+    if (t <= U.brace) { p.vx = 0; fall(); return; }
+    p.vx = R.dx * U.speed; fall();
+    if (t >= U.brace + U.charge) this.ultRamSlam(p, R);
+  }
+  ultRamCarry(p) {
+    const R = p.ultRun, U = ULT.ram;
+    if (!R || R.kind !== 'ram' || R.slamT || R.t <= U.brace) return;
+    const dir = R.dx, front = p.x + dir * p.w / 2;
+    for (const e of this.enemies) {
+      if (e.dead || R.hit.has(e)) continue;
+      const ax0 = dir > 0 ? front - 0.3 : front - 1.3, ax1 = dir > 0 ? front + 1.3 : front + 0.3;
+      if (e.x + e.w / 2 < ax0 || e.x - e.w / 2 > ax1 || e.y > p.y + p.h + 0.6 || e.y + e.h < p.y) continue;
+      R.hit.add(e);
+      if (e.boss || ['post', 'turret'].includes(e.type)) { this.ultHit(p, e, U.catchDmg * 2 * R.power, 80, dir * 3); R.blocked = true; continue; }
+      this.ultHit(p, e, U.catchDmg * R.power, 40, 0);
+      if (!e.dead) { R.carried.push(e); e.state = 'plowed'; e.st = 0; e.plowBy = p; this.emit('plowCatch', { p, e, level: 3 }); }
+    }
+    this.carryPile(p, R.carried, dir);
+    if ((R.t - U.brace) % U.every === 0) for (const e of R.carried) if (!e.dead) this.ultHit(p, e, U.dmg * R.power, 10, 0);
+    const jam = R.carried.some(e => !e.dead && !hasHeadroom(e.x, e.y + 0.05, e.w, e.h - 0.1));
+    if (p.hitWall || R.blocked || jam) this.ultRamSlam(p, R);
+  }
+  ultRamSlam(p, R) {
+    const S = ULT.ram.slam; R.slamT = R.t; p.vx = 0;
+    const x = p.x + R.dx * 1.4, y = p.y + 1.0, r = S.r * (R.power > 1 ? 1.15 : 1);
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const nx = Math.max(e.x - e.w / 2, Math.min(x, e.x + e.w / 2)), ny = Math.max(e.y, Math.min(y, e.y + e.h));
+      if (Math.hypot(nx - x, ny - y) <= r) this.ultHit(p, e, S.dmg * R.power, S.poise, (sign(e.x - p.x) || R.dx) * 12);
+    }
+    for (const e of R.carried) { if (e.dead) continue; e.plowBy = null; e.state = 'launched'; e.st = 0; e.vx = R.dx * 11; e.vy = 9; }
+    R.carried = [];
+    this.emit('ramSlam', { p, x, y, r });
+  }
+  // Overhaul: a supply pod drops in front of her; its pulses of repair light heal the whole team (the first
+  // brings back anyone who is down) and hurt every enemy on screen; then the team is Overclocked and Plated,
+  // and her gadgets jump to level 3
+  ultFix(p, R) {
+    const U = ULT.fix, t = R.t;
+    p.vx *= 0.7; p.vy = p.onGround ? -0.5 : Math.max(p.vy - GRAVITY * DT, -MAX_FALL);
+    if (t === 1) {
+      let x = p.x + p.facing * 2.4;
+      for (let i = 0; i < 8 && pointInSolid(x, p.y + 0.5); i++) x -= p.facing * 0.3;
+      const g = groundBelow(x, p.y + 1); R.podX = x; R.podY = g > -Infinity && p.y - g < 6 ? g : p.y;
+      this.emit('podCall', { p, x: R.podX, y: R.podY, ticks: U.drop });
+    }
+    if (t === U.drop) {
+      for (const e of this.enemies) {
+        if (e.dead || Math.abs(e.x - R.podX) > U.pod.r + e.w / 2 || e.y > R.podY + 3 || e.y + e.h < R.podY - 0.5) continue;
+        this.ultHit(p, e, U.pod.dmg * R.power, U.pod.poise, (sign(e.x - R.podX) || 1) * 9);
+      }
+      this.emit('podLand', { p, x: R.podX, y: R.podY });
+    }
+    const i = U.pulses.indexOf(t);
+    if (i >= 0) {
+      for (const q of this.players) {
+        if (q.state === 'dead') continue;
+        if (q.state === 'downed') { if (i === 0) this.revivePlayer(q, p, FIX.reviveHp); continue; }
+        this.heal(q, q.maxHp * U.heal * (R.power > 1 ? 1.2 : 1));
+      }
+      const C = this.cam;
+      for (const e of this.enemies) {
+        if (e.dead || Math.abs(e.x - C.x) > C.halfW + 2 || Math.abs(e.y + e.h / 2 - C.y) > C.halfH + 2) continue;
+        this.ultHit(p, e, U.dmg * R.power, 30, (sign(e.x - R.podX) || 1) * 4);
+      }
+      this.emit('overhaulPulse', { p, x: R.podX, y: R.podY + 1.2, i });
+    }
+    if (t === U.end - 8) {
+      for (const q of this.players) if (q.state !== 'dead' && q.state !== 'downed') { q.overclockT = Math.max(q.overclockT, U.overclock); addPlate(q, U.plate); }
+      for (const g of this.gadgets) if (g.owner === p && g.kind !== 'pad') { g.level = 3; g.pts = 0; g.t = 0; g.life = FIX.gadget[g.kind].life[2]; g.hp = g.maxHp; }
+      this.emit('overhaulDone', { p, x: R.podX, y: R.podY });
+    }
+    if (t >= U.end) this.finishUlt(p);
   }
   ultNova(p, R) {
     const N = ULT.nova, t = R.t, c = chest(p);
@@ -1075,6 +1780,8 @@ export class World {
     if (t >= R.end) this.finishUlt(p);
   }
   finishUlt(p) {
+    const R = p.ultRun;
+    if (R && R.carried) for (const e of R.carried) if (!e.dead && e.state === 'plowed') { e.plowBy = null; e.state = 'launched'; e.st = 0; e.vy = 6; }
     p.ultRun = null; p.state = 'normal'; p.st = 0; p.mercy = Math.max(p.mercy, ULT.mercy); p.vy = Math.min(p.vy, 0);
     this.emit('ultEnd', { p });
   }
@@ -1117,16 +1824,20 @@ export class World {
     due.forEach(s => s.fn());
     // While an ultimate plays out, enemies, their shots and shockwaves stay frozen
     const frozen = !!this.ultCast;
+    this.ampField();
 
     for (const p of this.players) {
       if (p.barkCd > 0) p.barkCd--;
       if (p.state === 'dead') { this.tickDead(p); continue; }
       const c0 = chest(p);
       updatePlayer(p, cmds[p.slot] || EMPTY_CMD, this);
+      // RAM's charges carry what they scoop up, after he has moved
+      if (p.state === 'rush') this.ramPlow(p);
+      else if (p.state === 'ult' && p.ultRun && p.ultRun.kind === 'ram') this.ultRamCarry(p);
       if (p.state === 'dash') {
         const c1 = chest(p);
         for (const b of this.barriers) {
-          if (p.boostT <= 0 && crossesBarrier(b, c0.x, c0.y, c1.x, c1.y)) { p.boostT = 40; this.emit('boost', { p, x: c1.x, y: c1.y }); }
+          if (b.kind !== 'rampart' && p.boostT <= 0 && crossesBarrier(b, c0.x, c0.y, c1.x, c1.y)) { p.boostT = 40; this.emit('boost', { p, x: c1.x, y: c1.y }); }
         }
         if (p.dash && !p.dash.pursuit && p.st === 1) {
           const t = this.pursuitTarget(p, p.dash.dx, p.dash.dy);
@@ -1138,13 +1849,19 @@ export class World {
       if (frozen && !e.dead) { e.prevX = e.x; e.prevY = e.y; if (e.flash > 0) e.flash--; continue; }
       updateEnemy(e, this);
     }
+    if (this.barriers.some(b => b.kind === 'rampart')) for (const e of this.enemies) if (!e.dead) this.wallBlock(e);
     if (!frozen) updateShockwaves(this);
     updateProjectiles(this, frozen);
     this.updateWells(frozen);
     this.updateSnares();
+    this.updateGadgets();
+    this.updatePickups();
     resolveHitboxes(this);
     if (this.ultCast) this.ultTick();
-    for (const b of this.barriers) b.ttl--;
+    for (const b of this.barriers) {
+      b.ttl--; if (b.hitT > 0) b.hitT--;
+      if (b.ttl <= 0 && b.kind === 'rampart') this.emit('wallDown', { b, x: b.x, y: b.y - b.half, broken: b.hp <= 0 });
+    }
     this.barriers = this.barriers.filter(b => b.ttl > 0);
 
     this.tickRevives();
@@ -1172,15 +1889,23 @@ export class World {
     }
   }
 
+  // Reviving: everyone standing beside a downed teammate adds to it (Fix counts FIX.revive times over), and so
+  // do Fix's Patch Beam and Patch Pylons from range (reviveGain). Whoever Fix brings back (beside them, by beam
+  // or by pylon) comes back with more health.
   tickRevives() {
     for (const p of this.players) {
-      if (p.state !== 'downed') continue;
+      if (p.state !== 'downed') { p.reviveGain = 0; continue; }
       if (p.autoRevive > 0) { p.autoRevive--; if (p.autoRevive === 0) this.revivePlayer(p, null, 0.4); continue; }
-      const helpers = this.players.filter(q => q !== p && q.state !== 'downed' && q.state !== 'dead' && q.state !== 'hitstun'
-        && Math.abs(q.x - p.x) < 1.7 && Math.abs(q.y - p.y) < 1.6);
-      if (helpers.length) {
-        p.revive += helpers.length;
-        if (p.revive >= 120) this.revivePlayer(p, helpers[0], 0.4);
+      let gain = p.reviveGain || 0, by = p.reviveBy || null;
+      for (const q of this.players) {
+        if (q === p || q.state === 'downed' || q.state === 'dead' || q.state === 'hitstun' || Math.abs(q.x - p.x) >= 1.7 || Math.abs(q.y - p.y) >= 1.6) continue;
+        gain += q.char === 'fix' ? FIX.revive : 1; by = by || q;
+        if (q.char === 'fix') { p.fixRevive = true; by = q; }
+      }
+      p.reviveGain = 0;
+      if (gain > 0) {
+        p.revive += gain;
+        if (p.revive >= 120) this.revivePlayer(p, by, p.fixRevive ? FIX.reviveHp : 0.4);
       } else p.revive = Math.max(0, p.revive - 0.5);
     }
   }
@@ -1229,7 +1954,11 @@ export class World {
     const a = allies.sort((m, n) => Math.abs(m.x - p.x) - Math.abs(n.x - p.x))[0];
     const tx = a ? a.lastSafeX : p.lastSafeX, ty = a ? a.lastSafeY : p.lastSafeY;
     p.x = tx; p.y = ty; p.prevX = tx; p.prevY = ty; p.vx = 0; p.vy = 0; p.offscreenT = 0;
-    p.mercy = 90; if (p.state !== 'downed') { p.state = 'normal'; p.st = 0; }
+    p.mercy = 90;
+    // An ultimate under way ends here (left running out of its state it would never finish, and the world
+    // would stay frozen); one still being called carries on from the new spot
+    if (p.state === 'ult') { if (p.ultRun) this.finishUlt(p); }
+    else if (p.state !== 'downed') { p.state = 'normal'; p.st = 0; }
     this.emit('recall', { p, pit });
     if (pit && p.state !== 'downed') {
       p.hp -= 10;

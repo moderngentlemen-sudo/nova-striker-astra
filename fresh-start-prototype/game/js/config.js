@@ -40,7 +40,34 @@ export const CHARS = {
     width: 0.68, height: 1.74, crouchH: 0.95,
     energy: '#ff9a1f', trim: '#15151b', base: '#f4f4f2', under: '#1b1b22',
   },
+  // RAM: the tank. Much bigger and heavier than the others (his rig is drawn `scale` times their size): slower
+  // on his feet, lower jumps, more health. He still fits under the gym tunnel crouched and under the arena's
+  // floating columns standing.
+  ram: {
+    name: 'RAM', role: 'Vanguard', hp: 160,
+    run: 6.3, backpedal: 0.75, accelG: 62, decelG: 85, accelA: 42, crouchSpeed: 0.35,
+    jumpV: 16.4, dblV: 13.8,
+    dash: { ticks: 14, speed: 15, exitKeep: 0.35, cooldown: 26 },
+    slide: { ticks: 16, speed: 11.5, decay: 0.965 },
+    wall: { slide: 3.0, jumpVx: 9, jumpVy: 15.8, lock: 8 },
+    width: 1.04, height: 2.3, crouchH: 0.95, scale: 1.34,
+    energy: '#58a6ff', trim: '#2d3540', base: '#aeb8c4', under: '#1b2129',
+  },
+  // Fix: the support. A little smaller and lighter than Nova and Echo.
+  fix: {
+    name: 'Fix', role: 'Mechanic', hp: 95,
+    run: 7.8, backpedal: 0.8, accelG: 88, decelG: 95, accelA: 58, crouchSpeed: 0.45,
+    jumpV: 17.9, dblV: 15.4,
+    dash: { ticks: 12, speed: 23, exitKeep: 0.4, cooldown: 16 },
+    slide: { ticks: 18, speed: 13, decay: 0.97 },
+    wall: { slide: 3.8, jumpVx: 10, jumpVy: 16, lock: 6 },
+    width: 0.64, height: 1.6, crouchH: 0.9, scale: 0.94,
+    energy: '#3cf0b0', trim: '#2e7d6f', base: '#f3f0ea', under: '#2a2e36',
+  },
 };
+// Character order for joining (each new player takes the next one not in use) and for swapping
+export const ROSTER = ['nova', 'echo', 'ram', 'fix'];
+export const nextChar = (c, dir = 1) => ROSTER[(ROSTER.indexOf(c) + dir + ROSTER.length) % ROSTER.length];
 
 // Wall play (both characters). Touching a wall in the air while holding toward it starts a slide that
 // eases in: a brief grip at gripSpeed, then over `ease` ticks up to the character's slide speed (hold down
@@ -126,6 +153,38 @@ export const MOVES = {
     spin: true, multi: 4, hoverAll: 0.35, deflect: true },
   // Wall Slash: a wide crescent cut out from the wall, and he keeps his grip
   echo_wall:  { su: 3, ac: 4, rc: 10, box: { fx: 1.1, y: 1.0, w: 2.1, h: 2.0 }, dmg: 2.6, poise: 26, kb: [7, 3], air: true, blade: true, wall: true, deflect: true },
+
+  // RAM: the Rampart and a hydraulic fist. Slow to start, wide, and heavy. Bash, edge strike, then the Piston
+  // Punch; a downward shield swat in the air; a quick shove straight out of a guard.
+  ram_b1:   { su: 7, ac: 4, rc: 13, box: { fx: 1.05, y: 1.3, w: 1.6, h: 1.9 }, dmg: 2.6, poise: 24, kb: [5, 1], next: 'ram_b2', shield: true },
+  ram_b2:   { su: 6, ac: 4, rc: 13, box: { fx: 1.05, y: 1.3, w: 1.7, h: 1.9 }, dmg: 2.6, poise: 24, kb: [5, 1], next: 'ram_b3', shield: true, offhand: true },
+  ram_b3:   { su: 10, ac: 5, rc: 18, box: { fx: 1.2, y: 1.2, w: 2.0, h: 2.0 }, dmg: 5.5, poise: 65, kb: [14, 4], shove: true, heavy: true, armorBreak: true, fist: true },
+  ram_air:  { su: 6, ac: 5, rc: 12, box: { fx: 0.95, y: 0.9, w: 1.7, h: 1.7 }, dmg: 3, poise: 28, kb: [6, -3], air: true, shield: true },
+  ram_bash: { su: 3, ac: 4, rc: 12, box: { fx: 1.05, y: 1.2, w: 1.5, h: 2.2 }, dmg: 2, poise: 40, kb: [11, 3], shove: true, shield: true },
+  // Hydraulic Uplift (RAM's rising attack): the shield scoops up off the floor like a plough blade as his leg
+  // pistons fire. It launches everything in front of him, sweeps shots out of the air over him (sweep), and a
+  // pressure wave bursts off the top of the shield (it reaches drones). Once per airtime in the air.
+  ram_rise: { su: 6, ac: 12, rc: 16, box: { fx: 0.95, y: 1.6, w: 2.0, h: 2.7 }, dmg: 2.4, poise: 12, kb: [2, 17], launcher: true, shield: true,
+    rise: 12.5, airRise: 0.75, multi: 6, sweep: true, riseBlast: { r: 2.2, dmg: 3.5, poise: 45 }, blastKind: 'upliftBlast' },
+  // Seismic Slam (charged melee): the shield raised overhead and driven into the floor; shockwaves run out
+  // both ways along it (quake)
+  ram_slam: { su: 16, ac: 4, rc: 20, box: { fx: 1.0, y: 0.8, w: 2.6, h: 1.6 }, dmg: 6, poise: 70, kb: [8, 9], heavy: true, armorBreak: true, shield: true,
+    quake: { dmg: 4, poise: 45, speed: 12, ttl: 34, h: 1.1 } },
+
+  // Fix: a heavy wrench (a wrench hit on one of her gadgets upgrades it). Swing, backswing, then a clanging
+  // overhead; a spinning swat in the air.
+  fix_w1:   { su: 4, ac: 3, rc: 10, box: { fx: 0.8, y: 1.0, w: 1.15, h: 0.9 }, dmg: 1.5, poise: 12, kb: [2, 0], next: 'fix_w2', wrench: true },
+  fix_w2:   { su: 4, ac: 3, rc: 10, box: { fx: 0.8, y: 1.0, w: 1.15, h: 0.9 }, dmg: 1.5, poise: 12, kb: [2, 0], next: 'fix_w3', wrench: true, offhand: true },
+  fix_w3:   { su: 7, ac: 4, rc: 15, box: { fx: 0.95, y: 0.95, w: 1.5, h: 1.3 }, dmg: 3.4, poise: 40, kb: [9, 4], shove: true, heavy: true, wrench: true },
+  fix_air:  { su: 4, ac: 4, rc: 10, box: { fx: 0.75, y: 0.85, w: 1.3, h: 1.1 }, dmg: 1.8, poise: 16, kb: [4, 2], air: true, wrench: true },
+  // Torque Slam (charged melee): an overhead slam that throws off a ring of sparks (spark): it stuns light
+  // enemies and knocks drones out of the air
+  fix_slam: { su: 13, ac: 4, rc: 18, box: { fx: 0.95, y: 0.9, w: 1.8, h: 1.4 }, dmg: 5, poise: 55, kb: [9, 6], heavy: true, armorBreak: true, wrench: true,
+    spark: { r: 2.8, dmg: 2, poise: 30, stun: 50 } },
+  // Jack-Up (Fix's rising attack): she sets a pneumatic jack under her boots; it fires her upward behind a rising
+  // wrench uppercut, and on the ground it stays behind as a spring pad any teammate can bounce on (FIX.pad)
+  fix_rise: { su: 5, ac: 11, rc: 13, box: { fx: 0.55, y: 1.3, w: 1.35, h: 2.0 }, dmg: 1.5, poise: 18, kb: [1, 15], launcher: true, wrench: true,
+    rise: 16, airRise: 0.8, multi: 5, jack: true },
 };
 
 // Echo's Dash Slash (Hunter kit): melee during or just after a dash (a Velocity Break) is a lunging cut
@@ -345,6 +404,103 @@ export const SUB_LOOK = {
 // and keep charging while he dodges. `cd` counts from the start.
 export const DODGE = { ticks: 16, speed: 13, airSpeed: 11, keep: 0.86, iframes: 11, perfect: 7, cd: 28, slowTicks: 100, slowRange: 7, over: 20 };
 
+// RAM (Vanguard): the Rampart, a tower shield that absorbs damage and covers the team, a shoulder cannon, and
+// a hydraulic fist.
+export const RAM = {
+  // Guard (parry button, held): the Rampart faces where he aims, from straight ahead to overhead (never lower
+  // than minNy). Strikes and shots from in front are blocked: the damage comes off the shield's Integrity
+  // instead of his health, and every point blocked stores `kinetic` Kinetic. Enemy shots that cross the shield
+  // stop there, so everyone behind him is covered too. A hit within `perfect` ticks of raising it is a Perfect
+  // Guard: no Integrity lost, a shot goes back the way it came (`reflect` times faster, as his), a striker
+  // reels. Shockwaves along the floor still pass under it. He walks at `walk` speed behind it. Integrity grows
+  // back `regen` a second once it has gone `delay` ticks without blocking; broken, he reels (`brokenStun`)
+  // and can't guard again until it is back to `recover`.
+  guard: { integrity: 100, regen: 22, delay: 60, perfect: 8, walk: 0.35, half: 1.35, reach: 1.0, brokenStun: 44, recover: 40,
+    kinetic: 1, perfectKinetic: 15, reflect: 1.4, minNy: -0.35 },
+  // Kinetic Release (fire while guarding, with at least `min` Kinetic stored): the shield dumps it as a cone of
+  // force (half-angle `cone`) that grows with the charge (arrays: empty to full), erasing enemy shots in it
+  release: { min: 15, cone: 0.95, r: [2.6, 5.4], dmg: [4, 18], poise: [40, 120], kb: [9, 15] },
+  // Breach Cannon (fire): a tap fires a heavy slug; hold to charge (ticks to levels 1-3) and let go for a Breach
+  // Shot that punches through `pierce` enemies (level 2 breaks armor, level 3 bursts at the end of its flight)
+  cannon: { cd: 24, charge: [36, 76, 118], slug: { speed: 30, dmg: 2.6, poise: 26, kb: 8, r: 0.2, ttl: 34 },
+    1: { speed: 32, dmg: 5, poise: 50, kb: 10, r: 0.26, ttl: 40, pierce: 1 },
+    2: { speed: 34, dmg: 8, poise: 80, kb: 12, r: 0.32, ttl: 44, pierce: 2, armorBreak: true },
+    3: { speed: 36, dmg: 12, poise: 110, kb: 15, r: 0.4, ttl: 48, pierce: 3, armorBreak: true, blast: { r: 2.2, dmg: 6, poise: 60 } } },
+  // Ram Charge (dash): a shoulder charge behind the shield. Light enemies in front are scooped up and carried;
+  // hitting a wall with them slams them into it (splat). A charged dash (hold dash while standing still) is
+  // the Battering Ram: longer and faster, and from level `heavyFrom` it carries heavy enemies too and breaks
+  // armor. Bosses and rooted enemies stop it with a heavy hit (bonk). Arrays: ordinary charge, then levels 1-3.
+  rush: { ticks: [14, 18, 24, 30], speed: [15, 17, 19.5, 22], keep: 0.35, catchDmg: [2, 3, 4.5, 6], poise: [30, 45, 70, 100], reach: 0.95,
+    end: { kb: [10, 4] }, splat: { dmg: [4, 5, 7, 10], poise: [60, 80, 110, 160], stun: 70 }, bonk: { dmg: [3, 4, 6, 9], poise: [45, 65, 95, 140] }, heavyFrom: 2 },
+  // Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). During a Ram Charge nothing
+  // does, and he takes `rushTaken` of the damage.
+  rushTaken: 0.6,
+  // Meteor Drop: his ground pound's landing reaches this much further and hits this much harder (and always
+  // breaks armor)
+  pound: 1.3,
+  // Bulwark Wall (suit ability): a hard-light wall planted `dist` m in front of him. It stops enemy shots and
+  // enemies (they have to break it: `hp`), and the team's shots pass through it boosted.
+  wall: { cd: 720, ticks: 480, hp: 160, dist: 1.8, half: 1.75 },
+  // Guardian Link (mode button): links him to the teammate who needs it most within `range` m, leaping to their
+  // side first when they are over `leapAt` m away (the landing shoves enemies). For `ticks`, `share` of the
+  // damage they take comes to him instead, and they get `plate` Plating. It breaks beyond `breakAt` m.
+  link: { cd: 720, ticks: 480, range: 18, leapAt: 4.5, leapTicks: 34, share: 0.6, plate: 25, breakAt: 22, land: { r: 2.4, dmg: 3, poise: 45 } },
+  // Provoke (LB): a war cry. Every enemy within `range` m turns on him for `ticks`; he braces (takes `brace` of
+  // the damage) for as long, and the roar shoves light enemies close by.
+  provoke: { cd: 600, ticks: 240, range: 11, brace: 0.6, shove: { r: 2.6, kb: 9 } },
+};
+
+// Fix (Mechanic): heals, tunes up and revives the team, and builds gadgets and power-ups from Scrap.
+export const FIX = {
+  // Scrap pays for gadgets and power-ups: it trickles in, and comes from her damage and from enemies falling
+  // near her
+  scrap: { max: 100, start: 60, regen: 2.5, perDmg: 0.35, kill: 6, killRange: 12 },
+  // Rivet Gun (fire): a tap fires a quick burst of rivets; hold to charge, let go for a Hot Rivet that sticks
+  // where it hits and bursts after `fuse` ticks (arrays per level)
+  rivet: { cd: 14, n: 3, every: 3, speed: 34, dmg: 0.8, poise: 6, r: 0.11, ttl: 40, charge: [32, 66, 102],
+    hot: { speed: 30, r: 0.16, fuse: 34, ttl: 60, dmg: [2, 3, 4.5], poise: [16, 24, 36],
+      blast: [{ r: 1.5, dmg: 3, poise: 25 }, { r: 1.9, dmg: 5, poise: 40 }, { r: 2.4, dmg: 7.5, poise: 65, armorBreak: true }] } },
+  // Patch Beam (parry button, held): locks onto the teammate who needs it most within `range` m (a downed one
+  // first) and holds while they stay within `keep`. It heals `heal` a second, then builds Plating up to
+  // `plate`; it Tunes Up whoever it holds (they charge, recharge and fill their bars `tune` times faster); on a
+  // downed teammate it revives `revive` times as fast as standing beside them. With no one in range she welds
+  // herself instead (`self` a second). She moves at `slow` speed while it runs.
+  beam: { range: 9, keep: 12, heal: 24, self: 8, plate: 25, plateRate: 10, tune: 1.5, revive: 3, slow: 0.6 },
+  // Field Mechanic: beside a downed teammate she revives `revive` times as fast as anyone else, and whoever she
+  // brings back returns with `reviveHp` of their health
+  revive: 3, reviveHp: 0.6,
+  // Gadgets: the suit ability builds the selected one (the mode button picks it), in front of her on the floor.
+  // One of each kind at a time; building it again moves it. A wrench hit upgrades a gadget (levels 1-3) and
+  // refreshes it. Arrays are per level.
+  gadgets: ['pylon', 'sentry', 'coil'],
+  gadget: {
+    pylon: { cost: 40, life: [900, 1080, 1260], hp: 60, r: [4, 5, 6], heal: [6, 9, 12], revive: [0.35, 0.45, 0.6], plate: [0, 0, 3], plateMax: 15 },
+    sentry: { cost: 50, life: [1200, 1320, 1440], hp: 50, range: [12, 13, 14], every: [22, 16, 12], dmg: [1.1, 1.3, 1.5], poise: 8, speed: 30,
+      rocket: { every: 80, speed: 18, blast: { r: 1.6, dmg: 4, poise: 40 } } },
+    coil: { cost: 45, life: [900, 1080, 1260], hp: 50, r: [4.5, 5.5, 6.5], rate: [1.5, 1.75, 2] },
+  },
+  // Jack-Up's spring pad: whoever lands on it is bounced up at `bounce` m/s (light enemies at `enemyBounce`)
+  pad: { life: 210, bounce: 21, w: 1.1, enemyBounce: 13 },
+  // Power-ups: LB picks one; melee tosses it when no enemy or gadget of hers is close, to the nearest teammate
+  // in front within `range` m (it homes in), or drops it at her feet. Anyone can pick one up (she can, after
+  // `ownerDelay` ticks). Overclock: charging, recharging and bars `rate` times faster. Plating: an overshield.
+  // Medkit: health at once.
+  powers: ['overclock', 'plating', 'medkit'],
+  power: { cost: 25, range: 14, speed: 14, lift: 6, gravity: 30, life: 900, grab: 0.9, ownerDelay: 30,
+    overclock: { ticks: 600, rate: 1.6 }, plating: { plate: 35 }, medkit: { heal: 40 } },
+  // Her ground pound's landing also sends out a repair pulse that heals teammates in reach (per charge level)
+  poundHeal: [8, 11, 14, 18],
+  // Charging, recharging and bar build-up never go faster than this, however many boosts stack
+  maxRate: 2.6,
+};
+// Plating (an overshield over the health bar, from Fix and from RAM) never stacks past this
+export const PLATE_MAX = 60;
+// Presentation only: HUD names and tints for Fix's gadgets and power-ups, and RAM's abilities
+export const FIX_LOOK = {
+  pylon: { name: 'Patch Pylon', tint: '#5cf2a6' }, sentry: { name: 'Sentry', tint: '#ffcf5a' }, coil: { name: 'Amp Coil', tint: '#6fe3ff' },
+  overclock: { name: 'Overclock', tint: '#6fe3ff' }, plating: { name: 'Plating', tint: '#a9c8ff' }, medkit: { name: 'Medkit', tint: '#5cf2a6' },
+};
+
 // Ultimates. Everyone has an ultimate bar that fills in play (dealing damage, taking it, kills, perfect
 // parries, dodges and deflects). When it is full, pull both triggers together (V on the keyboard) for the
 // character's ultimate. It opens with a short call (`cast` ticks) where the world holds still: any
@@ -354,14 +510,24 @@ export const DODGE = { ticks: 16, speed: 13, airSpeed: 11, keep: 0.86, iframes: 
 //     bursts in a nova of light.
 //   Echo, Thousand Cuts: he vanishes and cuts every enemy close by in a storm of blinks (`strikes` shared
 //     among up to `targets` enemies), then every cut lands again at once.
+//   RAM, Siege Breaker: a colossal hard-light ram's head forms on his shield and he charges along the floor,
+//     scooping up every enemy in his path (bosses stop him), then slams the pile down in a huge shockwave. The
+//     whole team is Fortified (`fortify` Plating) as he sets off.
+//   Fix, Overhaul: a supply pod drops in front of her and sends out `pulses` of repair light across the screen:
+//     each heals every teammate `heal` of their health and hurts every enemy on screen; the first brings back
+//     anyone who is down. Then the team is Overclocked and Plated, and her gadgets jump to level 3.
 //   Team: everyone who joined runs their ultimate together at `team.power`, then a team finisher hits every
 //     enemy on screen for `team.dmg` per member. Bosses take `boss` of ultimate damage.
 export const ULT = {
-  max: 100, gain: { dealt: 0.6, taken: 0.35, kill: 2, perfect: 6 }, chord: 6, cast: 54, join: 18, boss: 0.5, mercy: 60,
+  max: 100, gain: { dealt: 0.6, taken: 0.35, kill: 2, perfect: 6, blocked: 0.4, heal: 0.3 }, chord: 6, cast: 54, join: 18, boss: 0.5, mercy: 60,
   nova: { name: 'Supernova', rise: 1.6, gather: 24, beam: 110, pulse: 5, dmg: 5, width: 1.25, range: 40, turn: 0.06, nova: { r: 6, dmg: 12, poise: 120 }, end: 150 },
   echo: { name: 'Thousand Cuts', range: 16, targets: 8, strikes: 20, every: 3, dmg: 3, start: 10, finisher: 14, flourish: { r: 5, dmg: 10 }, end: 40 },
+  ram: { name: 'Siege Breaker', brace: 16, charge: 84, speed: 15, catchDmg: 3, every: 10, dmg: 2, slam: { r: 6, dmg: 14, poise: 140 }, end: 34, fortify: 40 },
+  fix: { name: 'Overhaul', drop: 22, pod: { r: 3.2, dmg: 6, poise: 60 }, pulses: [42, 60, 78], heal: 0.35, dmg: 4, end: 100, overclock: 720, plate: 40 },
   team: { power: 1.3, dmg: 12, t: 50 },
-  teamNames: { 'echo+nova': 'Eclipse Protocol', 'nova+nova': 'Binary Star', 'echo+echo': 'Twin Phantom' }, teamAll: 'Full Resonance',
+  teamNames: { 'echo+nova': 'Eclipse Protocol', 'nova+nova': 'Binary Star', 'echo+echo': 'Twin Phantom',
+    'nova+ram': 'Starbreaker', 'echo+ram': 'Shatterpoint', 'fix+nova': 'Solar Overdrive', 'echo+fix': 'Razorwire', 'fix+ram': 'Heavy Metal',
+    'ram+ram': 'Stampede', 'fix+fix': 'Assembly Line' }, teamAll: 'Full Resonance',
 };
 
 // Presentation only: HUD names and a tint for each attachment, kept inside Nova's gold family so

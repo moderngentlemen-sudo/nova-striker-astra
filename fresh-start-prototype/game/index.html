@@ -102,6 +102,16 @@ th { font-family: var(--font-display); text-transform: uppercase; letter-spacing
 .res.over { width: 40px; } .res.over i { background: linear-gradient(90deg, #fff1c9, #ffffff); }
 .chip.over { background: #fff6e0; color: #1d1204; animation: overPulse 0.5s ease-in-out infinite alternate; }
 .chip.red { background: #ff2414; color: #ffffff; }
+/* Version 10: RAM's Integrity and Kinetic, Fix's Scrap, and the boosts anyone can carry (Plating, Overclock) */
+.res.integ { width: 56px; } .res.integ i { background: linear-gradient(90deg, #3d86e0, #bfe0ff); } .res.integ.broken i { background: #ff5a6e; }
+.res.scrap { width: 50px; } .res.scrap i { background: linear-gradient(90deg, #e0a81e, #ffe27a); }
+.chip.ram { background: rgba(88, 166, 255, 0.2); color: #bfe0ff; }
+.chip.kin { color: #8fb8e8; } .chip.kin.on { background: #58a6ff; color: #071426; }
+.chip.fix { background: rgba(60, 240, 176, 0.14); color: #9ff5d0; } .chip.fix.on { background: #3cf0b0; color: #062018; }
+.chip.plate { background: rgba(169, 200, 255, 0.2); color: #d6e6ff; box-shadow: inset 0 0 0 1px rgba(169, 200, 255, 0.6); }
+.chip.over2 { background: rgba(111, 227, 255, 0.2); color: #c8f4ff; }
+.bar .plating { left: auto !important; right: 0; background: repeating-linear-gradient(90deg, rgba(169, 200, 255, 0.95) 0 5px, rgba(214, 230, 255, 0.95) 5px 7px); }
+.help tbody th { padding-top: 14px; color: #e8f0fa; font-size: 13px; }
 /* Ultimate bar: a thin cyan-white line under the health bar; full, it glows and says how to fire it */
 .ultbar { position: relative; height: 5px; margin: -3px 0 6px; background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
 .ultbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: linear-gradient(90deg, #3fb8ff, #bff4ff); transition: width 0.15s linear; }

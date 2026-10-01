@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { toWorld, planeDir } from './space.js';
 import { pointInSolid, rayCast, rayBoxT } from './level.js';
-import { MARKSMAN, ATTACH_LOOK, CHARS, HUNTER, DASH_CHARGE, NOVA, SUB_LOOK } from './config.js';
+import { MARKSMAN, ATTACH_LOOK, CHARS, HUNTER, DASH_CHARGE, NOVA, SUB_LOOK, RAM, FIX } from './config.js';
 import { chargeStage, burstStage, marksman, rocketHeight, rifleFocus, chest } from './player.js';
 import { hurtbox } from './combat.js';
 
@@ -18,7 +18,7 @@ const RIBBON_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, transparent
 // Ribbon look per projectile kind: points kept, half-width (m)
 const TRAIL = {
   lance: [8, 0.13], rail: [11, 0.2], dart: [6, 0.05], shell: [10, 0.12], prism: [8, 0.12], shard: [4, 0.045],
-  rifle: [7, 0.055], markShot: [11, 0.12], deflected: [9, 0.12],
+  rifle: [7, 0.055], markShot: [11, 0.12], deflected: [9, 0.12], breach: [10, 0.16], hotRivet: [6, 0.06],
 };
 
 // A camera-facing strip through the last few positions of something fast, fading toward the tail
@@ -118,7 +118,7 @@ export class ChargeFX {
 
   // Where the charge gathers: Nova's bracer muzzle, the tip of Echo's rifle, or in front of the chest
   muzzle(p, rig, out) {
-    if (rig && p.char === 'nova' && rig.extra.muzzle) return rig.extra.muzzle.getWorldPosition(out);
+    if (rig && (p.char === 'nova' || p.char === 'ram' || p.char === 'fix') && rig.extra.muzzle) return rig.extra.muzzle.getWorldPosition(out);
     if (rig && p.char === 'echo' && rig.extra.staffTip && rig.extra.handStaff.visible) return rig.extra.staffTip.getWorldPosition(out);
     return toWorld(p.x + p.facing * 0.45, p.y + p.h * 0.62, 0.25, out);
   }
@@ -147,7 +147,8 @@ export class ChargeFX {
       this.hide(S);
       if (!rig || p.state === 'downed' || p.state === 'dead' || !rig.root.visible) continue;
       if (p.char === 'nova') this.novaCharge(p, S, rig, world, view);
-      else this.echoRifle(p, S, rig, world);
+      else if (p.char === 'echo') this.echoRifle(p, S, rig, world);
+      else this.weaponCharge(p, S, rig);
       if (p.state === 'dashCharge') this.dashAura(p, S, rig);
     }
     for (const [p, S] of this.state) if (!seen.has(p)) { this.dispose(S); this.state.delete(p); }
@@ -326,6 +327,22 @@ export class ChargeFX {
     }
   }
 
+  // ---- RAM's cannon and Fix's rivet gun: an orb at the muzzle that grows through the levels ----
+  weaponCharge(p, S, rig) {
+    const C = p.char === 'ram' ? RAM.cannon.charge : FIX.rivet.charge;
+    if (!(p.chargeT > 0)) return;
+    const k = Math.min(1, p.chargeT / C[2]), level = p.chargeT >= C[2] ? 3 : p.chargeT >= C[1] ? 2 : p.chargeT >= C[0] ? 1 : 0;
+    const tint = CHARS[p.char].energy, at = this.muzzle(p, rig, this.v), pulse = 1 + Math.sin(this.t * 18) * 0.06 * k;
+    S.orb.position.copy(at); S.orb.material.color.set(level >= 3 ? '#ffffff' : tint); S.orb.scale.setScalar((0.14 + 0.5 * k) * pulse * (p.char === 'ram' ? 1.3 : 1));
+    S.orb.material.opacity = 0.65 + 0.3 * k; S.orb.visible = true;
+    S.core.position.copy(at); S.core.material.color.set('#ffffff'); S.core.scale.setScalar((0.08 + 0.26 * k) * pulse); S.core.visible = true;
+    if (level >= 2) { S.halo.position.copy(at); S.halo.material.color.set(tint); S.halo.scale.setScalar(0.5 + 0.5 * k); S.halo.material.rotation = this.t * 3; S.halo.material.opacity = 0.55; S.halo.visible = true; }
+    for (let i = 0; i < 1 + level; i++) {
+      const a = Math.random() * Math.PI * 2, r = 0.7 + Math.random() * 0.5, tv = planeDir(p.x, Math.cos(a) * r, Math.sin(a) * r, this.v3);
+      this.inward(at, tv.x, tv.y, tv.z, Math.random() < 0.3 ? '#ffffff' : tint, 0.13, 0.2);
+    }
+  }
+
   // ---- Both: charged dash ----
   dashAura(p, S, rig) {
     const C = DASH_CHARGE.charge, t = p.dashChargeT;
@@ -346,7 +363,7 @@ export class ChargeFX {
   // ---- Events ----
   levelUp(p, rig, level, kind) {
     const at = kind === 'dash' ? toWorld(p.x, p.y + 0.8, 0.2, this.v) : this.muzzle(p, rig, this.v);
-    const tint = kind === 'burst' ? (SUB_LOOK[p.sub] || SUB_LOOK.scatter).tint : kind === 'dash' || kind === 'pound' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
+    const tint = kind === 'burst' ? (SUB_LOOK[p.sub] || SUB_LOOK.scatter).tint : kind === 'dash' || kind === 'pound' || p.char === 'ram' || p.char === 'fix' ? CHARS[p.char].energy : kind === 'rifle' ? CHARS.echo.energy
       : marksman(p) ? ATTACH_LOOK[p.attachment].tint : CHARS.nova.energy;
     const top = level >= 3;
     this.flash(at, 'ring', top ? '#ffffff' : tint, 0.35 + level * 0.18, 0.18, 3.2);
@@ -363,7 +380,7 @@ export class ChargeFX {
   release(ev, p, rig) {
     const L = ev.level || 0, perfect = !!ev.perfect, attach = ev.attach || 'lance';
     const at = this.muzzle(p, rig, this.v).clone();
-    const tint = ev.rifle ? CHARS.echo.energy : ATTACH_LOOK[attach] ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
+    const tint = ev.rifle ? CHARS.echo.energy : ev.cannon ? CHARS.ram.energy : ev.rivet ? CHARS.fix.energy : ATTACH_LOOK[attach] ? ATTACH_LOOK[attach].tint : CHARS.nova.energy;
     const dir = planeDir(p.x, ev.ax ?? p.aimX, ev.ay ?? p.aimY, new THREE.Vector3()).normalize();
     const s = (perfect ? 1.5 : 1) * (0.7 + L * 0.35);
     this.flash(at, 'star', '#ffffff', 0.9 * s, 0.12, 1.4);
@@ -414,7 +431,7 @@ export class ChargeFX {
     let r = this.trails.get(pr);
     if (!r) {
       const [n, w] = TRAIL[pr.deflected ? 'deflected' : pr.kind], lv = pr.deflected ? 1 : pr.level || 1;
-      const col = pr.deflected ? CHARS.echo.energy : pr.perfect ? '#fff4d6' : pr.kind === 'rifle' || pr.kind === 'markShot' ? (pr.kind === 'markShot' ? '#ffc070' : CHARS.echo.energy)
+      const col = pr.reflected || pr.kind === 'breach' ? CHARS.ram.energy : pr.kind === 'hotRivet' ? '#ff9a4a' : pr.deflected ? CHARS.echo.energy : pr.perfect ? '#fff4d6' : pr.kind === 'rifle' || pr.kind === 'markShot' ? (pr.kind === 'markShot' ? '#ffc070' : CHARS.echo.energy)
         : pr.kind === 'dart' ? ATTACH_LOOK.volley.tint : pr.kind === 'shell' ? ATTACH_LOOK.arc.tint : pr.kind === 'prism' || pr.kind === 'shard' ? ATTACH_LOOK.prism.tint : ATTACH_LOOK.lance.tint;
       r = new Ribbon(this.scene, n, w * (0.8 + 0.15 * lv) * (pr.perfect ? 1.3 : 1), col);
       this.trails.set(pr, r);

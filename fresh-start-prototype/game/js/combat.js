@@ -1,5 +1,5 @@
 // Combat resolution: melee hitboxes, projectiles, barriers, shockwaves, damage and parries.
-import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT } from './config.js';
+import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT, RAM } from './config.js';
 import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus, gainUlt, chest } from './player.js';
 import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y } from './level.js';
 
@@ -34,15 +34,31 @@ export function resolveHitboxes(world) {
         // centre. Bursts and pound shockwaves count as blasts (a shield cannot stop them); a pound that lands
         // a hit still counts as a connected strike for its recovery.
         const hit = hb.radial ? { ...hb, kb: [(sign(e.x - hb.cx) || 1) * Math.abs(hb.kb[0]), hb.kb[1]] } : hb;
-        const res = hitEnemy(world, e, hit, hb.aegisBurst || hb.scatter ? 'blast' : 'melee');
+        const res = hitEnemy(world, e, hit, hb.aegisBurst || hb.scatter || hb.quake ? 'blast' : 'melee');
         if (hb.scatter && hb.owner && (res === 'hit' || res === 'kill')) hb.owner.hitConfirm = true;
+      }
+      // Fix's wrench on one of her gadgets: an upgrade (once a swing)
+      if (hb.wrench && hb.owner && world.gadgets) {
+        for (const g of world.gadgets) {
+          if (g.owner !== hb.owner || g.dead || g.kind === 'pad' || set.has('g' + g.id)) continue;
+          if (!overlap(hb, { x0: g.x - 0.45, x1: g.x + 0.45, y0: g.y, y1: g.y + g.h })) continue;
+          set.add('g' + g.id); world.wrenchGadget(g, hb.owner);
+        }
       }
     } else {
       for (const p of world.players) {
         if (p.state === 'dead' || p.state === 'downed' || set.has('p' + p.slot)) continue;
         if (!overlap(hb, hurtbox(p))) continue;
         set.add('p' + p.slot);
+        // A Bulwark Wall between the striker and the player takes the blow instead
+        const wall = hb.owner && world.wallBetween && world.wallBetween(hb.owner, p);
+        if (wall) { if (!set.has('w')) { set.add('w'); world.hurtWall(wall, hb.dmg || 0, wall.x, p.y + 1); } continue; }
         hitPlayer(world, p, hb);
+      }
+      if (world.gadgets) for (const g of world.gadgets) {
+        if (g.dead || g.kind === 'pad' || set.has('g' + g.id)) continue;
+        if (!overlap(hb, { x0: g.x - 0.4, x1: g.x + 0.4, y0: g.y, y1: g.y + g.h })) continue;
+        set.add('g' + g.id); world.hurtGadget(g, hb.dmg || 0);
       }
     }
   }
@@ -65,7 +81,7 @@ export function hitEnemy(world, e, hit, source) {
   if (e.type === 'shield' && e.state !== 'stagger' && source !== 'blast') {
     const fromFront = source === 'proj' ? sign(-hit.vx) === e.shieldDir || Math.abs(hit.vx) < 1e-3
       : sign(owner.x - e.x) === e.shieldDir;
-    const breaks = hit.armorBreak || hit.bulwark || (hit.vbTier || 0) >= 2 || hit.rail || hit.amplified || ambush;
+    const breaks = hit.armorBreak || hit.bulwark || (hit.vbTier || 0) >= 2 || hit.rail || hit.amplified || hit.ram || ambush;
     if (fromFront && !breaks) {
       e.poise += (hit.poise || 10) * 0.35;
       world.emit('blocked', { x: cx + e.shieldDir * 0.5, y: cy, e });
@@ -149,6 +165,7 @@ function kill(world, e, owner, hit = {}) {
   e.dead = true; e.deathT = 0; e.hp = 0;
   world.director.release(e);
   if (owner && owner.kind === 'player' && !hit.ult) gainUlt(owner, ULT.gain.kill, world);
+  if (world.onKill) world.onKill(e, owner);
   world.emit('kill', { x: e.x, y: e.y + e.h / 2, e, owner });
   if (e.boss) world.emit('bossDown', { e, x: e.x, y: e.y + e.h / 2, owner });
 }
@@ -174,6 +191,26 @@ export function hitPlayer(world, p, hit) {
   const attacker = hit.owner;
   const unblockable = hit.cat === 'unblockable' || hit.unblockable;
   const pos = { x: p.x, y: p.y + p.h * 0.6 };
+  // RAM's Rampart: a strike, a blast or a shot from in front of it is blocked (shockwaves along the floor go
+  // under it). The damage comes off its Integrity; a Perfect Guard costs none and makes a striker reel.
+  if (p.char === 'ram' && p.state === 'guard' && !p.guardBroken && !hit.ground && world.guardFaces) {
+    const src = hit.proj ? { x: hit.proj.x, y: hit.proj.y } : hit.at ? hit.at : attacker ? { x: attacker.x, y: attacker.y + (attacker.h || 1) * 0.5 } : null;
+    if (src && world.guardFaces(p, src.x, src.y)) {
+      const perfect = p.guardT <= RAM.guard.perfect, diff = DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal;
+      if (attacker && attacker.kind === 'enemy' && !hit.proj) {
+        if (perfect) {
+          if (attacker.boss) attacker.parried = 2;
+          attacker.poise += 60; attacker.hitstop = 8;
+          if (attacker.poise >= attacker.poiseMax) stagger(world, attacker, attacker.type === 'brute' ? 120 : 80);
+          else if (attacker.state === 'attack') { attacker.state = 'recover'; attacker.st = 0; }
+        }
+        // The shield stops a charge dead
+        if (attacker.state === 'charge') { attacker.state = 'dazed'; attacker.st = 0; attacker.vx = -attacker.facing * 4; world.emit('chargeCrash', { e: attacker }); }
+      }
+      world.guardResult(p, perfect ? 0 : (hit.dmg || 0) * diff.dmg, perfect, src.x, src.y, !!hit.heavy || unblockable);
+      return 'guarded';
+    }
+  }
 
   const win = parryWindows(p);
   if (p.state === 'parry' && !p.parryResult && p.parryT <= win.window) {
@@ -218,8 +255,16 @@ export function hitPlayer(world, p, hit) {
   if (p.state === 'dodge' && p.dodge && !p.dodge.perfect && p.dodge.t <= DODGE.perfect && world.perfectDodge) world.perfectDodge(p, hit);
   if (p.mercy > 0 || p.iframe) return 'ignored';
   const diff = DIFFICULTY[SETTINGS.difficulty] || DIFFICULTY.normal;
-  const dmg = hit.dmg * diff.dmg;
+  let dmg = hit.dmg * diff.dmg;
   const armored = p.char === 'echo' && p.state === 'attack' && p.moveId === 'echo_charged' && p.resolve >= ECHO.resolveHalf;
+  // RAM braced by Provoke, or mid-charge, takes less
+  if (p.char === 'ram') { if (p.braceT > 0) dmg *= RAM.provoke.brace; if (p.state === 'rush' || p.state === 'leap') dmg *= RAM.rushTaken; }
+  // A RAM's Guardian Link takes his share; then Plating soaks what it can
+  const guardian = world.guardianOf ? world.guardianOf(p) : null;
+  if (guardian) { const share = dmg * RAM.link.share; dmg -= share; world.linkHit(guardian, share, p); }
+  if (p.plate > 0) { const a = Math.min(p.plate, dmg); p.plate -= a; dmg -= a; if (a > 0) world.emit('plateHit', { p, x: pos.x, y: pos.y, left: p.plate }); }
+  // Stalwart: ordinary hits don't knock RAM about (heavy ones and blasts do); mid-charge or mid-leap nothing does
+  const stalwart = p.char === 'ram' && (p.state === 'rush' || p.state === 'leap' || (!hit.heavy && !unblockable));
   p.hp -= dmg;
   gainUlt(p, dmg * ULT.gain.taken, world);
   breakVeil(p, world, 'hit');
@@ -228,12 +273,12 @@ export function hitPlayer(world, p, hit) {
     if (world.nearestEnemyDist(p.x, p.y + 1) < 4 && world.tick - p.lastResolveHitT > 30) {
       addResolve(p, 8); p.lastResolveHitT = world.tick;
     }
-  } else { p.chargeT = 0; if (p.focus > 0) loseFocus(p, world); }
-  p.rifleT = 0; p.dashChargeT = 0; p.burstT = 0; p.subArmed = false; p.dodge = null;
-  p.mercy = MERCY_TICKS; p.hitstop = 4;
-  world.emit('playerHit', { ...pos, p, dmg, heavy: !!hit.heavy, armored });
+  } else if (!stalwart) { p.chargeT = 0; if (p.focus > 0) loseFocus(p, world); }
+  if (!stalwart) { p.rifleT = 0; p.dashChargeT = 0; p.burstT = 0; p.subArmed = false; p.dodge = null; p.rivetQ = 0; p.tossArmed = false; }
+  p.mercy = MERCY_TICKS; p.hitstop = stalwart ? 2 : 4;
+  world.emit('playerHit', { ...pos, p, dmg, heavy: !!hit.heavy, armored: armored || stalwart });
   if (p.hp <= 0) { p.hp = 0; world.downPlayer(p); return 'hit'; }
-  if (!armored) {
+  if (!armored && !stalwart) {
     if (p.beam) world.endBeam(p, 'hit');
     p.state = 'hitstun'; p.st = 0; p.stun = hit.heavy || unblockable ? 24 : 14;
     p.vx = hit.kb ? hit.kb[0] : 0; p.vy = hit.kb ? hit.kb[1] : 3;
@@ -259,6 +304,12 @@ function projectileHits(world, pr) {
       if (e.dead || pr.hitSet.has(e.id) || !circleBox(pr, hurtbox(e))) continue;
       pr.hitSet.add(e.id);
       if (pr.snare) { world.applySnare(e, pr.owner); pr.dead = true; return; }   // snares wrap around shields
+      if (pr.stick) {   // a Hot Rivet: it hits, then stays stuck in the enemy until its fuse runs out
+        hitEnemy(world, e, { ...pr, kb: [sign(pr.vx) * (pr.kb || 2), 1] }, 'proj');
+        pr.stuck = { e, ox: pr.x - e.x, oy: pr.y - e.y, t: pr.stick.fuse }; pr.vx = 0; pr.vy = 0;
+        world.emit('rivetStick', { p: pr.owner, x: pr.x, y: pr.y, e });
+        return;
+      }
       if (pr.blast) { detonate(world, pr, pr.x, pr.y, null, false); pr.dead = true; return; }
       const hit = { ...pr, kb: [sign(pr.vx) * (pr.kb || 2), pr.kbY || 1] };
       if (pr.falloff) {   // secondary blaster pellets lose damage over distance
@@ -278,6 +329,7 @@ function projectileHits(world, pr) {
         pr.dead = true; return;
       }
       if (!pr.pierce || res === 'blocked') { pr.dead = true; return; }
+      if (pr.pierceLeft !== undefined && pr.pierceLeft-- <= 0) { pr.dead = true; return; }   // a Breach Shot goes through so many
     }
   } else {
     for (const p of world.players) {
@@ -321,6 +373,9 @@ export function awardFocus(world, pr) {
 // A burst on terrain (onTerrain) can rocket-jump Nova; an Arc shell can wherever it bursts.
 function detonate(world, pr, x, y, skip, onTerrain) {
   const common = { owner: pr.owner, team: pr.team, x, y, level: pr.level || 0, perfect: !!pr.perfect, family: pr.family || null, skip };
+  // RAM's level 3 Breach Shot bursts where it ends; Fix's Hot Rivets burst when their fuse runs out
+  if (pr.endBlast) world.explode({ ...common, spec: pr.endBlast, kind: 'breachBlast' });
+  if (pr.stick) { world.explode({ ...common, spec: pr.stick.blast, kind: 'rivetBlast' }); return; }
   if (pr.blast) world.explode({ ...common, spec: pr.blast, rocket: true, kind: pr.kind === 'grenade' || pr.kind === 'bomblet' ? 'frag' : 'blast' });
   else if (pr.splash) world.explode({ ...common, spec: pr.splash, rocket: onTerrain, kind: 'splash' });
   if (pr.cluster && world.clusterBurst) world.clusterBurst(pr, x, y);   // a level 3 grenade scatters bomblets
@@ -340,6 +395,11 @@ function hitWall(world, pr, ox, oy) {
     return false;
   }
   if (pr.bouncy) { bounce(world, pr, ox, oy, flipX, flipY); return false; }
+  if (pr.stick) {   // a Hot Rivet sticks in the wall where it struck
+    pr.x = ox; pr.y = oy; pr.vx = 0; pr.vy = 0; pr.stuck = { e: null, ox, oy, t: pr.stick.fuse };
+    world.emit('rivetStick', { p: pr.owner, x: ox, y: oy, e: null });
+    return true;
+  }
   if (pr.bounces > 0) {
     pr.x = ox; pr.y = oy; if (flipX) pr.vx = -pr.vx; if (flipY) pr.vy = -pr.vy; pr.bounces--;
     world.emit('ricochet', { x: ox, y: oy, pr });
@@ -384,6 +444,14 @@ export function updateProjectiles(world, frozen = false) {
     if (pr.dead) continue;
     pr.px = pr.x; pr.py = pr.y;
     if (frozen && pr.team === 'e') continue;   // an ultimate holds enemy fire in the air
+    if (pr.stuck) {
+      // A stuck Hot Rivet rides along in its enemy (or sits in the wall) until the fuse is out
+      const S = pr.stuck;
+      if (S.e) { if (!S.e.dead) { pr.x = S.e.x + S.ox; pr.y = S.e.y + Math.min(S.oy, S.e.h); } }
+      else { pr.x = S.ox; pr.y = S.oy; }
+      if (--S.t <= 0) { detonate(world, pr, pr.x, pr.y, null, false); pr.dead = true; }
+      continue;
+    }
     // A perfect dodge slows enemy shots close by
     const k = pr.slowT > 0 ? (pr.slowT--, 0.5) : 1;
     if (pr.homing) steerToTagged(world, pr);
@@ -420,9 +488,21 @@ export function updateProjectiles(world, frozen = false) {
           pr.dead = true; break;
         }
       }
+      if (pr.team === 'e' && world.rampartCross) {
+        // RAM's Rampart stops it, covering everyone behind him (a Perfect Guard sends it back as his)
+        const ram = world.rampartCross(ox, oy, pr.x, pr.y, pr.r);
+        if (ram) { if (world.blockShot(ram, pr) === 'block') break; continue; }
+        // Fix's gadgets stand in the way of shots too
+        const g = world.gadgetAt && world.gadgetAt(pr.x, pr.y, pr.r);
+        if (g) { world.hurtGadget(g, pr.blast ? pr.blast.dmg : pr.dmg); if (pr.blast) world.emit('enemyBlast', { x: pr.x, y: pr.y, r: pr.blast.r * 0.6 }); pr.dead = true; break; }
+      }
       for (const b of world.barriers) {
         if (!crossesBarrier(b, ox, oy, pr.x, pr.y)) continue;
-        if (pr.team === 'e') { pr.dead = true; world.emit('barrierBlock', { x: pr.x, y: pr.y }); break; }
+        if (pr.team === 'e') {
+          pr.dead = true; world.emit('barrierBlock', { x: pr.x, y: pr.y, kind: b.kind });
+          if (b.kind === 'rampart') world.hurtWall(b, pr.blast ? pr.blast.dmg : pr.dmg, pr.x, pr.y);
+          break;
+        }
         if (!pr.amplified) {
           pr.amplified = true; pr.pierce = true; pr.dmg *= 1.5; pr.poise = (pr.poise || 8) * 1.5; pr.r *= 1.3;
           if (pr.blast) { pr.blast.dmg *= 1.5; pr.blast.poise *= 1.5; pr.blast.r *= 1.2; }
@@ -520,8 +600,10 @@ export function updateShockwaves(world) {
   for (const s of world.shockwaves) {
     s.x += s.dir * s.speed * DT; s.ttl--;
     if (pointInSolid(s.x + s.dir * 0.5, s.y + 0.3)) s.ttl = 0;
-    world.spawnHitbox({ owner: s.owner, team: 'e', x0: s.x - 0.45, x1: s.x + 0.45, y0: s.y, y1: s.y + s.h,
-      dmg: s.dmg, kb: [s.dir * 8, 7], unblockable: true, cat: 'unblockable', instance: s.instance });
+    if (s.team === 'p') world.spawnHitbox({ owner: s.owner, team: 'p', x0: s.x - 0.5, x1: s.x + 0.5, y0: s.y, y1: s.y + s.h,
+      dmg: s.dmg, poise: s.poise, kb: [s.dir * 6, 9], launcher: true, instance: s.instance, quake: true });
+    else world.spawnHitbox({ owner: s.owner, team: 'e', x0: s.x - 0.45, x1: s.x + 0.45, y0: s.y, y1: s.y + s.h,
+      dmg: s.dmg, kb: [s.dir * 8, 7], unblockable: true, cat: 'unblockable', instance: s.instance, ground: true });
   }
   world.shockwaves = world.shockwaves.filter(s => s.ttl > 0);
 }

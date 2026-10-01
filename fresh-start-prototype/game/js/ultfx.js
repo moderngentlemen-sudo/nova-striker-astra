@@ -39,7 +39,7 @@ export class UltFX {
     switch (ev.type) {
       case 'ultCast': case 'ultJoin': {
         // A pillar of light around the caster, rings spreading over the floor, energy rising
-        const p = ev.p, x = p.x, y = p.y, col = p.char === 'nova' ? GOLD : ORANGE;
+        const p = ev.p, x = p.x, y = p.y, col = CHARS[p.char].energy;
         F.sprite(x, y + 3, 'glow', CYAN, 7.5, 0.9, 1.08, 0.1, 0.16); F.sprite(x, y + 3, 'glow', '#ffffff', 7, 0.5, 1.05, 0.12, 0.05);
         F.sprite(x, y + 1, 'star', '#ffffff', 3.2, 0.3, 1.6); F.sprite(x, y + 1, 'ring', CYAN, 1.2, 0.6, 4.5);
         F.groundRing(x, y, CYAN, 0.4, 4.5, 0.8, 0.9); F.groundRing(x, y, col, 0.3, 3, 0.6, 0.8);
@@ -123,7 +123,7 @@ export class UltFX {
       for (const [sz, life, g] of [[3, 0.5, 5], [2, 0.7, 7], [1.2, 0.9, 10]]) F.sprite(ev.x, ev.y, 'ring', '#ffffff', sz, life, g);
       F.sprite(ev.x, ev.y, 'ring', CYAN, 2.4, 0.9, 7);
       F.burst(ev.x, ev.y, CYAN, 120, 22, 0.45, 0.9); F.burst(ev.x, ev.y, '#ffffff', 60, 16, 0.3, 0.6);
-      for (const c of ev.chars || []) F.burst(ev.x, ev.y, c === 'nova' ? GOLD : ORANGE, 50, 18, 0.38, 0.7);
+      for (const c of ev.chars || []) F.burst(ev.x, ev.y, CHARS[c].energy, 50, 18, 0.38, 0.7);
     });
   }
 

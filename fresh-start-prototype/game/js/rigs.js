@@ -1,5 +1,8 @@
-// Procedural character rigs for Nova and Echo (placeholder art that keeps each silhouette's
-// defining features: Nova's Sentinel Bracer and visor helmet; Echo's scarf, collar, gauntlets, staff).
+// Procedural character rigs (placeholder art that keeps each silhouette's defining features: Nova's Sentinel
+// Bracer and visor helmet; Echo's scarf, collar, gauntlets, staff; RAM's tower shield, shoulder cannon and
+// horned helmet on a far heavier frame; Fix's goggles, tool pack with its crane arm, wrench and welder).
+// Every rig shares one skeleton (same joints and proportions), so the animation drives them all; RAM and Fix
+// are drawn bigger or smaller through `size` (CHARS[].scale).
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CHARS, ATTACH_LOOK } from './config.js';
@@ -52,9 +55,10 @@ function limb(parent, M, upperLen, lowerLen, r, z, isArm) {
 }
 
 export function buildPlayerRig(charId) {
+  if (charId === 'ram' || charId === 'fix') return buildNewRig(charId);
   const c = CHARS[charId], M = rimAll(mats(c)), nova = charId === 'nova';
-  const root = group(), flip = group(), body = group();
-  root.add(flip); flip.add(body);
+  const root = group(), size = group(), flip = group(), body = group();
+  root.add(size); size.add(flip); flip.add(body);
   const hips = group(0, 0.95, 0); body.add(hips);
   hips.add(mesh(rbox(0.34, 0.2, 0.38, 0.07), M.trim, 0, 0.02));
   const spine = group(0, 0.08, 0); hips.add(spine);
@@ -207,14 +211,21 @@ export function buildPlayerRig(charId) {
   }
 
   extra.blades = blades; extra.jets = jets;
-  root.traverse(o => { if (o.isMesh) o.receiveShadow = false; });
-  const rig = { root, flip, body, hips, spine, head, collar, armN, armF, legN, legF, extra, mats: M, char: charId, phase: 0, cur: {}, scarf: null, heads, headMode: null,
-    yaw: 0, stretch: 0, lastVy: 0, wasGround: true, lastRocketT: 0, wasCrouch: false };
+  const rig = finishRig({ root, size, flip, body, hips, spine, head, collar, armN, armF, legN, legF, extra, mats: M, char: charId, heads });
   rig.setHead = mode => {
     if (nova || rig.headMode === mode) return;
     rig.headMode = mode; heads.helmet.visible = mode === 'helmet'; heads.mask.visible = mode === 'mask'; heads.hair.visible = mode !== 'helmet';
   };
   rig.setHead('helmet');
+  return rig;
+}
+
+// The common tail of every rig: shadows, its state for the animation, and Echo's Veil (any rig can fade)
+function finishRig(parts) {
+  const { root, mats: M } = parts;
+  root.traverse(o => { if (o.isMesh) o.receiveShadow = false; });
+  const rig = { ...parts, phase: 0, cur: {}, scarf: null, headMode: null, yaw: 0, stretch: 0, lastVy: 0, wasGround: true, lastRocketT: 0, wasCrouch: false };
+  rig.setHead = () => {};
 
   // Veil (Echo): the body turns glassy and a pale rim outlines it. Collected before render.js adds the
   // player-colour ring, so the ring stays solid for teammates.
@@ -237,4 +248,174 @@ export function buildPlayerRig(charId) {
     }
   };
   return rig;
+}
+
+// ---- RAM and Fix ----------------------------------------------------------------------------------
+// The shared skeleton: hips, spine, head, two arms and two legs at the same joints as Nova and Echo, so every
+// pose fits; `arm`/`leg` set limb radius and where the shoulders and hips sit across the body.
+function skeleton(charId, M, { arm, leg, shoulderZ, hipZ, upperArm = 0.3, foreArm = 0.29 }) {
+  const root = group(), size = group(), flip = group(), body = group();
+  root.add(size); size.add(flip); flip.add(body);
+  size.scale.setScalar(CHARS[charId].scale || 1);
+  const hips = group(0, 0.95, 0); body.add(hips);
+  const spine = group(0, 0.08, 0); hips.add(spine);
+  const head = group(0, 0.66, 0); spine.add(head);
+  const collar = group(-0.2, 0.58, 0.16); spine.add(collar);
+  const armN = limb(spine, M, upperArm, foreArm, arm, shoulderZ, true), armF = limb(spine, M, upperArm, foreArm, arm, -shoulderZ, true);
+  armN.top.position.y = 0.53; armF.top.position.y = 0.53;
+  const legN = limb(hips, M, 0.46, 0.46, leg, hipZ, false), legF = limb(hips, M, 0.46, 0.46, leg, -hipZ, false);
+  return { root, size, flip, body, hips, spine, head, collar, armN, armF, legN, legF };
+}
+const glowMat = (c, k = 2.4) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: k, roughness: 0.3 });
+
+function buildNewRig(charId) {
+  const c = CHARS[charId], M = rimAll(mats(c)), extra = { blades: [], jets: [] };
+  let S;
+  if (charId === 'ram') {
+    // RAM: a heavy frame (broad, deep chest, massive pauldrons, thick limbs), a small horned helmet sunk between
+    // the shoulders, a reactor pack with exhaust stacks, hydraulic pistons on the shins and the right forearm
+    S = skeleton(charId, M, { arm: 0.095, leg: 0.11, shoulderZ: 0.42, hipZ: 0.16, upperArm: 0.31 });
+    const { hips, spine, head, armN, armF, legN, legF } = S;
+    hips.add(mesh(rbox(0.44, 0.24, 0.56, 0.08), M.trim, 0, 0.02));
+    hips.add(mesh(rbox(0.12, 0.22, 0.28, 0.04), M.base, 0.21, -0.04));
+    spine.add(mesh(rbox(0.4, 0.36, 0.5, 0.1), M.under, 0, 0.18));
+    spine.add(mesh(rbox(0.54, 0.5, 0.68, 0.13), M.base, 0.03, 0.45));                      // chest
+    spine.add(mesh(rbox(0.44, 0.16, 0.58, 0.06), M.trim, 0.04, 0.2));                      // abdomen plate
+    spine.add(mesh(rbox(0.38, 0.05, 0.02, 0.01), M.energy, 0.04, 0.52, 0.345));            // energy seams along the chest
+    spine.add(mesh(rbox(0.3, 0.04, 0.02, 0.01), M.energy, 0.06, 0.4, 0.345));
+    spine.add(mesh(rbox(0.32, 0.13, 0.46, 0.05), M.trim, -0.02, 0.66));                    // high collar
+    // Reactor pack and its exhaust stacks
+    spine.add(mesh(rbox(0.26, 0.52, 0.52, 0.08), M.trim, -0.36, 0.44));
+    extra.stacks = [];
+    for (const z of [0.15, -0.15]) {
+      const st = mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.34, 12), M.under, -0.42, 0.78, z); st.rotation.z = 0.35; spine.add(st);
+      const rim = mesh(new THREE.TorusGeometry(0.062, 0.016, 6, 14), M.energy, -0.48, 0.94, z); rim.rotation.x = Math.PI / 2; rim.rotation.y = 0.35; spine.add(rim);
+      extra.stacks.push(rim);
+    }
+    // Pauldrons
+    for (const z of [0.42, -0.42]) {
+      spine.add(mesh(rbox(0.46, 0.26, 0.34, 0.11), M.base, 0, 0.62, z));
+      spine.add(mesh(rbox(0.36, 0.06, 0.36, 0.03), M.trim, 0, 0.76, z));
+      spine.add(mesh(rbox(0.3, 0.035, 0.02, 0.01), M.energy, 0, 0.62, z + Math.sign(z) * 0.172));
+    }
+    // Helmet: a heavy dark dome thrust forward between the pauldrons (head down, like a ram about to charge),
+    // a visor slit glowing round to the sides, a jaw guard, and curled ram's horns
+    head.position.set(0.13, 0.74, 0);
+    head.add(mesh(new THREE.SphereGeometry(0.165, 20, 16), M.trim, 0, 0.06));
+    head.add(mesh(rbox(0.22, 0.13, 0.27, 0.05), M.base, 0.07, -0.04));
+    head.add(mesh(rbox(0.05, 0.04, 0.24, 0.012), M.energy, 0.15, 0.065));
+    for (const z of [0.152, -0.152]) head.add(mesh(rbox(0.15, 0.036, 0.022, 0.01), M.energy, 0.07, 0.065, z));
+    for (const z of [0.15, -0.15]) {
+      const horn = mesh(new THREE.TorusGeometry(0.1, 0.038, 8, 20, Math.PI * 1.45), M.base, -0.05, 0.08, z);
+      horn.rotation.set(0, 0, 0.9); horn.scale.set(1, 1, 1.3); head.add(horn);
+      head.add(mesh(new THREE.SphereGeometry(0.03, 8, 6), M.energy, 0.0, -0.01, z * 1.06));
+    }
+    // Arms: heavy gauntlets; the right forearm carries the hydraulic pistons of the Piston Punch
+    for (const a of [armN, armF]) { a.joint.add(mesh(rbox(0.24, 0.3, 0.26, 0.06), M.base, 0.01, -0.15)); a.end.add(mesh(new THREE.SphereGeometry(0.11, 12, 10), M.under, 0.01, -0.04)); }
+    for (const z of [0.07, -0.07]) {
+      armF.joint.add(mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 10), M.under, -0.1, -0.14, z));
+      armF.joint.add(mesh(new THREE.TorusGeometry(0.036, 0.012, 6, 12), M.energy, -0.1, -0.2, z));
+    }
+    // Legs: thick plates, piston-braced shins, broad boots
+    extra.pistons = [];
+    for (const l of [legN, legF]) {
+      l.top.add(mesh(rbox(0.28, 0.32, 0.28, 0.08), M.base, 0.02, -0.18));
+      l.joint.add(mesh(rbox(0.26, 0.34, 0.26, 0.07), M.base, 0.04, -0.24));
+      const pis = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.32, 10), M.trim, -0.1, -0.22, 0); l.joint.add(pis);
+      const ring = mesh(new THREE.TorusGeometry(0.04, 0.012, 6, 12), M.energy, -0.1, -0.32, 0); ring.rotation.x = Math.PI / 2; l.joint.add(ring);
+      extra.pistons.push(ring);
+      l.end.add(mesh(rbox(0.36, 0.14, 0.26, 0.05), M.trim, 0.07, -0.03));
+    }
+    // The Rampart: a tower shield posed by the animation (body space), not hung off an arm, so it can stay
+    // upright in front of him. Its face is toward the camera; a hard-light frame and a ram's-head crest glow.
+    const shield = group(0.45, 0.95, 0.42); S.body.add(shield);
+    shield.add(mesh(rbox(0.7, 1.12, 0.1, 0.06), M.trim, 0, 0, -0.02));
+    shield.add(mesh(rbox(0.6, 1.0, 0.1, 0.05), M.base, 0, 0, 0.02));
+    for (const y of [0.5, -0.5]) shield.add(mesh(rbox(0.56, 0.04, 0.02, 0.01), M.energy, 0, y, 0.075));
+    for (const x of [0.33, -0.33]) shield.add(mesh(rbox(0.035, 0.9, 0.02, 0.01), M.energy, x, 0, 0.06));
+    const crest = group(0, 0.12, 0.08); shield.add(crest);
+    crest.add(mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 18), M.energy)).rotation.x = Math.PI / 2;
+    for (const sx of [1, -1]) { const h = mesh(new THREE.TorusGeometry(0.11, 0.024, 6, 16, Math.PI * 1.3), M.energy, sx * 0.1, 0.06, 0); h.rotation.z = sx > 0 ? -0.4 : Math.PI + 0.4; crest.add(h); }
+    const edge = group(0.32, 0.56, 0); shield.add(edge);   // the leading top corner (swing trails)
+    extra.shield = shield; extra.shieldEdge = edge;
+    // The Breach Cannon on the right shoulder: it turns to the aim
+    const cannon = group(-0.08, 0.84, -0.3); S.spine.add(cannon);
+    cannon.add(mesh(rbox(0.26, 0.18, 0.2, 0.05), M.trim));
+    const barrel = mesh(new THREE.CylinderGeometry(0.06, 0.075, 0.5, 14), M.under, 0.3, 0.02, 0); barrel.rotation.z = -Math.PI / 2; cannon.add(barrel);
+    const band = mesh(new THREE.TorusGeometry(0.075, 0.018, 6, 14), M.energy, 0.42, 0.02, 0); band.rotation.y = Math.PI / 2; cannon.add(band);
+    const muzzle = group(0.58, 0.02, 0); cannon.add(muzzle);
+    extra.cannon = cannon; extra.muzzle = muzzle;
+    extra.edges = { shield: [shield, edge, 0.2], fistF: [armF.joint, armF.end, 0.5], fistN: [armN.joint, armN.end, 0.5] };
+  } else {
+    // Fix: a lighter frame in a work vest, welding goggles pushed up on her forehead, a ponytail, a tool pack
+    // with a folding crane arm, a rivet gun on her right forearm, a welder on her left hand and a big wrench
+    S = skeleton(charId, M, { arm: 0.06, leg: 0.08, shoulderZ: 0.28, hipZ: 0.125 });
+    const { hips, spine, head, armN, armF, legN, legF } = S;
+    const hazard = glowMat('#ffd23f', 0.35), skin = new THREE.MeshStandardMaterial({ color: 0xd2ab90, roughness: 0.82 });
+    const hair = new THREE.MeshStandardMaterial({ color: 0x5a2d22, roughness: 0.75 }), lens = new THREE.MeshStandardMaterial({ color: 0xffb547, emissive: 0xff8a1a, emissiveIntensity: 0.6, roughness: 0.15, metalness: 0.3 });
+    hips.add(mesh(rbox(0.32, 0.18, 0.36, 0.06), M.trim, 0, 0.02));
+    for (const [x, z] of [[0.12, 0.2], [-0.08, 0.21]]) hips.add(mesh(rbox(0.09, 0.11, 0.07, 0.02), z > 0.2 ? hazard : M.under, x, 0.0, z));   // tool pouches
+    spine.add(mesh(rbox(0.28, 0.3, 0.32, 0.08), M.under, 0, 0.18));
+    spine.add(mesh(rbox(0.34, 0.32, 0.42, 0.09), M.base, 0.02, 0.42));                      // work vest
+    spine.add(mesh(rbox(0.05, 0.05, 0.3, 0.02), M.energy, 0.19, 0.44));
+    spine.add(mesh(rbox(0.36, 0.035, 0.02, 0.01), hazard, 0.02, 0.32, 0.215));             // hazard stripe
+    for (const z of [0.26, -0.26]) spine.add(mesh(rbox(0.2, 0.12, 0.17, 0.06), M.trim, 0, 0.55, z));
+    // Head: face, hair with a ponytail, goggles up on the forehead
+    head.add(mesh(new THREE.SphereGeometry(0.13, 22, 16), skin, 0, 0.1));
+    const eye = new THREE.MeshStandardMaterial({ color: 0x1a1a20, roughness: 0.4 });
+    for (const z of [0.042, -0.042]) head.add(mesh(new THREE.SphereGeometry(0.016, 8, 6), eye, 0.118, 0.115, z));
+    const cap = mesh(new THREE.SphereGeometry(0.138, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.46), hair, -0.01, 0.105); cap.rotation.z = 0.3; head.add(cap);
+    const tail = group(-0.12, 0.17, 0); head.add(tail);
+    tail.add(mesh(new THREE.CapsuleGeometry(0.045, 0.2, 4, 10), hair, -0.03, -0.12)).rotation.z = 0.5;
+    extra.ponytail = tail;
+    const strap = mesh(new THREE.TorusGeometry(0.134, 0.012, 6, 24), M.trim, 0, 0.17); strap.rotation.x = Math.PI / 2; strap.rotation.y = 0.25; head.add(strap);
+    for (const z of [0.05, -0.05]) {
+      const gg = mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.05, 14), M.trim, 0.1, 0.205, z); gg.rotation.z = Math.PI / 2 - 0.6; head.add(gg);
+      const ln = mesh(new THREE.CylinderGeometry(0.034, 0.034, 0.012, 14), lens, 0.128, 0.225, z); ln.rotation.z = Math.PI / 2 - 0.6; head.add(ln);
+    }
+    // Tool pack and its folding crane arm (it unfolds when she builds)
+    spine.add(mesh(rbox(0.18, 0.34, 0.32, 0.05), M.trim, -0.24, 0.42));
+    spine.add(mesh(rbox(0.04, 0.3, 0.02, 0.01), hazard, -0.33, 0.42, 0.162));
+    const crane = group(-0.26, 0.62, -0.08); spine.add(crane);
+    crane.add(mesh(rbox(0.06, 0.26, 0.06, 0.02), M.under, 0, 0.12));
+    const fore = group(0, 0.24, 0); crane.add(fore);
+    fore.add(mesh(rbox(0.05, 0.22, 0.05, 0.02), hazard, 0, 0.1));
+    const claw = group(0, 0.22, 0); fore.add(claw);
+    for (const sx of [1, -1]) { const f = mesh(rbox(0.02, 0.08, 0.03, 0.008), M.energy, sx * 0.025, 0.04); f.rotation.z = -sx * 0.4; claw.add(f); }
+    crane.rotation.z = 1.9; fore.rotation.z = -2.6;
+    extra.crane = crane; extra.craneFore = fore;
+    // Gloves; the rivet gun on the right forearm (it aims like Nova's bracer); a welder on the left hand
+    for (const a of [armN, armF]) a.end.add(mesh(new THREE.SphereGeometry(0.068, 12, 10), M.under, 0, -0.03));
+    const gun = group(0, -0.14, 0); armN.joint.add(gun);
+    gun.add(mesh(rbox(0.14, 0.3, 0.17, 0.04), M.trim, 0.02, 0));
+    gun.add(mesh(rbox(0.06, 0.12, 0.11, 0.02), hazard, 0.1, 0.05));
+    const gbar = mesh(new THREE.CylinderGeometry(0.032, 0.04, 0.16, 12), M.under, 0.03, -0.2, 0); gun.add(gbar);
+    const gmuz = group(0.03, -0.29, 0); gun.add(gmuz);
+    extra.muzzle = gmuz; extra.gun = gun;
+    const welder = group(0, -0.08, 0); armF.end.add(welder);
+    welder.add(mesh(new THREE.CylinderGeometry(0.03, 0.05, 0.14, 10), M.trim, 0, -0.04, 0));
+    const tipMat = glowMat(c.energy, 2.6);
+    welder.add(mesh(new THREE.ConeGeometry(0.03, 0.08, 10), tipMat, 0, -0.14, 0)).rotation.z = Math.PI;
+    const weldTip = group(0, -0.19, 0); welder.add(weldTip);
+    extra.weldTip = weldTip; extra.tipMat = tipMat;
+    // The wrench: held in the right hand for swings, slung on the pack otherwise
+    const steel = new THREE.MeshStandardMaterial({ color: 0xb8c0ca, roughness: 0.35, metalness: 0.6 });
+    const wrench = group(0, -0.03, 0); armN.end.add(wrench);
+    wrench.add(mesh(rbox(0.05, 0.62, 0.05, 0.02), steel, 0, -0.27));
+    wrench.add(mesh(rbox(0.06, 0.12, 0.06, 0.02), M.trim, 0, -0.02));
+    const jaw = group(0, -0.62, 0); wrench.add(jaw);
+    const ring = mesh(new THREE.TorusGeometry(0.085, 0.032, 8, 18, Math.PI * 1.45), steel, 0, 0, 0); ring.rotation.z = Math.PI * 0.27; jaw.add(ring);
+    jaw.add(mesh(rbox(0.12, 0.03, 0.035, 0.01), M.energy, 0, -0.05, 0.04));
+    const wtip = group(0, -0.09, 0); jaw.add(wtip);
+    const slung = mesh(rbox(0.04, 0.5, 0.04, 0.02), steel, -0.31, 0.38, 0.1); slung.rotation.z = 0.75; spine.add(slung);
+    extra.wrench = wrench; extra.slung = slung;
+    extra.edges = { wrench: [wrench, wtip, 0.45] };
+    for (const l of [legN, legF]) {
+      l.top.add(mesh(rbox(0.18, 0.24, 0.18, 0.06), M.base, 0.02, -0.18));
+      l.joint.add(mesh(rbox(0.17, 0.28, 0.17, 0.05), M.trim, 0.03, -0.24));
+      l.end.add(mesh(rbox(0.25, 0.11, 0.16, 0.04), M.under, 0.06, -0.02));
+      l.joint.add(mesh(rbox(0.02, 0.2, 0.02, 0.006), hazard, 0.12, -0.24, 0.07));
+    }
+  }
+  return finishRig({ ...S, extra, mats: M, char: charId, heads: {} });
 }

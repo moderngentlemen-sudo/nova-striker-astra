@@ -27,6 +27,13 @@ function activeEdges(p, rig) {
     }
     return null;
   }
+  if (p.char === 'ram' || p.char === 'fix') {
+    const lead = p.char === 'ram' ? 'shield' : 'wrench';
+    if (st === 'pound' && p.pound) return p.pound.phase === 'drop' ? [[lead, 0.16, 1.3]] : null;
+    if (st !== 'attack' || !m || p.st < m.su - 1 || p.st > m.su + m.ac + 2) return null;
+    if (m.fist) return [['fistF', 0.14, 1.3]];   // RAM's Piston Punch
+    return [[lead, m.heavy || m.launcher ? 0.15 : 0.11, m.heavy ? 1.3 : 1]];
+  }
   if (st === 'pound' && p.pound) return p.pound.phase === 'drop' ? [['fistN', 0.16, 1.4]] : null;
   if (st !== 'attack' || !m || !m.fist) return null;
   if (p.st < m.su - 1 || p.st > m.su + m.ac + 2) return null;

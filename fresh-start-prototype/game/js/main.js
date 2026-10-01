@@ -1,5 +1,5 @@
 // Bootstrap: fixed 60 Hz simulation, interpolated rendering, drop-in joining, menus.
-import { SETTINGS, loadSettings, DT } from './config.js';
+import { SETTINGS, loadSettings, DT, ROSTER, nextChar } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { View } from './render.js';
@@ -40,7 +40,8 @@ function tryJoin() {
   const devices = input.pollJoins(new Set(world.players.map(p => p.device)));
   for (const dev of devices) {
     if (world.players.length >= 4 || paused) break;
-    const char = world.players.length % 2 === 0 ? 'nova' : 'echo';
+    // Each new player takes the next character no one is playing yet (Nova, Echo, RAM, Fix)
+    const used = new Set(world.players.map(p => p.char)), char = ROSTER.find(c => !used.has(c)) || ROSTER[world.players.length % ROSTER.length];
     world.addPlayer(dev, char);
     if (!started) { started = true; ui.hideStart(); }
   }
@@ -62,7 +63,7 @@ function handleMenuEvents() {
     else if (ev.type === 'help') ui.toggleHelp();
     else if (ev.type === 'debug') ui.toggleDebug();
     else if (paused) ui.menuNav(ev);
-    else if (ev.type === 'swap') world.swapCharacter(p, p.char === 'nova' ? 'echo' : 'nova');
+    else if (ev.type === 'swap') world.swapCharacter(p, nextChar(p.char, ev.dir || 1));
     else if (ev.type === 'pick') world.swapCharacter(p, ev.char);
   }
 }

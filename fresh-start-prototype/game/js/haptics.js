@@ -3,7 +3,7 @@
 // first player's events buzz the phone through navigator.vibrate when their controller cannot rumble
 // (Android browsers; iOS Safari has no vibration API, and pages embedded in another site may be
 // blocked from vibrating). Keyboard and mouse have nothing to shake.
-import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER, POUND } from './config.js';
+import { SETTINGS, MARKSMAN, NOVA, DASH_CHARGE, HUNTER, POUND, RAM, FIX } from './config.js';
 import { rifleFocus } from './player.js';
 
 // [strong motor 0-1, weak motor 0-1, milliseconds, priority]. Lower-priority effects never cut off a
@@ -44,11 +44,21 @@ const FX = {
   wellOpen: () => [0.2, 0.4, 90, 2], wellCollapse: ev => [0.4 + 0.1 * (ev.level || 1), 0.6, 140, 3],
   dodge: () => [0, 0.3, 40, 1], perfectDodge: () => [0.4, 0.9, 200, 3], riseBlast: () => [0.3, 0.6, 90, 2],
   ultReady: () => [0.2, 0.7, 150, 2], ultCut: () => [0.15, 0.5, 40, 2],
+  // Version 10: RAM's blocks land in the hands that hold the shield; Fix feels her tools
+  guardOn: () => [0, 0.25, 40, 1], guardBlock: ev => [Math.min(0.8, 0.2 + ev.dmg * 0.03), 0.5, 70 + Math.min(80, ev.dmg * 3), 2],
+  perfectGuard: () => [0.3, 0.9, 120, 3], rampartBreak: () => [0.9, 0.9, 260, 4], kineticRelease: ev => [0.4 + 0.5 * (ev.k || 0), 0.7, 140 + 120 * (ev.k || 0), 3],
+  rush: ev => [0.3 + 0.15 * ev.level, 0.4, 120 + 40 * ev.level, 2], plowCatch: () => [0.3, 0.4, 60, 2], ramSplat: () => [0.9, 0.8, 220, 3], ramBonk: () => [0.6, 0.6, 140, 3],
+  wallUp: () => [0.3, 0.5, 110, 2], link: () => [0.1, 0.5, 80, 2], linkHit: () => [0.3, 0.3, 60, 2], leap: () => [0.3, 0.4, 90, 2], leapLand: () => [0.7, 0.6, 160, 3],
+  provoke: () => [0.5, 0.6, 180, 3], quake: () => [0.8, 0.7, 200, 3], upliftBlast: () => [0.3, 0.6, 90, 2],
+  gadgetDeploy: () => [0.15, 0.4, 80, 2], gadgetUp: () => [0.1, 0.6, 90, 2], gadgetWrench: () => [0.05, 0.45, 40, 1], padBounce: () => [0.25, 0.5, 80, 2],
+  powerUp: () => [0.1, 0.55, 90, 2], rivetBlast: () => [0.25, 0.45, 70, 2], sparkRing: () => [0.2, 0.7, 100, 2], patchOn: () => [0, 0.2, 40, 1],
+  plateHit: () => [0.15, 0.35, 50, 2],
 };
 // Boss moments everyone feels, on every pad at once
 const ALL = { bossSlam: ev => (ev.big ? [0.8, 0.6, 220, 3] : [0.5, 0.45, 140, 2]), bossPhase: () => [0.9, 0.8, 380, 4], bossCrash: () => [0.7, 0.5, 200, 3], bossDown: () => [1, 1, 700, 4], bossIntro: () => [0.4, 0.5, 300, 2],
   // Ultimates: everyone feels the call, the nova, the finishers
-  ultCast: () => [0.5, 0.8, 300, 4], ultJoin: () => [0.5, 0.8, 250, 4], ultNova: () => [1, 1, 520, 4], ultFinisher: () => [0.9, 0.9, 420, 4], teamFinisher: () => [1, 1, 750, 4] };
+  ultCast: () => [0.5, 0.8, 300, 4], ultJoin: () => [0.5, 0.8, 250, 4], ultNova: () => [1, 1, 520, 4], ultFinisher: () => [0.9, 0.9, 420, 4], teamFinisher: () => [1, 1, 750, 4],
+  ramSlam: () => [1, 1, 520, 4], podLand: () => [0.9, 0.8, 380, 4] };
 function level(L) { return L >= 3 ? [0.35, 0.7, 80, 2] : L === 2 ? [0.15, 0.45, 55, 2] : [0, 0.3, 45, 2]; }
 
 // How far along a player's current charge is (0-1), or -1 when nothing is charging
@@ -56,6 +66,7 @@ function chargeOf(p) {
   if (p.state === 'dashCharge') return p.dashChargeT >= DASH_CHARGE.tap ? Math.min(1, p.dashChargeT / DASH_CHARGE.charge[2]) : -1;
   if (p.state === 'pound' && p.pound && p.pound.phase === 'hold' && p.pound.held && p.pound.t > POUND.windup) return Math.min(1, p.pound.t / POUND.charge[2]);
   if (p.char === 'echo') return p.rifleT >= HUNTER.rifle.raise ? rifleFocus(p.rifleT) : -1;
+  if (p.char === 'ram' || p.char === 'fix') return p.chargeT > 0 ? Math.min(1, p.chargeT / (p.char === 'ram' ? RAM.cannon.charge[2] : FIX.rivet.charge[2])) : -1;
   if (p.chargeT > 0) return Math.min(1, p.chargeT / (SETTINGS.novaKit === 'marksman' ? MARKSMAN.charge[2] : NOVA.charge2));
   if (p.burstT > 0) return Math.min(1, p.burstT / MARKSMAN.burst.charge[2]);
   return -1;

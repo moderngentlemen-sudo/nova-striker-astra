@@ -8,7 +8,7 @@ const KEYMAP = {
   KeyJ: 'melee', KeyK: 'fire', KeyL: 'parry', KeyQ: 'parry', KeyE: 'sig', KeyI: 'sig',
   KeyR: 'mode', KeyU: 'mode',   // Echo: cycle scarf mode; Nova: cycle bracer attachment
   KeyF: 'lock', KeyO: 'lock',   // lock-on
-  KeyT: 'sub', KeyY: 'sub',     // Nova: switch secondary weapon
+  KeyT: 'sub', KeyY: 'sub',     // Nova: switch secondary weapon · RAM: Provoke · Fix: switch power-up
   KeyV: 'ult', KeyN: 'ult',     // ultimate (a gamepad pulls both triggers)
 };
 
@@ -46,6 +46,8 @@ export class Input {
       if (e.code === 'Tab') this.menuEvents.push({ dev: 'kbm', type: 'swap', dir: 1 });
       if (e.code === 'Digit1') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'nova' });
       if (e.code === 'Digit2') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'echo' });
+      if (e.code === 'Digit3') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'ram' });
+      if (e.code === 'Digit4') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'fix' });
     });
     window.addEventListener('keyup', e => {
       this.keys.delete(e.code);

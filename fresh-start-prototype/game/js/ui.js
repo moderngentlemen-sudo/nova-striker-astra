@@ -1,5 +1,5 @@
 // DOM overlays: start screen, HUD, markers, barks, banners, pause/settings, help, debug.
-import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE, AEGIS, SUB_LOOK, ULT } from './config.js';
+import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE, AEGIS, SUB_LOOK, ULT, RAM, FIX, FIX_LOOK, ROSTER } from './config.js';
 
 // Echo's scarf mode chip: every player can read which mode his scarf is in
 function scarfChip(p) {
@@ -37,6 +37,37 @@ function aegisChips(p) {
     : `<span class="chip ${p.aegisCd === 0 ? 'ready' : ''}">Aegis ${p.aegisCd === 0 ? 'ready' : Math.ceil(p.aegisCd / 60) + 's'}</span>`;
   const over = p.overcharge > 0 ? `<span class="chip over">Overcharged</span><span class="res over" title="Overcharge"><i style="width:${Math.round(p.overcharge / AEGIS.over.max * 100)}%"></i></span>` : '';
   return shield + over;
+}
+
+// RAM: the Rampart's Integrity (a bar; "Broken" while it regrows), stored Kinetic, the cannon's charge, and his
+// three abilities (ready, or seconds left)
+const cd = (name, t, key) => `<span class="chip ${t <= 0 ? 'ready' : ''}" title="${key}">${name} ${t <= 0 ? 'ready' : Math.ceil(t / 60) + 's'}</span>`;
+function ramChips(p) {
+  const G = RAM.guard, frac = Math.max(0, p.integrity / G.integrity), kin = Math.round(p.kinetic), stage = chargeStage(p);
+  return `<span class="res integ${p.guardBroken ? ' broken' : ''}" title="Rampart Integrity"><i style="width:${(frac * 100).toFixed(0)}%"></i></span>` +
+    (p.guardBroken ? '<span class="chip red">Broken</span>' : p.state === 'guard' ? '<span class="chip ram">Guard</span>' : '') +
+    `<span class="chip kin${kin >= RAM.release.min ? ' on' : ''}" title="Kinetic: fire while guarding to release it">Kinetic ${kin}%</span>` +
+    (STAGE[stage] ? `<span class="chip ${stage === 'L3' ? 'perfect' : 'ready'}">Breach ${STAGE[stage]}</span>` : '') +
+    cd('Wall', p.wallCd, 'Suit ability') + cd('Link', p.linkCd, 'Mode button') + cd('Provoke', p.provokeCd, 'LB / T') +
+    (p.link ? `<span class="chip ram">Guarding P${p.link.q.slot + 1}</span>` : '');
+}
+// Fix: her Scrap, the gadget and power-up she has picked (and how her gadgets stand), who her beam holds, and
+// the rivet gun's charge
+function fixChips(p, world) {
+  const G = FIX_LOOK[p.gadgetSel], W = FIX_LOOK[p.powerSel], cost = FIX.gadget[p.gadgetSel].cost, stage = chargeStage(p);
+  const mine = (world.gadgets || []).filter(g => g.owner === p && g.kind !== 'pad');
+  const q = p.state === 'patch' && p.patch ? p.patch.target : null;
+  return `<span class="res scrap" title="Scrap"><i style="width:${Math.round(p.scrap / FIX.scrap.max * 100)}%"></i></span><span class="chip">Scrap ${Math.floor(p.scrap)}</span>` +
+    `<span class="chip attach" title="Gadget (mode button picks, suit ability builds)" style="color:${G.tint};box-shadow:inset 0 0 0 1px ${G.tint}">${G.name} · ${cost}</span>` +
+    `<span class="chip attach" title="Power-up (LB picks, melee tosses)" style="color:${W.tint};box-shadow:inset 0 0 0 1px ${W.tint}">${W.name} · ${FIX.power.cost}</span>` +
+    mine.map(g => `<span class="chip fix">${FIX_LOOK[g.kind].name.replace('Patch ', '').replace('Amp ', '')} L${g.level} ${Math.ceil((g.life - g.t) / 60)}s</span>`).join('') +
+    (p.state === 'patch' ? `<span class="chip fix on">${q ? (q.state === 'downed' ? `Reviving P${q.slot + 1}` : `Patching P${q.slot + 1}`) : 'Welding'}</span>` : '') +
+    (STAGE[stage] ? `<span class="chip ${stage === 'L3' ? 'perfect' : 'ready'}">Hot Rivet ${STAGE[stage]}</span>` : '');
+}
+// Boosts anyone can carry: Plating (from Fix or RAM), Overclock, Tune-Up (Fix's beam), an Amp Coil's field
+function boostChips(p) {
+  return (p.plate > 0.5 ? `<span class="chip plate">Plating ${Math.ceil(p.plate)}</span>` : '') + (p.overclockT > 0 ? `<span class="chip over2">Overclock ${Math.ceil(p.overclockT / 60)}s</span>` : '') +
+    (p.tuneT > 0 ? '<span class="chip fix on">Tuned up</span>' : '') + (p.ampK > 1 ? `<span class="chip over2">Amp x${p.ampK}</span>` : '') + (p.braceT > 0 ? '<span class="chip ram">Braced</span>' : '');
 }
 
 // Chips every character can show: a charging dash, and the lock-on target
@@ -122,15 +153,15 @@ export class UI {
           <div><h3>Keyboard + mouse</h3><ul>
             <li><kbd>A</kbd><kbd>D</kbd> move · <kbd>S</kbd> crouch · <kbd>Space</kbd> jump · <kbd>Shift</kbd> dash</li>
             <li>Left click fire (hold to charge) · Right click melee</li>
-            <li><kbd>Q</kbd> parry / dodge · <kbd>E</kbd> suit ability · <kbd>R</kbd> mode</li>
-            <li><kbd>T</kbd> secondary weapon · <kbd>F</kbd> switch target · <kbd>V</kbd> ultimate</li></ul></div>
+            <li><kbd>Q</kbd> parry / dodge / guard / beam · <kbd>E</kbd> suit ability · <kbd>R</kbd> mode</li>
+            <li><kbd>T</kbd> LB action · <kbd>F</kbd> switch target · <kbd>V</kbd> ultimate · <kbd>1</kbd>–<kbd>4</kbd> character</li></ul></div>
           <div><h3>Gamepad</h3><ul>
             <li>Left stick move · Right stick aim · R3 switch target</li>
             <li>A jump · B dash · X melee · Y suit ability · RB mode</li>
-            <li>RT fire · LT parry / dodge · LB secondary weapon</li>
+            <li>RT fire · LT parry / dodge / guard / beam · LB character action</li>
             <li>LT + RT ultimate · D-pad swap character · Start pause</li></ul></div>
         </div>
-        <p class="fine">New in Version 9: Nova's five secondary weapons (LB / <kbd>T</kbd>, no recoil) and his dodge (LT / <kbd>Q</kbd>); automatic lock-on; a rising attack for everyone (up + melee); and ultimates. Fill the bar, then pull both triggers (<kbd>V</kbd>); teammates with a full bar can join in for a team ultimate.</p>
+        <p class="fine">New in Version 10: two new characters. <b>RAM</b>, the tank: hold LT to raise his tower shield (it blocks, covers everyone behind him and stores Kinetic; fire while guarding releases it), a dash that plows enemies into walls, a hard-light wall, a guardian link and a war cry. <b>Fix</b>, the support: hold LT for a beam that heals, revives from range and tunes teammates up (faster charging and bars), gadgets on Y, power-ups tossed with X. Players join as Nova, Echo, RAM and Fix; swap with the D-pad or <kbd>1</kbd>–<kbd>4</kbd>.</p>
         <p class="fine">Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd>/View shows every control; <kbd>Esc</kbd>/Start opens settings, zones and the boss fights.</p>
         <p class="fine notice" hidden></p>
         <p class="fine touchnote">This build needs a keyboard or a gamepad. Touch controls are designed separately and arrive with a mobile port.</p>
@@ -189,7 +220,7 @@ export class UI {
     for (const p of world.players) {
       const row = h('div', 'prow');
       row.appendChild(h('span', 'pmark', `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${p.device === 'kbm' ? 'Keyboard + mouse' : 'Gamepad ' + (Number(p.device.slice(3)) + 1)}`));
-      for (const c of ['nova', 'echo']) {
+      for (const c of ROSTER) {
         const b = h('button', 'btn small' + (p.char === c ? ' on' : ''), CHARS[c].name);
         b.addEventListener('click', () => { this.H.pick(p, c); this.renderPlayerList(world); }); row.appendChild(b);
       }
@@ -226,7 +257,7 @@ export class UI {
       <tr><td>Velocity Break (Echo's Hunter kit: the Dash Slash, a lunging cut that carries him through)</td><td colspan="2">Melee while dashing or sliding, or just after a dash</td></tr>
       <tr><td>Melee · charged melee (hold, then let go)</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
       <tr><td>Ground pound: in the air, melee with down held (or aimed straight down). Hold it to charge through three levels while you hang in the air; the landing throws enemies outward</td><td>Down + X in the air · hold</td><td>S + melee in the air · hold</td></tr>
-      <tr><td>Rising attack: every character has their own. Nova: the Solar Uppercut (his boots fire and a hard-light fist drives up, three hits, a flare at the top; once per jump in the air). Echo: the Rising Glaive (a spinning uppercut that carries him up)</td><td>Up + X</td><td>W + melee</td></tr>
+      <tr><td>Rising attack: every character has their own. Nova: the Solar Uppercut (his boots fire and a hard-light fist drives up, three hits, a flare at the top; once per jump in the air). Echo: the Rising Glaive (a spinning uppercut that carries him up). RAM: the Hydraulic Uplift (his shield scoops up everything in front, sweeps shots out of the air over him, and bursts at the top; it reaches drones). Fix: Jack-Up (a pneumatic jack fires her up behind a wrench uppercut and stays as a spring pad any teammate can bounce on)</td><td>Up + X</td><td>W + melee</td></tr>
       <tr><td>Echo, Hunter kit: blade and glaive chain · Spin Slash in the air · Wall Slash on a wall · charged glaive swing that looses a crescent wave</td><td>X · up + X in the air · X on a wall · hold X</td><td>Melee · W + melee in the air · melee on a wall · hold</td></tr>
       <tr><td>Echo deflects: his parry and his glaive swings knock enemy shots back at whoever fired them. A perfect deflect opens a Riposte: melee straight after</td><td>LT · X</td><td>Q or L · melee</td></tr>
       <tr><td>Fire · charge</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
@@ -238,8 +269,8 @@ export class UI {
       <tr><td>Nova, Marksman kit: fire · hold to charge the loaded attachment through three levels · let go on the flash after level 3 for a Perfect Release · keep holding to the Level 4 flash and let go for a sustained beam (steer it with your aim; dash or parry cuts it short)</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
       <tr><td>Nova, Marksman kit: close to an enemy, melee is his hard-light combo (backhand, elbow, blast punch; an axe kick in the air). Otherwise it fires his secondary weapon; none has any recoil. Tap to fire, hold to charge through three levels. <b>Scatter</b>: point-blank pellets. <b>Grenade</b>: bounces, and bursts on its fuse or on an enemy (level 3 scatters bomblets). <b>Chain</b>: lightning that leaps from enemy to enemy, round shields, and stuns. <b>Disc</b>: flies out and back cutting everything (from level 2 it hovers at the end); press again to call it back. <b>Gravity Well</b>: pulls enemies in and holds them, swallows their shots, then collapses; press again to open it early, and again to collapse it</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
       <tr><td>Switch Nova's secondary weapon: Scatter, Grenade, Chain, Disc, Gravity Well</td><td>LB</td><td>T or Y</td></tr>
-      <tr><td>Ultimate: the bar under your health fills as you fight (dealing and taking damage, kills, perfect parries, dodges and deflects). When it is full, pull both triggers together. Nova: <b>Supernova</b>, a colossal beam you steer, then a nova of light. Echo: <b>Thousand Cuts</b>, a storm of blinking cuts on every enemy close by. Enemies freeze while it plays out and you can't be hurt</td><td>LT + RT together</td><td>V or N (or Q + left click together)</td></tr>
-      <tr><td>Team ultimate: while a teammate's ultimate is being called (its name on screen), pull both triggers with a full bar to join in. Everyone who joins unleashes theirs together, stronger, then a team finisher hits every enemy on screen (Echo + Nova: Eclipse Protocol; Nova + Nova: Binary Star; Echo + Echo: Twin Phantom)</td><td>LT + RT during the call</td><td>V during the call</td></tr>
+      <tr><td>Ultimate: the bar under your health fills as you fight (dealing and taking damage, kills, perfect parries, dodges, deflects and guards, and Fix's healing). When it is full, pull both triggers together. Nova: <b>Supernova</b>, a colossal beam you steer, then a nova of light. Echo: <b>Thousand Cuts</b>, a storm of blinking cuts on every enemy close by. RAM: <b>Siege Breaker</b>, the team is Fortified with Plating and he charges behind a colossal ram's head of hard light, scooping up everything in his path, then slams the pile down. Fix: <b>Overhaul</b>, a supply pod drops and pulses repair light across the screen (it brings back anyone who is down and hurts every enemy), then the team is Overclocked and Plated and her gadgets jump to level 3. Enemies freeze while it plays out and you can't be hurt</td><td>LT + RT together</td><td>V or N (or Q + left click together)</td></tr>
+      <tr><td>Team ultimate: while a teammate's ultimate is being called (its name on screen), pull both triggers with a full bar to join in. Everyone who joins unleashes theirs together, stronger, then a team finisher hits every enemy on screen. Pairs have their own names: Echo + Nova, Eclipse Protocol; Nova + RAM, Starbreaker; Echo + RAM, Shatterpoint; Fix + Nova, Solar Overdrive; Echo + Fix, Razorwire; Fix + RAM, Heavy Metal; and two of the same, Binary Star, Twin Phantom, Stampede, Assembly Line. Three or more: Full Resonance</td><td>LT + RT during the call</td><td>V during the call</td></tr>
       <tr><td>Nova: every shot bursts where it lands and splashes nearby enemies. A charged shot bursting on the ground or a wall close to you launches you: aim at your feet to rocket jump. The longer the charge, the higher you go (a gold line shows the height); a Perfect Release goes highest</td><td colspan="2">Aim down, charge, let go</td></tr>
       <tr><td>Nova: light boosters. After your double jump, press and hold jump to hover and climb (the gold bar under his health)</td><td>A (third press)</td><td>Space (third press)</td></tr>
       <tr><td>Nova's skates: you glide and keep your speed; reverse to carve to a stop; crouch at speed for a low glide</td><td colspan="2">Move as usual</td></tr>
@@ -248,8 +279,27 @@ export class UI {
       <tr><td>Tether mode: tap pulls light enemies or zips you to heavy ones; hold reels a light enemy in or yanks a heavy one off balance</td><td>Y (tap / hold)</td><td>E (tap / hold)</td></tr>
       <tr><td>Veil mode: you fade out while you're not attacking and enemies lose track of you; your first strike from hiding is an ambush that staggers. Attacking or getting hit shows you again. Vanish hides you at once</td><td>Y: Vanish</td><td>E: Vanish</td></tr>
       <tr><td>Flare mode: nearby enemies go for you instead of your team; while they do, parries are easier and Resolve builds faster. Challenge pulls every enemy close by onto you</td><td>Y: Challenge</td><td>E: Challenge</td></tr>
-      <tr><td>Swap character</td><td>D-pad left/right</td><td>1 / 2 / Tab</td></tr>
-      <tr><td>Revive a downed ally</td><td colspan="2">Stand next to them</td></tr>
+      <tr><th colspan="3">RAM, Vanguard (the tank)</th></tr>
+      <tr><td>Guard: hold to raise the Rampart, a tower shield. It blocks strikes, shots and blasts from in front (shockwaves along the floor still go under it) and covers everyone behind him. The damage comes off its Integrity (the blue bar), which grows back once he lowers it; broken, he reels and must wait for it. Raise it just before a hit for a Perfect Guard: no cost, a shot goes back the way it came, a striker reels. Aim up to hold it overhead. He walks slowly behind it and can jump with it up</td><td>Hold LT</td><td>Hold Q or L</td></tr>
+      <tr><td>Kinetic Release: every point the shield blocks is stored as Kinetic; fire while guarding lets it out as a cone of force, stronger the more is stored</td><td>RT while guarding</td><td>Left click or K while guarding</td></tr>
+      <tr><td>Ram Charge (his dash): a shoulder charge behind the shield that scoops up light enemies and slams them into the next wall. Hold it while standing still for the Battering Ram: three levels, further and faster, and from level 2 it carries heavy enemies too and breaks armor. Nothing knocks him about while he charges</td><td>B · hold B</td><td>Shift · hold Shift</td></tr>
+      <tr><td>Breach Cannon: tap for a heavy slug; hold to charge a Breach Shot that punches through enemies (level 3 bursts at the end)</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
+      <tr><td>Melee: shield bash, edge strike, Piston Punch; a shield swat in the air; hold for the Seismic Slam (shockwaves run both ways along the floor). From a guard, melee is a quick shove. His ground pound lands wider and harder</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
+      <tr><td>Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). He is big and slow, with lower jumps and much more health</td><td colspan="2">Always</td></tr>
+      <tr><td>Bulwark Wall: a hard-light wall in front of him for 8 s. Enemy shots stop at it and enemies can't get through until they break it; your team's shots pass through it boosted</td><td>Y</td><td>E, I, or middle click</td></tr>
+      <tr><td>Guardian Link: links him to the teammate who needs it most, leaping to their side if they are far. For 8 s he takes 60% of the damage they take, and they get Plating</td><td>RB</td><td>R, U, or mouse back button</td></tr>
+      <tr><td>Provoke: a war cry. Enemies close by turn on him for 4 s, he braces (takes 40% less), and enemies right beside him are shoved back</td><td>LB</td><td>T or Y</td></tr>
+      <tr><th colspan="3">Fix, Mechanic (the support)</th></tr>
+      <tr><td>Patch Beam: hold to beam the teammate who needs it most. It heals fast, then adds Plating, and Tunes Up whoever it holds: they charge, recharge and fill their bars 1.5 times as fast. On a downed teammate it revives them from range; with no one near she welds herself. She moves slowly while it runs</td><td>Hold LT</td><td>Hold Q or L</td></tr>
+      <tr><td>Field Mechanic: beside a downed teammate she revives three times as fast as anyone else, and whoever she brings back has 60% of their health</td><td colspan="2">Stand next to them</td></tr>
+      <tr><td>Gadgets (cost Scrap): build the selected one in front of her; building it again moves it. <b>Patch Pylon</b>: heals everyone in its field, and a downed teammate inside gets back up on their own. <b>Sentry</b>: shoots the nearest enemy in sight (rockets too at level 3). <b>Amp Coil</b>: teammates in its field charge and fill their bars faster. Two wrench hits raise a gadget a level (up to 3) and refresh it</td><td>Y build · RB pick</td><td>E build · R pick</td></tr>
+      <tr><td>Power-ups (cost Scrap): melee with no enemy or gadget of hers close tosses the selected one to the nearest teammate in front (or drops it at her feet; anyone can pick it up). <b>Overclock</b>: everything charges, recharges and fills 1.6 times as fast for 10 s. <b>Plating</b>: an overshield over the health bar. <b>Medkit</b>: 40 health</td><td>X (nothing close) · LB pick</td><td>Right click or J · T pick</td></tr>
+      <tr><td>Rivet Gun: tap for a burst of rivets; hold for a Hot Rivet that sticks in what it hits and bursts</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
+      <tr><td>Wrench: swing, backswing and a clanging overhead (close to an enemy or one of her gadgets); hold for the Torque Slam, a ring of sparks that stuns light enemies and drones. Her ground pound's landing heals teammates close by</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
+      <tr><td>Scrap (the yellow bar): it trickles in, and comes from her hits and from enemies falling near her</td><td colspan="2">Shown under her health bar</td></tr>
+      <tr><th colspan="3">Everyone</th></tr>
+      <tr><td>Swap character (Nova, Echo, RAM, Fix)</td><td>D-pad left/right</td><td>1–4 / Tab</td></tr>
+      <tr><td>Revive a downed ally</td><td colspan="2">Stand next to them (faster with Fix)</td></tr>
       </tbody></table>
       <p class="fine">New enemies: <b>Drones</b> fly above you and shoot (parry, or pull them down with Echo's Tether). <b>Mortars</b> lob shells at a magenta ring on the ground: you can't parry the burst, so move, or shoot the shell down with a charged shot. <b>Chargers</b> telegraph a heavy charge: perfect-parry it or jump over, and they daze themselves on walls.</p>
       <p class="fine">Controllers rumble with hits, charges and launches (Settings: Rumble). On Android phones the first player's phone can vibrate; iPhones do not support vibration from a web page, and a page embedded in another site may be blocked from it.</p>
@@ -276,7 +326,7 @@ export class UI {
       case 'checkpoint': this.toast('Checkpoint reached'); break;
       case 'join': this.toast(`Player ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`); break;
       case 'leave': this.toast(`Player ${ev.slot + 1} left`); break;
-      case 'downed': this.toast(ev.secondWind ? 'Second Wind: getting back up' : `Player ${ev.p.slot + 1} is down. Stand next to them to revive`); break;
+      case 'downed': this.toast(ev.secondWind ? 'Second Wind: getting back up' : `Player ${ev.p.slot + 1} is down. Stand next to them to revive${world.players.some(q => q.char === 'fix' && q !== ev.p) ? ' (Fix: faster, and her beam works from range)' : ''}`); break;
       case 'wipe': this.showBanner('Team down', 'Returning to the last checkpoint'); break;
       case 'bark': this.bark(ev.p, ev.text); break;
       case 'swap': this.toast(`Player ${ev.p.slot + 1} is now ${CHARS[ev.p.char].name}`); break;
@@ -342,9 +392,9 @@ export class UI {
         const el = h('div', `panel p${p.slot}`);
         el.style.setProperty('--pc', PLAYER_COLORS[p.slot]);
         el.innerHTML = `<div class="ptop"><span class="mark"></span><span class="name"></span><span class="role"></span></div>
-          <div class="bar hp"><i class="strain"></i><i class="fill"></i></div><div class="ultbar" title="Ultimate"><i></i><b></b></div><div class="sub"></div>`;
+          <div class="bar hp"><i class="strain"></i><i class="fill"></i><i class="plating"></i></div><div class="ultbar" title="Ultimate"><i></i><b></b></div><div class="sub"></div>`;
         this.hud.appendChild(el);
-        P = { el, name: $('.name', el), role: $('.role', el), mark: $('.mark', el), fill: $('.hp .fill', el), strain: $('.hp .strain', el), sub: $('.sub', el), key: '',
+        P = { el, name: $('.name', el), role: $('.role', el), mark: $('.mark', el), fill: $('.hp .fill', el), strain: $('.hp .strain', el), plate: $('.hp .plating', el), sub: $('.sub', el), key: '',
           ult: $('.ultbar i', el), ultTxt: $('.ultbar b', el), ultReady: null };
         this.panels.set(p.slot, P);
       }
@@ -359,6 +409,8 @@ export class UI {
       let sub;
       if (p.state === 'downed') sub = p.autoRevive > 0 ? 'Second Wind…' : `Down · revive ${Math.floor(p.revive / 1.2)}% · ${Math.ceil(p.downedT / 60)}s`;
       else if (p.state === 'dead') sub = `Respawning in ${Math.ceil(p.respawnT / 60)}s`;
+      else if (p.char === 'ram') sub = ramChips(p) + (vbTier(p) ? `<span class="chip vb">VB ${vbTier(p)}</span>` : '') + commonChips(p);
+      else if (p.char === 'fix') sub = fixChips(p, world) + (vbTier(p) ? `<span class="chip vb">VB ${vbTier(p)}</span>` : '') + commonChips(p);
       else if (p.char === 'nova') {
         const bulwark = `<span class="chip ${p.bulwarkCd === 0 ? 'ready' : ''}">Bulwark ${p.bulwarkCd === 0 ? 'ready' : Math.ceil(p.bulwarkCd / 60) + 's'}</span>`;
         const vb = vbTier(p) ? `<span class="chip vb">VB ${vbTier(p)}</span>` : '';
@@ -378,7 +430,9 @@ export class UI {
         sub = `<span class="res"><i style="width:${p.resolve}%"></i></span>${scarfChip(p)}${scarfCharges(p)}${ranged}` +
           (vbTier(p) ? `<span class="chip vb">VB ${vbTier(p)}</span>` : '') + commonChips(p);
       }
+      if (p.state !== 'downed' && p.state !== 'dead') sub += boostChips(p);
       if (sub !== P.key) { P.sub.innerHTML = sub; P.key = sub; }
+      P.plate.style.width = `${Math.min(100, p.plate / p.maxHp * 100).toFixed(1)}%`;
     }
     for (const [slot, P] of this.panels) if (!seen.has(slot)) { P.el.remove(); this.panels.delete(slot); }
   }
@@ -448,12 +502,16 @@ export class UI {
   updateDebug(world, fps) {
     const d = world.director.usage();
     const lines = [`fps ${fps.toFixed(0)} · tick ${world.tick} · tokens melee ${d.melee}/${d.meleeCap} ranged ${d.ranged}/${d.rangedCap} · cam dist ${world.cam.dist.toFixed(1)}` +
-      (world.ultCast ? ` · ultimate ${world.ultCast.phase} ${world.ultCast.t} ${world.ultCast.name}` : '') + (world.wells.length ? ` · wells ${world.wells.length}` : '')];
+      (world.ultCast ? ` · ultimate ${world.ultCast.phase} ${world.ultCast.t} ${world.ultCast.name}` : '') + (world.wells.length ? ` · wells ${world.wells.length}` : '') +
+      (world.gadgets.length ? ` · gadgets ${world.gadgets.length}` : '') + (world.pickups.length ? ` · power-ups ${world.pickups.length}` : '')];
     for (const p of world.players) {
       lines.push(`P${p.slot + 1} ${p.char} ${p.state}:${p.st} pos ${p.x.toFixed(2)},${p.y.toFixed(2)} v ${p.vx.toFixed(1)},${p.vy.toFixed(1)} ground ${p.onGround ? 1 : 0} wall ${p.wallDir}${p.wallSliding ? ' slide' : ''} vb ${vbTier(p)} air-dash ${p.airDashes} buf j${p.buf.jump} d${p.buf.dash} m${p.buf.melee} p${p.buf.parry}` +
         ` · dashC ${p.dashChargeT} rifle ${p.rifleT}/${p.rifleCd} rocket ${p.rocketT} lock ${p.lockT ? p.lockT.type : '-'}` +
         ` · beam ${p.beam ? p.beam.t : '-'} aegis ${p.aegis ? p.aegis.hp.toFixed(0) : p.aegisCd} over ${p.overcharge.toFixed(0)} pound ${p.pound ? p.pound.phase + p.pound.level : '-'}` +
-        ` · sub ${p.sub} ${p.burstT ? Math.round(p.burstT) : ''} dodge ${p.dodge ? p.dodge.t : p.dodgeCd} ult ${p.ult.toFixed(0)}${p.ultRun ? ' ' + p.ultRun.kind + p.ultRun.t : ''}`);
+        ` · sub ${p.sub} ${p.burstT ? Math.round(p.burstT) : ''} dodge ${p.dodge ? p.dodge.t : p.dodgeCd} ult ${p.ult.toFixed(0)}${p.ultRun ? ' ' + p.ultRun.kind + p.ultRun.t : ''}` +
+        (p.char === 'ram' ? ` · integ ${p.integrity.toFixed(0)}${p.guardBroken ? ' broken' : ''} kin ${p.kinetic.toFixed(0)} rush ${p.rush ? p.rush.level + ':' + p.rush.t + ' carry ' + p.rush.carried.length : '-'} link ${p.link ? 'P' + (p.link.q.slot + 1) + ' ' + p.link.t : '-'}` : '') +
+        (p.char === 'fix' ? ` · scrap ${p.scrap.toFixed(0)} gadget ${p.gadgetSel} power ${p.powerSel} patch ${p.patch && p.state === 'patch' ? (p.patch.target ? 'P' + (p.patch.target.slot + 1) : 'self') : '-'}` : '') +
+        ` · plate ${p.plate.toFixed(0)} oc ${p.overclockT} rate ${(p.ampK || 1).toFixed(2)}`);
     }
     this.debug.textContent = lines.join('\n');
   }

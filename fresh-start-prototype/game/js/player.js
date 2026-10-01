@@ -3,7 +3,7 @@
 import {
   DT, GRAVITY, FALL_MULT, RISE_CUT_MULT, MAX_FALL, FAST_FALL, HIGH_VEL,
   COYOTE, JUMP_BUFFER, ACTION_BUFFER, PARRY_BUFFER, PARRY, CHARS, MOVES, VB, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, SETTINGS,
-  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT,
+  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT, RAM, FIX, PLATE_MAX,
 } from './config.js';
 import { moveBody, hasHeadroom } from './level.js';
 
@@ -42,10 +42,17 @@ export function createPlayer(slot, device, charId, x, y) {
     aegis: null, aegisCd: 0, overcharge: 0, overT: 0, beam: null, slash: null, pound: null,
     sub: 'scatter', subSwCd: 0, subArmed: false, dodge: null, dodgeCd: 0, airDodge: true, airRise: true, stick: [0, 0],
     ult: 0, ultRun: null, chordP: 99, chordF: 99,
+    // RAM: the Rampart's Integrity and stored Kinetic, the guard, the Ram Charge, and his three abilities
+    integrity: RAM.guard.integrity, kinetic: 0, guardT: 99, guardOffT: 99, guardDir: [1, 0], blockT: 99, guardBroken: false,
+    rush: null, wallCd: 0, linkCd: 0, provokeCd: 0, link: null, leap: null, braceT: 0,
+    // Fix: Scrap, the selected gadget and power-up, the Patch Beam, and a tossed power-up waiting for the button
+    scrap: FIX.scrap.start, gadgetSel: 'pylon', powerSel: 'overclock', patch: null, tossArmed: false, rivetQ: 0, rivetT: 0,
+    // Support anyone can carry: Plating (an overshield), Overclock, the Patch Beam's Tune-Up, an Amp Coil's field
+    plate: 0, overclockT: 0, tuneT: 0, ampK: 1, fixRevive: false, padCd: 0,
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
     lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0, lockSuspend: false,
-    buf: { jump: 99, dash: 99, melee: 99, fire: 99, parry: 99, sig: 99 },
+    buf: { jump: 99, dash: 99, melee: 99, fire: 99, parry: 99, sig: 99, mode: 99, sub: 99 },
     downedT: 0, revive: 0, respawnT: 0, secondWind: true,
     lastSafeX: x, lastSafeY: y, offscreenT: 0, vbTierShown: 0,
   };
@@ -61,6 +68,8 @@ export function setCharacter(p, charId) {
   p.fuel = MARKSMAN.boost.fuel; p.thrusting = false; p.rockets = 0; p.rocketT = 0;
   p.rifleT = 0; p.rifleCd = 0; p.dashChargeT = 0; p.overcharge = 0; p.overT = 0; p.beam = null; p.aegis = null;
   p.subArmed = false; p.dodge = null; p.pound = null;
+  p.integrity = RAM.guard.integrity; p.kinetic = 0; p.guardBroken = false; p.rush = null; p.leap = null; p.braceT = 0;
+  p.patch = null; p.tossArmed = false; p.rivetQ = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start);
 }
 
 export function chest(p) { return { x: p.x, y: p.y + p.h * 0.62 }; }
@@ -112,27 +121,39 @@ export function updatePlayer(p, cmd, world) {
   if (cmd.pressed.mode && p.modeCd === 0 && p.state !== 'downed' && p.state !== 'ult') {
     if (p.char === 'echo') cycleScarf(p, world);
     else if (marksman(p)) cycleAttachment(p, world);
+    else if (p.char === 'fix') cycleGadget(p, world);
   }
-  if (cmd.pressed.sub && p.subSwCd === 0 && marksman(p) && p.state !== 'downed' && p.state !== 'ult') cycleSub(p, world);
+  if (cmd.pressed.sub && p.subSwCd === 0 && p.state !== 'downed' && p.state !== 'ult') {
+    if (marksman(p)) cycleSub(p, world);
+    else if (p.char === 'fix') cyclePower(p, world);
+  }
   if (p.hitstop > 0) { p.hitstop--; return; }
   // Both triggers together with a full bar: the ultimate (the world takes over from here)
   if (p.ult >= ULT.max && chordReady(p, cmd) && !world.ultCast && p.state !== 'downed' && p.state !== 'ult') { world.startUlt(p); return; }
 
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
-    'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'burstCd', 'shootT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote', 'aegisCd', 'subSwCd', 'dodgeCd']) if (p[k] > 0) p[k]--;
+    'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'shootT', 'carveT', 'rocketT',
+    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd']) if (p[k] > 0) p[k]--;
+  // Ability cooldowns recharge faster under Fix's boosts (Overclock, Tune-Up, an Amp Coil)
+  const rate = boostRate(p);
+  for (const k of ['aegisCd', 'burstCd', 'wallCd', 'linkCd', 'provokeCd']) if (p[k] > 0) p[k] = Math.max(0, p[k] - rate);
   // Aegis time, and Overcharge draining once it has not grown for a while
   if (p.aegis && --p.aegis.t <= 0) world.endAegis(p, 'expire');
   if (p.overcharge > 0) { if (p.overT > 0) p.overT--; else p.overcharge = Math.max(0, p.overcharge - AEGIS.over.drain); }
   p.postDash = Math.min(99, p.postDash + 1);
   if (p.char === 'echo') tickEcho(p, world, cmd);
+  else if (p.char === 'ram') tickRam(p, world);
+  else if (p.char === 'fix') tickFix(p, world);
   else tickFocus(p, world);
 
   if (p.state === 'downed') { updateDowned(p, cmd, world); return; }
   updateLock(p, cmd, world);
   updateAim(p, cmd, world);
   p.meleeHeldT = cmd.held.melee ? p.meleeHeldT + 1 : 0;
+  // RAM's abilities and Fix's gadgets are instant and work from most states
+  if (p.char === 'ram') ramAbilities(p, world);
+  else if (p.char === 'fix') fixAbilities(p, world);
 
   const wasSliding = p.wallSliding;
   p.wallPrev = wasSliding; p.wallSliding = false;   // set again by wallCling in the states that allow a wall slide
@@ -153,15 +174,22 @@ export function updatePlayer(p, cmd, world) {
     case 'dive': stateDive(p, cmd, world); break;
     case 'pound': statePound(p, cmd, world); break;
     case 'dodge': stateDodge(p, cmd, world); break;
+    case 'guard': stateGuard(p, cmd, world); break;
+    case 'rush': stateRush(p, cmd, world); break;
+    case 'leap': stateLeap(p, cmd, world); break;
+    case 'patch': statePatch(p, cmd, world); break;
     case 'ult': world.ultStep(p, cmd); break;
   }
   if (p.state !== 'ult') handleFire(p, cmd, world);
+  if (p.tossArmed) fixToss(p, cmd, world);
   // Boosters only run in the normal state; anything else (dash, hitstun, a burst...) cuts them
   if (p.thrusting && (p.state !== 'normal' || p.onGround)) { p.thrusting = false; world.emit('thrustOff', { p }); }
   if (p.wallSliding !== wasSliding) world.emit('wallSlide', { p, on: p.wallSliding, dir: p.wallSliding ? p.wallDir : p.lastWallDir });
 
   const wasGround = p.onGround, fallV = p.vy;
-  if (!['dash', 'zip'].includes(p.state)) p.h = (p.crouch || p.state === 'slide' || p.state === 'dashCharge') ? CHARS[p.char].crouchH : CHARS[p.char].height;
+  // (RAM stays standing, braced, while he charges a Battering Ram)
+  const low = p.crouch || p.state === 'slide' || (p.state === 'dashCharge' && p.char !== 'ram');
+  if (!['dash', 'zip'].includes(p.state)) p.h = low ? CHARS[p.char].crouchH : CHARS[p.char].height;
   moveBody(p, DT);
   if (p.onGround) {
     p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airDodge = true; p.airRise = true;
@@ -237,8 +265,9 @@ function tryDash(p, cmd, world) {
   return true;
 }
 
-// Level 0 is an ordinary dash; 1-3 come from a charged release (DASH_CHARGE)
+// Level 0 is an ordinary dash; 1-3 come from a charged release (DASH_CHARGE). RAM's dash is the Ram Charge.
 function startDash(p, d, world, level) {
+  if (p.char === 'ram') { startRush(p, world, level, d); return; }
   const c = CHARS[p.char], D = DASH_CHARGE, L = level - 1;
   p.buf.dash = 99; p.dashCd = c.dash.cooldown;
   if (d[0] !== 0) p.facing = sign(d[0]);
@@ -253,11 +282,12 @@ function startDash(p, d, world, level) {
 // a tap (released before DASH_CHARGE.tap) is an ordinary dash toward where you face.
 function stateDashCharge(p, cmd, world) {
   const D = DASH_CHARGE, C = D.charge;
-  p.dashChargeT++;
+  // The tap window counts in real ticks; the charge itself grows faster under Fix's boosts
+  const t0 = p.dashChargeT; p.dashChargeT += p.dashChargeT < D.tap ? 1 : boostRate(p);
   // For the first few ticks nothing changes, so a quick tap reads as an ordinary dash; then he plants
   if (p.dashChargeT >= D.tap) p.vx = approach(p.vx, 0, 70 * DT);
   applyGravity(p, cmd);
-  const lv = C.indexOf(p.dashChargeT); if (lv >= 0) world.emit('dashLevel', { p, level: lv + 1 });
+  crossed(t0, p.dashChargeT, C, level => world.emit('dashLevel', { p, level }));
   if (Math.abs(cmd.mx) > 0.3) p.facing = sign(cmd.mx);
   if (tryParry(p, world)) { p.dashChargeT = 0; return; }
   if (p.buf.jump <= JUMP_BUFFER || !p.onGround) {
@@ -275,6 +305,8 @@ function stateDashCharge(p, cmd, world) {
 function tryParry(p, world) {
   if (p.buf.parry > PARRY_BUFFER) return false;
   if (marksman(p)) return tryDodge(p, world);   // Nova's Marksman kit dodges instead (Echo keeps his parry and deflect)
+  if (p.char === 'ram') return startGuard(p, world);   // RAM raises the Rampart
+  if (p.char === 'fix') return startPatch(p, world);   // Fix runs the Patch Beam
   p.buf.parry = 99; p.parryT = 0; p.parryResult = null;
   setState(p, 'parry'); world.emit('parryStart', { p });
   return true;
@@ -282,6 +314,7 @@ function tryParry(p, world) {
 
 function trySignature(p, cmd, world) {
   if (p.buf.sig > ACTION_BUFFER) return false;
+  if (p.char === 'ram' || p.char === 'fix') return false;   // (their abilities: ramAbilities, fixAbilities)
   if (p.char === 'nova') {
     if (marksman(p)) {
       // Marksman kit: the hard-light Aegis. Instant: no state change, he keeps moving and shooting.
@@ -325,14 +358,16 @@ function tryMelee(p, cmd, world) {
   // a Velocity Break; a dash, slide, launch or zip still does.
   const down = cmd.my < -0.55 || (p.aimFree && p.aimY < POUND.aimDown);
   const moving = p.state === 'dash' || p.state === 'slide' || p.postDash <= 6 || p.boostT > 0 || p.launchedT > 0 || p.zipArriveT > 0;
-  if (!p.onGround && down && !moving && (p.char === 'nova' || hunter)) { p.buf.melee = 99; startPound(p, world); return true; }
+  if (!p.onGround && down && !moving && (p.char !== 'echo' || hunter)) { p.buf.melee = 99; startPound(p, world); return true; }
   const tier = vbTier(p);
   if (tier > 0) { velocityBreak(p, tier, world); return true; }
-  // Nova's rising attack, the Solar Uppercut (up + melee; once per airtime in the air)
-  if (p.char === 'nova' && cmd.my > 0.55 && (p.onGround || p.airRise)) {
+  // Rising attacks (up + melee; once per airtime in the air): Nova's Solar Uppercut, RAM's Hydraulic Uplift,
+  // Fix's Jack-Up (Echo's Rising Glaive is below)
+  if (p.char !== 'echo' && cmd.my > 0.55 && (p.onGround || p.airRise)) {
     p.buf.melee = 99; if (!p.onGround) p.airRise = false;
-    startMove(p, 'nova_rise', world); return true;
+    startMove(p, p.char + '_rise', world); return true;
   }
+  if (p.char === 'fix') return fixMelee(p, world);
   if (marksman(p)) {
     // Marksman kit: close to an enemy, his bracer combo; otherwise his secondary weapon (it cancels whatever
     // it interrupts)
@@ -350,7 +385,8 @@ function tryMelee(p, cmd, world) {
     return true;
   }
   let id;
-  if (p.char === 'nova') id = p.onGround ? 'nova_jab1' : 'nova_air';
+  if (p.char === 'ram') id = p.onGround ? 'ram_b1' : 'ram_air';
+  else if (p.char === 'nova') id = p.onGround ? 'nova_jab1' : 'nova_air';
   else if (!p.onGround) id = hunter ? (cmd.my > 0.55 ? 'echo_spin' : 'echo_ab1') : 'echo_air1';
   else if (cmd.my > 0.55) id = 'echo_rise';   // Echo's rising attack in either kit
   else id = hunter ? 'echo_b1' : 'echo_g1';
@@ -500,8 +536,12 @@ function applyGravity(p, cmd, mult = 1) {
   if (p.vy < -cap) p.vy = -cap;
 }
 
+const CHARGED = { nova: 'nova_brace', echo: 'echo_charged', ram: 'ram_slam', fix: 'fix_slam' };
 function stateNormal(p, cmd, world) {
   const c = CHARS[p.char];
+  // RAM raises the Rampart, and Fix runs the Patch Beam, for as long as the button is held
+  if (cmd.held.parry && p.char === 'ram' && !p.guardBroken) { startGuard(p, world); stateGuard(p, cmd, world); return; }
+  if (cmd.held.parry && p.char === 'fix') { startPatch(p, world); statePatch(p, cmd, world); return; }
   if (p.onGround && cmd.my < -0.55) p.crouch = true;
   else if (p.crouch && hasHeadroom(p.x, p.y, p.w, c.height)) p.crouch = false;
 
@@ -515,7 +555,8 @@ function stateNormal(p, cmd, world) {
   // Charged melee: release after holding
   if (p.meleeCharged && !cmd.held.melee) {
     p.meleeCharged = false;
-    startMove(p, p.char === 'nova' ? 'nova_brace' : 'echo_charged', world);
+    p.tossArmed = false;
+    startMove(p, CHARGED[p.char], world);
   }
   if (p.meleeHeldT >= 30 && p.state === 'normal' && !p.meleeCharged) { p.meleeCharged = true; world.emit('meleeCharged', { p }); }
 }
@@ -665,7 +706,8 @@ function statePound(p, cmd, world) {
     p.vx = approach(p.vx, 0, 50 * DT); p.vy = approach(p.vy, -P.hang, 80 * DT); p.fastFall = false;
     if (!cmd.held.melee) S.held = false;
     if (S.held) {
-      const lv = S.t >= P.charge[2] ? 3 : S.t >= P.charge[1] ? 2 : S.t >= P.charge[0] ? 1 : 0;
+      S.c = (S.c || 0) + boostRate(p);
+      const lv = S.c >= P.charge[2] ? 3 : S.c >= P.charge[1] ? 2 : S.c >= P.charge[0] ? 1 : 0;
       if (lv > S.level) { S.level = lv; world.emit('poundLevel', { p, level: lv }); }
     }
     if (tryParry(p, world) || tryDash(p, cmd, world)) { p.pound = null; return; }
@@ -698,10 +740,13 @@ function statePound(p, cmd, world) {
 // The scatter blast: every enemy in reach is hit and thrown outward, away from the impact
 function landPound(p, world) {
   const P = POUND, S = p.pound, L = P.land[S.level], fall = Math.max(0, S.y0 - p.y);
-  const r = L.r + P.fallBonus * Math.min(1, fall / 12);
+  // RAM's Meteor Drop lands harder and wider; Fix's sends out a repair pulse as well
+  const K = p.char === 'ram' ? RAM.pound : 1;
+  const r = (L.r + P.fallBonus * Math.min(1, fall / 12)) * K;
   const inst = world.newInstance();
-  world.spawnHitbox({ owner: p, team: 'p', x0: p.x - r, x1: p.x + r, y0: p.y - 0.3, y1: p.y + 1.6 + 0.3 * S.level, dmg: L.dmg, poise: L.poise,
-    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak, instance: inst, scatter: true });
+  world.spawnHitbox({ owner: p, team: 'p', x0: p.x - r, x1: p.x + r, y0: p.y - 0.3, y1: p.y + 1.6 + 0.3 * S.level, dmg: L.dmg * K, poise: L.poise * K,
+    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak || K > 1, instance: inst, scatter: true });
+  if (p.char === 'fix') world.repairPulse(p, p.x, p.y, r + 1, FIX.poundHeal[S.level]);
   S.phase = 'land'; S.t = 0; S.inst = inst; S.hit = false;
   p.vx = 0; p.hitConfirm = false; p.hitstop = 2 + S.level;   // a beat of impact freeze, longer the bigger the pound
   world.emit('poundLand', { p, x: p.x, y: p.y, level: S.level, r, fall });
@@ -714,8 +759,14 @@ function stateAttack(p, cmd, world) {
   if (m.rise && t === activeStart) { p.vy = m.rise * (p.riseAir ? m.airRise || 1 : 1); p.onGround = false; p.vx = p.facing * (m.fist ? 1.5 : 2.5); p.dashCarry = true; p.fastFall = false; }
   if (m.riseBlast && t === activeEnd) {
     // The Solar Uppercut's flare: a burst of light off the fist at the top of the climb
-    world.explode({ owner: p, x: p.x + p.facing * 0.35, y: p.y + p.h + 0.55, spec: { ...m.riseBlast, armorBreak: false }, kind: 'riseBlast', level: 1 });
+    world.explode({ owner: p, x: p.x + p.facing * 0.35, y: p.y + p.h + 0.55, spec: { ...m.riseBlast, armorBreak: false }, kind: m.blastKind || 'riseBlast', level: 1 });
   }
+  if (t === activeStart) {
+    if (m.jack && !p.riseAir) world.placePad(p);           // Jack-Up: the jack stays behind as a spring pad
+    if (m.quake) world.spawnQuake(p, m.quake);              // Seismic Slam: shockwaves both ways along the floor
+    if (m.spark) world.sparkRing(p, m.spark);               // Torque Slam: a ring of sparks
+  }
+  if (m.sweep && t >= activeStart && t < activeEnd) world.sweepShots(p);   // Hydraulic Uplift: shots over him are swept away
   // On the ground an attack keeps pressing into the floor, so it never reads as airborne mid-swing
   if (p.onGround) { p.vx *= 0.82; p.vy = -0.5; }
   else { applyGravity(p, cmd, m.hoverAll ?? (m.hover && p.hitConfirm ? 0.25 : 1)); wallCling(p, cmd, false); }
@@ -742,7 +793,8 @@ function stateAttack(p, cmd, world) {
     const b = m.box, cx = m.spin ? p.x : p.x + p.facing * b.fx;
     world.spawnHitbox({ owner: p, team: 'p', x0: cx - b.w / 2, x1: cx + b.w / 2, y0: p.y + b.y - b.h / 2, y1: p.y + b.y + b.h / 2,
       dmg: m.dmg, poise: m.poise, kb: [p.facing * m.kb[0], m.kb[1]], armorBreak: !!m.armorBreak, heavy: !!m.heavy,
-      launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x });
+      launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x,
+      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield });
   }
   if (m.launcher && t === activeEnd && p.hitConfirm) p.vy = 9;   // Echo hops after a launched enemy
   if (p.buf.melee <= ACTION_BUFFER && m.next && t >= activeStart) p.queued = m.next;
@@ -865,13 +917,15 @@ function canFire(p) { return ['normal', 'dash', 'slide', 'lash', 'dodge'].includ
 
 function handleFire(p, cmd, world) {
   if (marksman(p)) { fireMarksman(p, cmd, world); return; }
+  if (p.char === 'ram') { fireRam(p, cmd, world); return; }
+  if (p.char === 'fix') { fireFix(p, cmd, world); return; }
   if (p.char === 'nova') {
     if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) {
       world.fireShot(p, 0); p.fireCd = NOVA.shotCd;
     }
     if (cmd.held.fire && canFire(p)) {
-      p.chargeT++;
-      if (p.chargeT === NOVA.charge1 || p.chargeT === NOVA.charge2) world.emit('chargeLevel', { p, level: p.chargeT === NOVA.charge1 ? 1 : 2 });
+      const t0 = p.chargeT; p.chargeT += boostRate(p);
+      crossed(t0, p.chargeT, [NOVA.charge1, NOVA.charge2], level => world.emit('chargeLevel', { p, level }));
     }
     if (cmd.released.fire || (!cmd.held.fire && p.chargeT > 0)) {
       if (p.chargeT >= NOVA.charge2) world.fireShot(p, 2);
@@ -886,9 +940,10 @@ function handleFire(p, cmd, world) {
     const R = HUNTER.rifle;
     if (cmd.pressed.fire) p.plantPress = p.onGround && cmd.my < -0.55;   // crouched when pressed: plant on release
     if (cmd.held.fire && canFire(p)) {
-      p.rifleT++;
-      if (p.rifleT === R.raise) world.emit('rifleRaise', { p });
-      else if (p.rifleT === R.raise + R.focus) world.emit('rifleFocus', { p });   // full focus
+      // Raising the rifle takes real time; the focus builds faster under Fix's boosts
+      const t0 = p.rifleT; p.rifleT += p.rifleT < R.raise ? 1 : boostRate(p);
+      if (t0 < R.raise && p.rifleT >= R.raise) world.emit('rifleRaise', { p });
+      else if (t0 < R.raise + R.focus && p.rifleT >= R.raise + R.focus) world.emit('rifleFocus', { p });   // full focus
     }
     if (!cmd.held.fire && p.rifleT > 0) {
       const t = p.rifleT; p.rifleT = 0;
@@ -933,7 +988,7 @@ function crossed(t0, t1, marks, fn) { marks.forEach((m, i) => { if (t0 < m && t1
 
 function fireMarksman(p, cmd, world) {
   const M = MARKSMAN, C = M.charge, B = M.burst, L4 = M.beam.at;
-  const rate = p.overcharge > 0 ? AEGIS.over.charge : 1;
+  const rate = (p.overcharge > 0 ? AEGIS.over.charge : 1) * boostRate(p);
   if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) { world.fireShot(p, 0); p.fireCd = NOVA.shotCd; }
   if (cmd.held.fire && canFire(p)) {
     const t0 = p.chargeT; p.chargeT += rate;
@@ -1013,7 +1068,7 @@ export const chordReady = (p, cmd) => !!cmd.pressed.ult ||
   (!!cmd.held.parry && !!cmd.held.fire && p.chordP <= ULT.chord && p.chordF <= ULT.chord);
 export function gainUlt(p, amount, world) {
   if (!p || p.kind !== 'player' || !(amount > 0) || p.state === 'ult') return;
-  const was = p.ult; p.ult = Math.min(ULT.max, p.ult + amount);
+  const was = p.ult; p.ult = Math.min(ULT.max, p.ult + amount * boostRate(p));
   if (was < ULT.max && p.ult >= ULT.max) world.emit('ultReady', { p });
 }
 
@@ -1063,6 +1118,8 @@ function stageOf(t, C, win, l4 = Infinity) {
 }
 export function chargeStage(p) {
   if (marksman(p)) return stageOf(p.chargeT, MARKSMAN.charge, MARKSMAN.perfectWindow, MARKSMAN.beam.at);
+  if (p.char === 'ram') return stageOf(p.chargeT, RAM.cannon.charge, 0);
+  if (p.char === 'fix') return stageOf(p.chargeT, FIX.rivet.charge, 0);
   // Sentinel kit: two levels (lance, rail) and no Perfect Release
   return p.chargeT <= 0 ? '' : p.chargeT < NOVA.charge1 ? 'charging' : p.chargeT < NOVA.charge2 ? 'L1' : 'L2';
 }
@@ -1107,8 +1164,9 @@ function tickFocus(p, world) {
 // ---- Echo: Resolve and Rally ------------------------------------------------------------
 
 function tickEcho(p, world, cmd) {
+  const rate = boostRate(p);
   if (p.snares < HUNTER.snareCharges) {
-    p.snareRecharge--;
+    p.snareRecharge -= rate;
     if (p.snareRecharge <= 0) { p.snares++; p.snareRecharge = p.snares < HUNTER.snareCharges ? HUNTER.snareRecharge : 0; }
   }
   if (p.leash) {
@@ -1117,7 +1175,7 @@ function tickEcho(p, world, cmd) {
     if (!cmd.held.sig || L.t > HUNTER.leashTicks || e.dead || e.state !== 'caught' || ['hitstun', 'downed', 'dead'].includes(p.state)) world.releaseLeash(p);
   }
   if (p.lashCharges < ECHO.lashCharges) {
-    p.lashRecharge--;
+    p.lashRecharge -= rate;
     if (p.lashRecharge <= 0) { p.lashCharges++; p.lashRecharge = p.lashCharges < ECHO.lashCharges ? ECHO.lashRecharge : 0; }
   }
   tickScarf(p, world);
@@ -1129,12 +1187,14 @@ function tickEcho(p, world, cmd) {
 
 export function addResolve(p, amount) {
   if (p.char !== 'echo') return;
+  amount *= boostRate(p);
   if (p.scarfMode === 'flare') amount *= SCARF.flareResolve;
   p.resolve = Math.min(100, p.resolve + amount);
 }
 
 // Called when this player deals damage (Rally recovery + ranged refills).
 export function onDealtDamage(p, dmg, isMelee) {
+  if (p.char === 'fix') { p.scrap = Math.min(FIX.scrap.max, p.scrap + dmg * FIX.scrap.perDmg); return; }
   if (p.char !== 'echo') return;
   if (p.strain > 0) {
     const heal = Math.min(p.strain, dmg * 3);
@@ -1184,5 +1244,201 @@ function tickScarf(p, world) {
     else if (!p.veiled && ++p.veilCharge >= SCARF.veilFade) { p.veiled = true; world.emit('veilOn', { p }); }
   } else if (p.scarfMode === 'flare' && p.targetedBy > 0) {
     p.resolve = Math.min(100, p.resolve + SCARF.flareTrickle * Math.min(3, p.targetedBy) / 60);
+  }
+}
+
+// ---- Fix's boosts on anyone -----------------------------------------------------------------
+// How much faster this player charges, recharges and fills their bars right now: Overclock (a power-up),
+// Tune-Up (while Fix's Patch Beam holds them) and an Amp Coil's field multiply, up to FIX.maxRate
+export function boostRate(p) {
+  let k = 1;
+  if (p.overclockT > 0) k *= FIX.power.overclock.rate;
+  if (p.tuneT > 0) k *= FIX.beam.tune;
+  if (p.ampK > 1) k *= p.ampK;
+  return Math.min(FIX.maxRate, k);
+}
+// Plating: an overshield that takes damage before health
+// (never past `cap`, and never taking away Plating someone already has above it)
+export function addPlate(p, amount, cap = PLATE_MAX) { if (p.plate < cap) p.plate = Math.min(cap, p.plate + amount); }
+
+// ---- RAM: the Rampart ----------------------------------------------------------------------
+
+function tickRam(p, world) {
+  const G = RAM.guard;
+  p.guardOffT = Math.min(99, p.guardOffT + 1); p.blockT = Math.min(999, p.blockT + 1);
+  // Integrity grows back once the shield has gone a while without blocking, and never while it is up
+  if (p.state !== 'guard' && p.blockT > G.delay && p.integrity < G.integrity) {
+    p.integrity = Math.min(G.integrity, p.integrity + G.regen / 60 * boostRate(p));
+    if (p.guardBroken && p.integrity >= G.recover) { p.guardBroken = false; world.emit('rampartReady', { p }); }
+  }
+  if (p.link) world.tickLink(p);
+}
+
+function startGuard(p, world) {
+  if (p.guardBroken) return false;
+  p.buf.parry = 99; p.crouch = false;
+  // Raised again right after it came down (a jump, a shove): no fresh Perfect Guard window, and no new sound
+  const again = p.guardOffT < 12;
+  p.guardT = again ? RAM.guard.perfect + 1 : 0;
+  guardAim(p);
+  setState(p, 'guard');
+  if (!again) world.emit('guardOn', { p });
+  return true;
+}
+// The Rampart faces where he aims: from straight ahead up to overhead, never lower than RAM.guard.minNy
+function guardAim(p) {
+  let ax = p.aimX; const ay = Math.max(RAM.guard.minNy, p.aimY);
+  if (Math.abs(ax) < 0.15) ax = (sign(ax) || p.facing) * 0.15;   // overhead still leans the way he faces
+  const m = Math.hypot(ax, ay) || 1;
+  p.guardDir = [ax / m, ay / m]; p.facing = sign(ax);
+}
+function stateGuard(p, cmd, world) {
+  const G = RAM.guard, c = CHARS.ram;
+  p.guardT++;
+  if (!cmd.held.parry || p.guardBroken) { p.guardOffT = 0; setState(p, 'normal'); world.emit('guardOff', { p }); return; }
+  guardAim(p);
+  // Behind the shield he walks slowly either way, still facing out
+  if (p.onGround) p.vx = approach(p.vx, cmd.mx * c.run * G.walk, c.accelG * DT);
+  else p.vx = approach(p.vx, cmd.mx * c.run * 0.6, c.accelA * DT);
+  applyGravity(p, cmd);
+  // Out of the guard: a shield shove (melee) or the Ram Charge (dash). A jump keeps the shield up.
+  if (p.buf.melee <= ACTION_BUFFER) { p.buf.melee = 99; p.guardOffT = 0; world.emit('guardOff', { p }); startMove(p, 'ram_bash', world); return; }
+  if (tryDash(p, cmd, world)) { p.guardOffT = 0; world.emit('guardOff', { p }); return; }
+  if (tryJump(p, cmd, world)) p.state = 'guard';
+}
+
+// RAM's abilities, usable from most states: Bulwark Wall (suit ability), Guardian Link (mode), Provoke (LB)
+function ramAbilities(p, world) {
+  if (['hitstun', 'ult', 'leap', 'dashCharge'].includes(p.state)) return;
+  if (p.buf.sig <= ACTION_BUFFER) { p.buf.sig = 99; if (p.wallCd <= 0) world.raiseWall(p); else world.emit('notReady', { p, what: 'wall' }); }
+  if (p.buf.mode <= ACTION_BUFFER) { p.buf.mode = 99; if (p.linkCd <= 0) world.startLink(p); else world.emit('notReady', { p, what: 'link' }); }
+  if (p.buf.sub <= ACTION_BUFFER) { p.buf.sub = 99; if (p.provokeCd <= 0) world.provoke(p); else world.emit('notReady', { p, what: 'provoke' }); }
+}
+
+// The Ram Charge (an ordinary dash, level 0) and the Battering Ram (a charged dash, levels 1-3): straight
+// along the floor (or level through the air), the way he points; the world scoops up what is in front
+// (world.ramPlow) and ends it at a wall or on something it can't move
+function startRush(p, world, level, d) {
+  const R = RAM.rush, dir = d && Math.abs(d[0]) > 0.2 ? sign(d[0]) : p.facing;
+  p.buf.dash = 99; p.dashCd = CHARS.ram.dash.cooldown; p.facing = dir;
+  p.dashChargeT = 0; p.crouch = false; p.fastFall = false; p.dash = null;
+  p.rush = { dx: dir, t: 0, level, air: !p.onGround, ticks: R.ticks[level], speed: R.speed[level], carried: [], hit: new Set() };
+  setState(p, 'rush'); world.emit('rush', { p, level, dx: dir });
+}
+function stateRush(p, cmd, world) {
+  const R = RAM.rush, r = p.rush;
+  if (!r) { setState(p, 'normal'); return; }
+  r.t++;
+  p.vx = r.dx * r.speed * (r.t > r.ticks - 3 ? 0.8 : 1);
+  if (r.air) p.vy = 0; else applyGravity(p, cmd);   // run off a ledge and he falls, still charging
+  // A jump out of a grounded charge carries its speed
+  if (!r.air && p.buf.jump <= JUMP_BUFFER && (p.onGround || p.coyote > 0)) {
+    world.endRush(p, 'jump');
+    p.vy = CHARS.ram.jumpV; p.vx = r.dx * Math.min(r.speed, 16) * 0.85; p.dashCarry = true; p.onGround = false; p.coyote = 0; p.buf.jump = 99;
+    setState(p, 'normal'); world.emit('jump', { p, dashJump: true });
+    return;
+  }
+  if (r.t >= r.ticks) { world.endRush(p, 'done'); p.vx = r.dx * r.speed * R.keep; p.postDash = 0; setState(p, 'normal'); }
+}
+
+// Guardian Link's leap to a teammate's side: a single bound, steered all the way to where they are now
+function stateLeap(p, cmd, world) {
+  const L = p.leap;
+  if (!L) { setState(p, 'normal'); return; }
+  L.t++;
+  const q = L.q, ok = q && world.players.includes(q) && q.state !== 'dead';
+  if (ok) { L.tx = q.x - L.side * (q.w / 2 + p.w / 2 + 0.25); L.ty = q.y; }
+  const left = Math.max(1, RAM.link.leapTicks - L.t) * DT;
+  p.vx = Math.max(-26, Math.min(26, (L.tx - p.x) / left));
+  p.vy -= GRAVITY * DT; if (p.vy < -MAX_FALL * 1.4) p.vy = -MAX_FALL * 1.4;
+  p.facing = sign(L.tx - p.x) || p.facing; p.fastFall = false;
+  if ((p.onGround && L.t > 4) || L.t > RAM.link.leapTicks + 30) world.landLeap(p);
+}
+
+// The cannon: a tap fires a slug at once; holding charges a Breach Shot, fired when let go. While guarding,
+// fire is the Kinetic Release instead.
+function fireRam(p, cmd, world) {
+  const C = RAM.cannon;
+  if (p.state === 'guard') {
+    if (cmd.pressed.fire && p.kinetic >= RAM.release.min) world.kineticRelease(p);
+    else if (cmd.pressed.fire) world.emit('notReady', { p, what: 'kinetic' });
+    p.chargeT = 0; return;
+  }
+  if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) { world.fireSlug(p, 0); p.fireCd = C.cd; }
+  if (cmd.held.fire && canFire(p)) {
+    const t0 = p.chargeT; p.chargeT += boostRate(p);
+    crossed(t0, p.chargeT, C.charge, level => world.emit('chargeLevel', { p, level }));
+  }
+  if (!cmd.held.fire && p.chargeT > 0) {
+    const level = levelOf(p.chargeT, C.charge); p.chargeT = 0;
+    if (level && canFire(p)) world.fireSlug(p, level);
+  }
+}
+
+// ---- Fix: gadgets, power-ups, the Patch Beam and the Rivet Gun ---------------------------------
+
+function tickFix(p, world) {
+  const S = FIX.scrap;
+  if (p.scrap < S.max) p.scrap = Math.min(S.max, p.scrap + S.regen / 60 * boostRate(p));
+}
+function fixAbilities(p, world) {
+  if (['hitstun', 'ult', 'dashCharge'].includes(p.state)) return;
+  if (p.buf.sig <= ACTION_BUFFER) { p.buf.sig = 99; world.deployGadget(p); }
+}
+function cycleGadget(p, world) {
+  const G = FIX.gadgets; p.gadgetSel = G[(G.indexOf(p.gadgetSel) + 1) % G.length]; p.modeCd = SUB.switchCd;
+  world.emit('gadgetSelect', { p, kind: p.gadgetSel });
+}
+function cyclePower(p, world) {
+  const P = FIX.powers; p.powerSel = P[(P.indexOf(p.powerSel) + 1) % P.length]; p.subSwCd = SUB.switchCd;
+  world.emit('powerSelect', { p, kind: p.powerSel });
+}
+// Melee: close to an enemy or one of her gadgets it is the wrench (a hit on a gadget upgrades it). Otherwise
+// the press readies a power-up: it is tossed when the button comes up, unless it is held on into the Torque
+// Slam. Without the Scrap for one it is the wrench anyway.
+function fixMelee(p, world) {
+  p.buf.melee = 99;
+  if (meleeTarget(p, world) || world.gadgetNear(p) || p.scrap < FIX.power.cost) { startMove(p, p.onGround ? 'fix_w1' : 'fix_air', world); return true; }
+  p.tossArmed = true; p.tossT = 0;
+  return true;
+}
+function fixToss(p, cmd, world) {
+  p.tossT++;
+  if (p.state === 'hitstun' || p.state === 'downed' || p.state === 'ult' || p.meleeHeldT >= 30) { p.tossArmed = false; return; }
+  if (!cmd.held.melee) { p.tossArmed = false; world.tossPower(p); }
+}
+
+function startPatch(p, world) {
+  p.buf.parry = 99; p.crouch = false; p.chargeT = 0; p.rivetQ = 0; p.tossArmed = false;
+  const again = p.patch && p.patchOffT !== undefined && world.tick - p.patchOffT < 12;
+  p.patch = { target: world.patchTarget(p, again ? p.patch.target : null), t: 0, self: false };
+  setState(p, 'patch');
+  if (!again) world.emit('patchOn', { p, q: p.patch.target });
+  return true;
+}
+function statePatch(p, cmd, world) {
+  if (!cmd.held.parry || !p.patch) { p.patchOffT = world.tick; setState(p, 'normal'); world.emit('patchOff', { p }); return; }
+  const q = p.patch.target;
+  horizontalControl(p, cmd, world, FIX.beam.slow);
+  if (q && Math.abs(cmd.mx) < 0.1) p.facing = sign(q.x - p.x) || p.facing;   // standing still she turns to whoever she patches
+  applyGravity(p, cmd);
+  if (tryDash(p, cmd, world)) { p.patchOffT = world.tick; world.emit('patchOff', { p }); return; }
+  if (tryJump(p, cmd, world)) p.state = 'patch';   // she keeps the beam on through a jump
+  world.patchTick(p);
+}
+
+// The Rivet Gun: a tap fires a burst of rivets; holding charges a Hot Rivet, fired when let go
+function fireFix(p, cmd, world) {
+  const R = FIX.rivet;
+  if (p.state === 'patch') { p.chargeT = 0; p.rivetQ = 0; return; }   // the beam takes both hands
+  if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) { p.rivetQ = R.n; p.rivetT = 0; p.fireCd = R.cd; }
+  if (p.rivetQ > 0 && --p.rivetT <= 0) { if (canFire(p)) world.fireRivet(p, R.n - p.rivetQ); p.rivetQ--; p.rivetT = R.every; }
+  if (cmd.held.fire && canFire(p)) {
+    const t0 = p.chargeT; p.chargeT += boostRate(p);
+    crossed(t0, p.chargeT, R.charge, level => world.emit('chargeLevel', { p, level }));
+  }
+  if (!cmd.held.fire && p.chargeT > 0) {
+    const level = levelOf(p.chargeT, R.charge); p.chargeT = 0;
+    if (level && canFire(p)) world.fireHotRivet(p, level);
   }
 }

@@ -1,0 +1,330 @@
+// RAM's effects. The Rampart's hard-light pane where the sim's shield stands (it flares when it blocks, flickers
+// and cracks as its Integrity runs low, and shatters when it breaks); the Bulwark Wall; the Ram Charge's
+// hard-light wedge, streaks and dust; the Guardian Link's tether; the Kinetic Release's cone of force; the
+// Hydraulic Uplift's jets; Provoke's roar; and Siege Breaker's colossal ram's head. Presentation only: reads the
+// sim, never changes it.
+import * as THREE from 'three';
+import { CHARS, RAM, ULT } from './config.js';
+import { toWorld, planeDir } from './space.js';
+import { pathFrame } from './level.js';
+import { chest } from './player.js';
+import { Strip } from './beamfx.js';
+
+const BLUE = CHARS.ram.energy, PALE = '#cfe6ff', WHITE = '#ffffff';
+
+function canvasTex(size, draw) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+// Hard light: a hex lattice that is brightest at its rim; `cracks` lines run across it (shown as it weakens)
+const hexTex = cracks => canvasTex(256, (g, s) => {
+  const grad = g.createLinearGradient(0, 0, s, 0);
+  grad.addColorStop(0, 'rgba(255,255,255,0.95)'); grad.addColorStop(0.18, 'rgba(255,255,255,0.28)'); grad.addColorStop(0.82, 'rgba(255,255,255,0.28)'); grad.addColorStop(1, 'rgba(255,255,255,0.95)');
+  g.fillStyle = grad; g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 2;
+  const r = s / 10;
+  for (let row = -1; row < 12; row++) for (let col = -1; col < 8; col++) {
+    const cx = col * r * 1.75 + (row % 2 ? r * 0.87 : 0), cy = row * r * 1.5;
+    g.beginPath(); for (let i = 0; i <= 6; i++) { const a = Math.PI / 3 * i + Math.PI / 6; g.lineTo(cx + Math.cos(a) * r * 0.95, cy + Math.sin(a) * r * 0.95); } g.stroke();
+  }
+  if (cracks) {
+    g.strokeStyle = 'rgba(255,255,255,1)'; g.lineWidth = 3;
+    for (let k = 0; k < 7; k++) {
+      let x = s * (0.2 + Math.random() * 0.6), y = s * Math.random(); g.beginPath(); g.moveTo(x, y);
+      for (let i = 0; i < 6; i++) { x += (Math.random() - 0.5) * s * 0.25; y += (Math.random() - 0.5) * s * 0.3; g.lineTo(x, y); }
+      g.stroke();
+    }
+  }
+});
+
+export class RamFX {
+  constructor(fx) {
+    this.fx = fx; this.scene = fx.scene; this.t = 0;
+    this.tex = { hex: hexTex(false), cracked: hexTex(true) };
+    for (const k in this.tex) { this.tex[k].wrapS = this.tex[k].wrapT = THREE.RepeatWrapping; }
+    // Shared materials (one set of shaders however many RAMs and walls there are)
+    const plane = (map, color, op) => new THREE.MeshBasicMaterial({ map, color, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    this.mat = { pane: plane(this.tex.hex, BLUE, 0.6), crack: plane(this.tex.cracked, PALE, 0.0), wall: plane(this.tex.hex, BLUE, 0.55), wallCrack: plane(this.tex.cracked, PALE, 0),
+      wedge: new THREE.MeshBasicMaterial({ color: new THREE.Color(BLUE).multiplyScalar(1.3), transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+      edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(PALE).multiplyScalar(1.6), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }) };
+    this.panes = new Map(); this.walls = new Map(); this.wedges = new Map(); this.links = new Map(); this.heads = new Map(); this.ghostTick = new Map();
+    this.v = new THREE.Vector3(); this.v2 = new THREE.Vector3(); this.m4 = new THREE.Matrix4();
+  }
+
+  // A camera-facing quad along a sim-plane direction: `len` m along (tx, ty), `wid` m across it, centred at (x, y)
+  place(mesh, x, y, tx, ty, depth = 0.3) {
+    const T = planeDir(x, tx, ty, this.v).normalize(), f = pathFrame(x), Z = this.v2.set(f.nx, 0, f.nz).normalize();
+    const X = new THREE.Vector3().crossVectors(T, Z).normalize();
+    this.m4.makeBasis(X, T, Z); mesh.quaternion.setFromRotationMatrix(this.m4);
+    toWorld(x, y, depth, mesh.position);
+  }
+  paneOf(p) {
+    let P = this.panes.get(p); if (P) return P;
+    const g = new THREE.PlaneGeometry(1, 1);
+    P = { face: new THREE.Mesh(g, this.mat.pane), crack: new THREE.Mesh(g, this.mat.crack), rim: new THREE.Mesh(g, this.mat.edge), flash: 0, k: 0 };
+    for (const m of [P.face, P.crack, P.rim]) { m.visible = false; m.renderOrder = 5; this.scene.add(m); }
+    this.panes.set(p, P); return P;
+  }
+
+  onEvent(ev) {
+    const F = this.fx, p = ev.p;
+    switch (ev.type) {
+      case 'guardOn': { const c = chest(p); F.sprite(c.x + p.guardDir[0] * 0.8, c.y + p.guardDir[1] * 0.8, 'ring', BLUE, 1.0, 0.18, 2.2); break; }
+      case 'guardBlock': {
+        const P = this.paneOf(p); P.flash = Math.min(1, P.flash + 0.5 + ev.dmg * 0.03);
+        F.burst(ev.x, ev.y, ev.heavy ? WHITE : PALE, ev.heavy ? 18 : 10, ev.heavy ? 9 : 6, 0.3, 0.28, { dir: Math.atan2(p.guardDir[1], p.guardDir[0]), spread: 1.6, grav: 6 });
+        F.sprite(ev.x, ev.y, 'star', WHITE, ev.heavy ? 1.3 : 0.8, 0.12, 1.4);
+        break;
+      }
+      case 'perfectGuard': {
+        const P = this.paneOf(p); P.flash = 1.4;
+        F.sprite(ev.x, ev.y, 'star', WHITE, 2.0, 0.18, 1.5); F.sprite(ev.x, ev.y, 'ring', BLUE, 1.2, 0.3, 3.2);
+        F.burst(ev.x, ev.y, BLUE, 24, 10, 0.32, 0.35); F.popText(ev.x, ev.y + 0.6, 'PERFECT', PALE, 0.6);
+        break;
+      }
+      case 'rampartBreak': {
+        // The pane shatters into shards of hard light
+        const c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0];
+        for (let i = 0; i < 28; i++) {
+          const u = (Math.random() - 0.5) * 2.6, x = c.x + nx * 0.8 - ny * u, y = c.y + ny * 0.8 + nx * u;
+          F.burst(x, y, Math.random() < 0.5 ? PALE : BLUE, 1, 7, 0.3, 0.5, { dir: Math.atan2(ny, nx) + (Math.random() - 0.5) * 2, spread: 0.5, grav: 12 });
+        }
+        F.sprite(c.x + nx * 0.8, c.y + ny * 0.8, 'ring', WHITE, 1.6, 0.35, 3); F.popText(c.x, c.y + 1.2, 'BROKEN', '#ff8aa8', 0.8);
+        break;
+      }
+      case 'rampartReady': { const c = chest(p); F.sprite(c.x, c.y, 'ring', BLUE, 1.2, 0.3, 2.4); F.burst(c.x, c.y, PALE, 12, 4, 0.25, 0.3); break; }
+      case 'kineticRelease': {
+        // The cone of force: a shock ring along the guard, sparks fanning out through the cone, a flash
+        const k = ev.k, a0 = Math.atan2(ev.ny, ev.nx), at = toWorld(ev.x, ev.y, 0.3, new THREE.Vector3());
+        F.charge.shockRing(at, planeDir(ev.x, ev.nx, ev.ny, new THREE.Vector3()).normalize(), WHITE, 0.4, 1.4 + 2.2 * k, 0.3, ev.r * 0.6);
+        F.charge.shockRing(at.clone(), planeDir(ev.x, ev.nx, ev.ny, new THREE.Vector3()).normalize(), BLUE, 0.3, 1.0 + 1.8 * k, 0.38, ev.r * 0.8);
+        F.sprite(ev.x, ev.y, 'star', WHITE, 1.6 + 2 * k, 0.2, 1.5); F.sprite(ev.x, ev.y, 'glow', BLUE, 2 + 3 * k, 0.3, 1.6);
+        for (let i = 0; i < 30 + 50 * k; i++) {
+          const a = a0 + (Math.random() - 0.5) * ev.cone * 2, d = Math.random() * ev.r;
+          F.burst(ev.x + Math.cos(a) * d * 0.3, ev.y + Math.sin(a) * d * 0.3, Math.random() < 0.4 ? WHITE : BLUE, 1, 10 + 12 * k, 0.32, 0.32, { dir: a, spread: 0.15 });
+        }
+        F.dust(ev.x, ev.y - 1.2, 0.4 + 0.6 * k, [ev.nx >= 0 ? 0 : Math.PI], { reach: 2 });
+        break;
+      }
+      case 'rush': {
+        const L = ev.level, x = p.x - ev.dx * 0.6;
+        F.dust(p.x, p.y, 0.4 + 0.2 * L, [ev.dx > 0 ? Math.PI : 0], { noRing: L < 2 });
+        F.smoke(x, p.y + 0.3, '#8e97a3', 4 + 3 * L, 3 + L, 0.5, 0.5, { dir: ev.dx > 0 ? Math.PI : 0, spread: 0.8, op: 0.45 });
+        if (L) { F.sprite(p.x, p.y + 1.2, 'ring', BLUE, 0.8 + 0.3 * L, 0.2, 2.4); F.burst(p.x, p.y + 1.2, BLUE, 12 + 8 * L, 8 + 3 * L, 0.3, 0.3, { dir: ev.dx > 0 ? Math.PI : 0, spread: 1.1 }); }
+        // The exhaust stacks roar
+        for (let i = 0; i < 6; i++) F.smoke(p.x - p.facing * 0.55, p.y + 2.25, '#6f7883', 1, 2, 0.4, 0.6, { dir: Math.PI / 2 + (ev.dx > 0 ? 0.6 : -0.6), spread: 0.5, op: 0.45, grav: -1.2 });
+        break;
+      }
+      case 'plowCatch': { const e = ev.e; F.sprite(e.x, e.y + e.h * 0.55, 'star', WHITE, 1.0, 0.12, 1.4); F.burst(e.x, e.y + e.h * 0.55, PALE, 12, 7, 0.28, 0.25); break; }
+      case 'ramSplat': {
+        const k = Math.min(1, 0.4 + 0.2 * ev.n + 0.1 * ev.level);
+        F.sprite(ev.x, ev.y, 'star', WHITE, 2.4 + k, 0.2, 1.5); F.sprite(ev.x, ev.y, 'ring', BLUE, 1.6 + k, 0.35, 3.2); F.fireball(ev.x, ev.y, '#9fd0ff', 1.2 + k, 0.25);
+        F.burst(ev.x, ev.y, '#5d6674', 20, 9, 0.32, 0.6, { dir: Math.PI / 2, spread: 2.4, grav: 18 }); F.burst(ev.x, ev.y, BLUE, 26, 11, 0.32, 0.35);
+        F.dust(ev.x, p.y, 0.9, [0, Math.PI], { reach: 1.5 }); F.smoke(ev.x, ev.y, '#8e97a3', 8, 1.8, 0.7, 0.9, { op: 0.45, grow: 2.4, grav: -0.6 });
+        F.popText(ev.x, ev.y + 1.1, 'SLAM', PALE, 0.65);
+        break;
+      }
+      case 'ramBonk': { F.sprite(ev.x, ev.y, 'star', WHITE, 1.6, 0.14, 1.5); F.sprite(ev.x, ev.y, 'ring', PALE, 1.0, 0.25, 2.6); F.burst(ev.x, ev.y, PALE, 18, 8, 0.28, 0.3, { grav: 8 }); break; }
+      case 'wallUp': {
+        const x = ev.x, y = ev.y;
+        F.groundRing(x, y, BLUE, 0.3, 2.2, 0.35, 0.9); F.dust(x, y, 0.5, [0, Math.PI], { noRing: true });
+        for (let i = 0; i < 20; i++) F.burst(x, y + Math.random() * RAM.wall.half * 2, Math.random() < 0.5 ? PALE : BLUE, 1, 4, 0.26, 0.4, { dir: Math.PI / 2, spread: 0.6 });
+        F.sprite(x, y + 0.4, 'star', WHITE, 1.4, 0.16, 1.4);
+        break;
+      }
+      case 'wallHit': { F.burst(ev.x, ev.y, PALE, 8, 5, 0.24, 0.22); const W = this.walls.get(ev.b); if (W) W.flash = 1; break; }
+      case 'wallDown': {
+        if (ev.broken) for (let i = 0; i < 26; i++) F.burst(ev.x, ev.y + Math.random() * RAM.wall.half * 2, Math.random() < 0.5 ? PALE : BLUE, 1, 7, 0.3, 0.5, { grav: 10 });
+        else F.burst(ev.x, ev.y + 1.5, BLUE, 14, 2, 0.3, 0.6, { dir: Math.PI / 2, spread: 0.6 });
+        break;
+      }
+      case 'link': {
+        const q = ev.q, c = chest(q);
+        F.sprite(c.x, c.y, 'ring', BLUE, 1.3, 0.35, 2.6); F.burst(c.x, c.y, PALE, 18, 4, 0.26, 0.4);
+        break;
+      }
+      case 'linkHit': {
+        const L = this.links.get(p); if (L) L.flash = 1;
+        const c = chest(p); F.burst(c.x, c.y, PALE, 8, 4, 0.22, 0.25);
+        break;
+      }
+      case 'linkEnd': { const L = this.links.get(p); if (L) L.fade = 0.25; break; }
+      case 'leap': F.dust(p.x, p.y, 0.6, [0, Math.PI]); F.burst(p.x, p.y + 0.3, BLUE, 16, 6, 0.3, 0.3, { dir: -Math.PI / 2, spread: 1.6 }); break;
+      case 'leapLand': {
+        F.groundRing(ev.x, ev.y, WHITE, 0.4, 3.2, 0.32, 0.8); F.groundRing(ev.x, ev.y, BLUE, 0.3, 2.4, 0.3, 0.9);
+        F.dust(ev.x, ev.y, 0.9, [0, Math.PI]); F.burst(ev.x, ev.y + 0.3, '#5d6674', 14, 8, 0.3, 0.55, { dir: Math.PI / 2, spread: 2.2, grav: 18 });
+        F.sprite(ev.x, ev.y + 0.5, 'star', WHITE, 1.6, 0.16, 1.5);
+        break;
+      }
+      case 'provoke': {
+        for (const [sz, life, col] of [[1.4, 0.35, WHITE], [2.4, 0.5, BLUE], [3.4, 0.65, PALE]]) F.sprite(ev.x, ev.y, 'ring', col, sz, life, 3.6);
+        F.burst(ev.x, ev.y, BLUE, 34, 9, 0.34, 0.45); F.dust(p.x, p.y, 0.6, [0, Math.PI]);
+        F.popText(ev.x, ev.y + 1.6, 'PROVOKE', PALE, 0.7);
+        break;
+      }
+      case 'quake': F.groundRing(ev.x, ev.y, BLUE, 0.4, 2.6, 0.32, 0.9); F.dust(p.x, p.y, 1.0, [0, Math.PI], { reach: 1.2 }); F.sprite(ev.x, ev.y + 0.3, 'star', WHITE, 1.8, 0.16, 1.5); break;
+      case 'upliftBlast': {
+        F.sprite(ev.x, ev.y, 'star', WHITE, 1.8, 0.16, 1.5); F.sprite(ev.x, ev.y, 'ring', BLUE, ev.r * 0.9, 0.3, 2.8);
+        F.burst(ev.x, ev.y, BLUE, 26, 9, 0.3, 0.32); F.burst(ev.x, ev.y, PALE, 10, 6, 0.24, 0.25, { dir: Math.PI / 2, spread: 1.4 });
+        break;
+      }
+      case 'fortify': for (const q of ev.members) { const c = chest(q); F.sprite(c.x, c.y, 'ring', BLUE, 1.6, 0.4, 2.2); F.burst(c.x, c.y, PALE, 16, 4, 0.26, 0.4); } break;
+      case 'ramSlam': {
+        const x = ev.x, y = ev.y, r = ev.r;
+        F.sprite(x, y, 'star', WHITE, r * 1.4, 0.3, 1.6); F.sprite(x, y, 'glow', PALE, r * 1.6, 0.4, 1.5); F.fireball(x, y, '#9fd0ff', r * 0.8, 0.45);
+        for (const [sz, life, g] of [[r * 0.45, 0.4, 4.4], [r * 0.3, 0.6, 6], [r * 0.18, 0.75, 8]]) F.sprite(x, y, 'ring', WHITE, sz, life, g);
+        F.burst(x, y, BLUE, 80, 18, 0.42, 0.75, { grav: 5 }); F.burst(x, y, '#5d6674', 30, 12, 0.34, 0.8, { dir: Math.PI / 2, spread: 2.4, grav: 18 });
+        const fl = F.floorUnder(x, y, 3);
+        if (fl !== null) { F.groundRing(x, fl, WHITE, 0.5, r * 1.3, 0.55, 0.95); F.groundRing(x, fl, BLUE, 0.4, r, 0.5, 0.9); F.dust(x, fl, 1.4, [0, Math.PI], { reach: 3 }); }
+        F.smoke(x, y, '#8e97a3', 14, 2.5, 1.2, 1.3, { op: 0.45, grow: 2.6, grav: -0.8 });
+        break;
+      }
+    }
+  }
+
+  update(dt, world, view) {
+    this.t += dt;
+    const F = this.fx, cam = view.camera.position, seenP = new Set(), seenW = new Set(), seenL = new Set();
+    for (const p of world.players) {
+      if (p.char !== 'ram') continue;
+      const rig = view.rigs.get(p), vis = !!rig && rig.root.visible && p.state !== 'dead';
+      // ---- The Rampart's pane ----
+      const P = this.paneOf(p); seenP.add(p);
+      const up = vis && p.state === 'guard';
+      P.k += ((up ? 1 : 0) - P.k) * (1 - Math.exp(-dt * (up ? 30 : 14)));
+      P.flash = Math.max(0, P.flash - dt * 5);
+      if (P.k > 0.02) {
+        const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
+        const frac = Math.max(0, p.integrity / G.integrity), weak = frac < 0.35 ? (Math.sin(this.t * 40) > 0 ? 1 : 0.55) : 1;
+        const len = G.half * 2 * (0.6 + 0.4 * P.k);
+        // Just in front of the shield he holds (the pose puts it on the guard plane), so the hard light wraps it
+        const dz = rig ? rig.extra.shield.position.z * CHARS.ram.scale + 0.16 : 0.3;
+        // (a broad slab of light a little wider than the shield itself, its bright rim on the outer edge)
+        this.place(P.face, cx, cy, -ny, nx, dz); P.face.scale.set(1.1, len, 1);
+        this.place(P.rim, cx + nx * 0.55, cy + ny * 0.55, -ny, nx, dz + 0.02); P.rim.scale.set(0.05, len, 1);
+        this.place(P.crack, cx, cy, -ny, nx, dz + 0.01); P.crack.scale.set(1.1, len, 1);
+        this.mat.pane.opacity = (0.32 + 0.3 * frac + 0.6 * P.flash) * P.k * weak;
+        this.mat.crack.opacity = Math.max(0, 0.75 - frac) * P.k * weak;
+        this.mat.edge.opacity = (0.55 + 0.45 * P.flash) * P.k;
+        this.mat.pane.map.offset.y = this.t * 0.25;
+        P.face.visible = P.rim.visible = P.crack.visible = true;
+        // Stored Kinetic: motes drift up the pane
+        if (p.kinetic > 10 && Math.random() < p.kinetic / 120) {
+          const u = (Math.random() - 0.5) * len, w = toWorld(cx - ny * u, cy + nx * u, dz + 0.04, this.v);
+          const pt = F.particle(w, Math.random() < 0.5 ? WHITE : BLUE, 0.16, 0.4); pt.v.set(0, 1.2, 0); pt.drag = 1;
+        }
+      } else P.face.visible = P.rim.visible = P.crack.visible = false;
+      // ---- The Ram Charge: a hard-light wedge in front, streaks and dust; afterimages ----
+      const rushing = vis && p.state === 'rush' && p.rush, ult = vis && p.state === 'ult' && p.ultRun && p.ultRun.kind === 'ram';
+      let W = this.wedges.get(p);
+      if (!W) {
+        W = new THREE.Mesh(new THREE.ConeGeometry(0.9, 1.4, 4, 1, true), this.mat.wedge); W.visible = false; W.renderOrder = 5; this.scene.add(W); this.wedges.set(p, W);
+      }
+      if (rushing || (ult && p.ultRun.t > ULT.ram.brace && !p.ultRun.slamT)) {
+        const L = rushing ? p.rush.level : 3, dir = rushing ? p.rush.dx : p.ultRun.dx, s = (0.8 + 0.18 * L) * (ult ? 1.6 : 1);
+        this.place(W, p.x + dir * (p.w / 2 + 0.55 * s), p.y + 1.2, dir, 0, 0.3);   // the cone's point leads
+        W.scale.set(s * (1 + 0.08 * Math.sin(this.t * 40)), s, s * 0.5); W.visible = true;
+        this.mat.wedge.opacity = 0.32 + 0.08 * L;
+        for (let i = 0; i < 2 + L; i++) F.burst(p.x + dir * (p.w / 2 + 0.4), p.y + 0.3 + Math.random() * p.h, Math.random() < 0.5 ? WHITE : BLUE, 1, 14 + 4 * L, 0.2, 0.14, { dir: dir > 0 ? Math.PI : 0, spread: 0.12 });
+        if (p.onGround && Math.random() < 0.7) F.dust(p.x - dir * 0.3, p.y, 0.3 + 0.08 * L, [dir > 0 ? Math.PI : 0], { noRing: true, op: 0.45 });
+        const last = this.ghostTick.get(p) ?? -99;
+        if (rig && world.tick - last >= (L >= 2 ? 3 : 4)) { this.ghostTick.set(p, world.tick); F.ghosts.spawn(rig, new THREE.Color(BLUE).multiplyScalar(1.2 + 0.25 * L), 0.22 + 0.06 * L, 0.18); }
+      } else W.visible = false;
+      // The Hydraulic Uplift's leg jets
+      if (vis && p.state === 'attack' && p.moveId === 'ram_rise' && p.st >= p.move.su && p.st < p.move.su + p.move.ac) {
+        for (const dz of [-0.2, 0.2]) {
+          const w = toWorld(p.x + (Math.random() - 0.5) * 0.3, p.y - 0.05, dz, this.v), pt = F.particle(w, Math.random() < 0.5 ? WHITE : BLUE, 0.3, 0.16);
+          pt.v.set((Math.random() - 0.5) * 0.8, -6 - Math.random() * 3, 0); pt.drag = 0.86;
+        }
+        if (Math.random() < 0.5) F.smoke(p.x, p.y - 0.1, '#8e97a3', 1, 1, 0.5, 0.6, { dir: -Math.PI / 2, spread: 1.2, op: 0.4 });
+      }
+      // Braced by Provoke: a slow blue pulse at his feet
+      if (vis && p.braceT > 0 && Math.floor(this.t * 3) !== Math.floor((this.t - dt) * 3)) F.groundRing(p.x, p.y, BLUE, 0.6, 1.6, 0.3, 0.6);
+      // A guard leap leaves afterimages
+      if (vis && p.state === 'leap' && rig) {
+        const last = this.ghostTick.get(p) ?? -99;
+        if (world.tick - last >= 3) { this.ghostTick.set(p, world.tick); F.ghosts.spawn(rig, new THREE.Color(BLUE).multiplyScalar(1.3), 0.25, 0.2); }
+      }
+      // ---- Guardian Link: a tether of light to the teammate he guards ----
+      if (p.link && vis) {
+        seenL.add(p);
+        let L = this.links.get(p);
+        if (!L) { L = { glow: new Strip(this.scene, 4), core: new Strip(this.scene, 5), pts: [], flash: 0, fade: 0 }; this.links.set(p, L); }
+        L.fade = 0; L.flash = Math.max(0, L.flash - dt * 4);
+        const a = chest(p), q = p.link.q, b = chest(q), n = 16, pts = L.pts; pts.length = 0;
+        for (let i = 0; i <= n; i++) {
+          const u = i / n, sag = Math.sin(u * Math.PI) * 0.6;
+          pts.push(toWorld(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u - sag + Math.sin(this.t * 7 + u * 9) * 0.05, 0.25, new THREE.Vector3()));
+        }
+        const k = Math.min(1, p.link.t / 40);
+        L.glow.build(pts, cam, () => 0.12 + 0.08 * L.flash, i => [0.35, 0.65, 1.0, (0.22 + 0.4 * L.flash) * k]);
+        L.core.build(pts, cam, () => 0.035, i => { const on = ((i + Math.floor(this.t * 14)) % 3) !== 0; return [0.8, 0.92, 1.0, (on ? 0.9 : 0.25) * k]; });
+        if (Math.random() < 0.15) F.sprite(b.x, b.y + 0.9, 'ring', BLUE, 0.55, 0.3, 1.6);
+      }
+    }
+    for (const [p, L] of this.links) {
+      if (seenL.has(p)) continue;
+      if (L.fade > 0) { L.fade -= dt; continue; }
+      L.glow.mesh.visible = false; L.core.mesh.visible = false;
+      if (!world.players.includes(p)) this.links.delete(p);
+    }
+    for (const [p, P] of this.panes) if (!seenP.has(p)) { P.face.visible = P.rim.visible = P.crack.visible = false; if (!world.players.includes(p)) this.panes.delete(p); }
+    for (const [p, W] of this.wedges) if (!world.players.includes(p) || p.char !== 'ram') { W.visible = false; this.scene.remove(W); W.geometry.dispose(); this.wedges.delete(p); }
+    // ---- Bulwark Walls: a slab of hard light with bright edges over a glowing base line. Each wall has its own
+    // materials (clones share the shaders), so two walls never fight over one opacity. ----
+    for (const b of world.barriers) {
+      if (b.kind !== 'rampart') continue;
+      seenW.add(b);
+      let W = this.walls.get(b);
+      if (!W) {
+        const g = new THREE.PlaneGeometry(1, 1), face = this.mat.wall.clone(), crack = this.mat.wallCrack.clone(), edge = this.mat.edge.clone();
+        W = { face: new THREE.Mesh(g, face), crack: new THREE.Mesh(g, crack), rimA: new THREE.Mesh(g, edge), rimB: new THREE.Mesh(g, edge), top: new THREE.Mesh(g, edge),
+          base: new THREE.Mesh(g, edge), mats: [face, crack, edge], geo: g, flash: 0, born: this.t };
+        W.meshes = [W.face, W.crack, W.rimA, W.rimB, W.top, W.base];
+        for (const m of W.meshes) { m.renderOrder = 5; this.scene.add(m); }
+        this.walls.set(b, W);
+      }
+      W.flash = Math.max(0, W.flash - dt * 5);
+      const grow = Math.min(1, (this.t - W.born) / 0.18), H = b.half * 2 * grow, cy = b.y - b.half + H / 2, frac = Math.max(0, b.hp / b.maxHp), endK = Math.min(1, b.ttl / 30);
+      const D = 0.36, blink = b.ttl < 60 && b.ttl % 10 < 5 ? 0.6 : 1, [face, crack, edge] = W.mats;
+      this.place(W.face, b.x, cy, 0, 1, 0.1); W.face.scale.set(D * 2, H, 1);
+      this.place(W.crack, b.x, cy, 0, 1, 0.11); W.crack.scale.set(D * 2, H, 1);
+      this.place(W.rimA, b.x - D, cy, 0, 1, 0.12); W.rimA.scale.set(0.05, H, 1);
+      this.place(W.rimB, b.x + D, cy, 0, 1, 0.12); W.rimB.scale.set(0.05, H, 1);
+      this.place(W.top, b.x, b.y - b.half + H, 1, 0, 0.12); W.top.scale.set(0.05, D * 2 + 0.05, 1);
+      this.place(W.base, b.x, b.y - b.half + 0.04, 1, 0, 0.12); W.base.scale.set(0.1, D * 2 + 0.6, 1);
+      face.opacity = (0.45 + 0.35 * frac + 0.5 * W.flash) * endK * blink;
+      crack.opacity = Math.max(0, 0.75 - frac) * endK;
+      edge.opacity = (0.75 + 0.25 * W.flash) * endK * blink;
+      this.mat.wall.map.offset.y = this.t * 0.2;
+      if (Math.random() < 0.3) F.burst(b.x + (Math.random() - 0.5) * D * 2, b.y - b.half + Math.random() * H, PALE, 1, 0.8, 0.16, 0.4, { dir: Math.PI / 2, spread: 0.3 });
+    }
+    for (const [b, W] of this.walls) if (!seenW.has(b)) { for (const m of W.meshes) this.scene.remove(m); for (const m of W.mats) m.dispose(); W.geo.dispose(); this.walls.delete(b); }
+    // ---- Siege Breaker's ram's head: horns of hard light over the wedge ----
+    for (const p of world.players) {
+      const R = p.state === 'ult' && p.ultRun && p.ultRun.kind === 'ram' ? p.ultRun : null;
+      let H = this.heads.get(p);
+      if (!R) { if (H) H.g.visible = false; continue; }
+      if (!H) {
+        const g = new THREE.Group();
+        for (const sx of [1, -1]) { const h = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.16, 8, 24, Math.PI * 1.5), this.mat.wedge); h.position.set(-0.2, 0.55, sx * 0.25); h.rotation.z = 1.0; g.add(h); }
+        const brow = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.6, 0.9), this.mat.wedge); brow.position.set(0.3, 0, 0); g.add(brow);
+        const eyes = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.95), this.mat.edge); eyes.position.set(0.55, 0.25, 0); g.add(eyes);
+        g.renderOrder = 6; this.scene.add(g); H = { g }; this.heads.set(p, H);
+      }
+      const U = ULT.ram, form = R.slamT ? Math.max(0, 1 - (R.t - R.slamT) / 10) : Math.min(1, R.t / U.brace);
+      if (form <= 0.01) { H.g.visible = false; continue; }
+      toWorld(p.x + R.dx * 1.6, p.y + 1.5, 0.3, H.g.position);
+      H.g.rotation.y = (rig => (rig ? rig.root.rotation.y : 0))(view.rigs.get(p)) + (R.dx > 0 ? 0 : Math.PI);
+      H.g.scale.setScalar(1.6 * form * (1 + 0.05 * Math.sin(this.t * 30))); H.g.visible = true;
+    }
+  }
+
+  warmShow(at) {
+    const P = this.paneOf('warm'), out = [P.face, P.crack, P.rim];
+    for (const m of out) { m.position.copy(at); m.visible = true; }
+    return out;
+  }
+  warmDone() { const P = this.panes.get('warm'); if (P) { P.face.visible = P.crack.visible = P.rim.visible = false; this.panes.delete('warm'); } }
+}

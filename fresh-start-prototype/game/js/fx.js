@@ -12,6 +12,8 @@ import { AegisFX } from './aegisfx.js';
 import { BeamFX } from './beamfx.js';
 import { SubFX } from './subfx.js';
 import { UltFX } from './ultfx.js';
+import { RamFX } from './ramfx.js';
+import { FixFX } from './fixfx.js';
 export { toWorld, planeDir };
 
 function canvasTex(size, draw) {
@@ -101,7 +103,7 @@ export class FX {
     this.ghosts = new Ghosts(scene);
     this.charge = new ChargeFX(this);
     this.trails = new SweepTrails(scene); this.aegis = new AegisFX(this); this.beam = new BeamFX(this);
-    this.sub = new SubFX(this); this.ult = new UltFX(this);
+    this.sub = new SubFX(this); this.ult = new UltFX(this); this.ram = new RamFX(this); this.fixfx = new FixFX(this);
     this.slashes = new Map(); this.texts = []; this.poundT = new Map(); this.prevVx = new Map(); this.stepT = new Map();
     // Flat rings on the ground (shockwaves); a small pool
     this.rings = [];
@@ -160,7 +162,8 @@ export class FX {
     this.charge.flash(at, 'glow', '#ffffff', 0.1, 0.01, 1);
     this.charge.trail({ kind: 'lance', team: 'p', level: 2 }, at);
     put(this.rings[0].m); show(this.rings[0].m); show(this.smokePts);
-    const extra = [this.trails.warmShow(at), this.aegis.warmShow(at), ...this.beam.warmShow(at, camera.position), ...this.sub.warmShow(at, camera.position), ...this.ult.warmShow(at, camera.position)];
+    const extra = [this.trails.warmShow(at), this.aegis.warmShow(at), ...this.beam.warmShow(at, camera.position), ...this.sub.warmShow(at, camera.position), ...this.ult.warmShow(at, camera.position),
+      ...this.ram.warmShow(at), ...this.fixfx.warmShow(at)];
     for (const m of extra) { m.visible = true; }
     this.popText(0, 0, 'CRIT', '#ffffff', 0.01); for (const it of this.texts) { put(it.s); it.s.visible = true; }
     // Boss pieces that only appear mid-fight: a laser cylinder and the Stormcaller (its storm shield material)
@@ -178,7 +181,8 @@ export class FX {
     } catch (e) { /* warm-up is best effort */ }
     for (const q of shown) q.visible = false;
     for (const m of keep) this.scene.remove(m);
-    this.trails.clearAll(); this.aegis.warmDone(); this.beam.warmDone(); this.sub.warmDone(); this.ult.warmDone(); for (const it of this.texts) { it.life = 0; it.s.visible = false; }
+    this.trails.clearAll(); this.aegis.warmDone(); this.beam.warmDone(); this.sub.warmDone(); this.ult.warmDone(); this.ram.warmDone(); this.fixfx.warmDone();
+    for (const it of this.texts) { it.life = 0; it.s.visible = false; }
     g.life = 0; g.root.visible = false;
     // The stand-ins stay (hidden): disposing their materials would let the renderer drop the compiled
     // shaders again, and the first real effect would recompile them
@@ -484,6 +488,11 @@ export class FX {
       case 'bossDown': this.bossExplosion(ev); break;
       case 'shot':
         if (ev.level > 0 && ev.p) this.charge.release(ev, ev.p, this.rigs.get(ev.p));
+        else if (ev.cannon) {
+          // RAM's slug: a heavy muzzle blast and a puff of smoke off the shoulder
+          this.sprite(ev.x, ev.y, 'star', '#ffffff', 0.9, 0.08, 1.4); this.burst(ev.x, ev.y, CHARS.ram.energy, 10, 7, 0.26, 0.16, { dir: Math.atan2(ev.ay, ev.ax), spread: 0.6 });
+          this.smoke(ev.x - ev.ax * 0.4, ev.y - ev.ay * 0.4, '#8e97a3', 3, 1.2, 0.4, 0.5, { op: 0.4 });
+        } else if (ev.rivet) this.burst(ev.x, ev.y, '#ffe2a8', 3, 4, 0.14, 0.1, { dir: Math.atan2(ev.ay, ev.ax), spread: 0.5 });
         break;
       case 'downed': this.burst(ev.p.x, ev.p.y + 0.4, '#ffffff', 16, 5, 0.35, 0.5); break;
       case 'revived': this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#9cf5c8', 1.2, 0.4, 2.5); this.burst(ev.p.x, ev.p.y + 1, '#9cf5c8', 18, 5, 0.35, 0.5); break;
@@ -505,7 +514,7 @@ export class FX {
       case 'ambush': this.sprite(ev.x, ev.y, 'star', '#ffffff', 2.0, 0.28, 1.6); this.burst(ev.x, ev.y, ECHO_ORANGE, 26, 10, 0.45, 0.45); break;
       case 'challenge': this.sprite(ev.x, ev.y, 'ring', ECHO_ORANGE, 2.2, 0.45, 4.2); this.burst(ev.x, ev.y, ECHO_ORANGE, 30, 9, 0.4, 0.45); break;
       case 'lostTrack': this.glyph(ev.e, '?', '#ffffff', 1.0); break;
-      case 'taunted': this.glyph(ev.e, '!', ECHO_ORANGE, 0.9); break;
+      case 'taunted': this.glyph(ev.e, '!', ev.by && ev.by.char === 'ram' ? CHARS.ram.energy : ECHO_ORANGE, 0.9); break;
       // Nova, Marksman kit
       case 'attach': {
         const c = ATTACH_LOOK[ev.attach].tint, x = ev.p.x + ev.p.facing * 0.35, y = ev.p.y + 1.05;
@@ -513,7 +522,7 @@ export class FX {
         break;
       }
       case 'chargeLevel': case 'burstLevel':
-        if (ev.p.char === 'nova') this.charge.levelUp(ev.p, this.rigs.get(ev.p), ev.level, ev.type === 'burstLevel' ? 'burst' : 'shot');
+        if (ev.p.char !== 'echo') this.charge.levelUp(ev.p, this.rigs.get(ev.p), ev.level, ev.type === 'burstLevel' ? 'burst' : 'shot');
         break;
       case 'splash': if (ev.r > 1.2) this.dust(ev.x, ev.y, 0.15 + 0.1 * (ev.level || 0), [0, Math.PI], { reach: ev.r * 0.6, noRing: true });
         this.sprite(ev.x, ev.y, 'ring', NOVA_GOLD, 0.35 + ev.r * 0.7, 0.2, 2.2);
@@ -566,6 +575,25 @@ export class FX {
       case 'ultCast': case 'ultJoin': case 'ultRun': case 'ultBegin': case 'ultNova': case 'ultCut': case 'ultFinisher': case 'ultEnd': case 'teamFinisher':
         this.ult.onEvent(ev); break;
       case 'ultReady': this.sprite(ev.p.x, ev.p.y + 1, 'ring', '#7fe3ff', 1, 0.4, 3); this.burst(ev.p.x, ev.p.y + 1, '#7fe3ff', 20, 5, 0.28, 0.45); break;
+      // Version 10: RAM and Fix
+      case 'guardOn': case 'guardBlock': case 'perfectGuard': case 'rampartBreak': case 'rampartReady': case 'kineticRelease': case 'rush': case 'plowCatch': case 'ramSplat':
+      case 'ramBonk': case 'wallUp': case 'wallHit': case 'wallDown': case 'link': case 'linkHit': case 'linkEnd': case 'leap': case 'leapLand': case 'provoke': case 'quake':
+      case 'upliftBlast': case 'fortify': case 'ramSlam':
+        this.ram.onEvent(ev); break;
+      case 'gadgetSelect': case 'powerSelect': case 'gadgetDeploy': case 'gadgetLand': case 'gadgetUp': case 'gadgetWrench': case 'gadgetHit': case 'gadgetEnd': case 'sentryShot':
+      case 'sentryRocket': case 'padPlace': case 'padBounce': case 'powerToss': case 'powerUp': case 'powerFade': case 'noScrap': case 'scrap': case 'rivetStick': case 'rivetBlast':
+      case 'sparkRing': case 'repairPulse': case 'patchOn': case 'patchTarget': case 'podCall': case 'podLand': case 'overhaulPulse': case 'overhaulDone':
+        this.fixfx.onEvent(ev); break;
+      case 'breachBlast': {
+        const c = CHARS.ram.energy;
+        this.dust(ev.x, ev.y, 0.5, [0, Math.PI], { reach: 1.6 });
+        this.sprite(ev.x, ev.y, 'ring', c, ev.r * 0.9, 0.3, 2.6); this.sprite(ev.x, ev.y, 'star', '#ffffff', ev.r * 0.8, 0.16, 1.4); this.fireball(ev.x, ev.y, '#9fd0ff', ev.r * 0.6, 0.25);
+        this.burst(ev.x, ev.y, c, 26, 8 + ev.r * 2, 0.4, 0.4, { grav: 6 });
+        break;
+      }
+      case 'plateHit': this.burst(ev.x, ev.y, '#a9c8ff', 10, 5, 0.24, 0.25); this.sprite(ev.x, ev.y, 'ring', '#a9c8ff', 0.8, 0.16, 2); break;
+      case 'notReady': this.sprite(ev.p.x, ev.p.y + ev.p.h + 0.3, 'ring', '#8a94a3', 0.45, 0.2, 1.6); break;
+      case 'linkNone': this.popText(ev.p.x, ev.p.y + ev.p.h + 0.6, 'NO ONE TO LINK', '#cfe6ff', 0.6); break;
       case 'beamEnd': {
         this.beam.onEvent(ev);
         const p = ev.p, c = { x: p.x + p.facing * 0.5, y: p.y + p.h * 0.62 };
@@ -609,7 +637,7 @@ export class FX {
   poundLand(ev) {
     const p = ev.p, x = ev.x, y = ev.y, L = ev.level, r = ev.r, c = CHARS[p.char].energy, k = 0.4 + 0.2 * L;
     this.sprite(x, y + 0.4, 'star', '#ffffff', 1.8 + 0.6 * L, 0.16 + 0.02 * L, 1.5);
-    this.fireball(x, y + 0.3, p.char === 'nova' ? '#ffd27a' : '#ff9a1f', 0.9 + 0.35 * L, 0.2 + 0.04 * L);
+    this.fireball(x, y + 0.3, { nova: '#ffd27a', echo: '#ff9a1f', ram: '#9fd0ff', fix: '#9ff5d0' }[p.char], (0.9 + 0.35 * L) * (p.char === 'ram' ? 1.3 : 1), 0.2 + 0.04 * L);
     this.groundRing(x, y, '#fff6e0', 0.3, r * 1.1, 0.32 + 0.05 * L, 0.95); this.groundRing(x, y, c, 0.2, r * 0.8, 0.28, 0.9);
     if (L >= 2) this.groundRing(x, y, '#ffffff', 0.5, r * 1.35, 0.45, 0.7);
     this.dust(x, y, 0.7 + 0.25 * L, [0, Math.PI], { noRing: true, spread: 0.3 });
@@ -854,7 +882,7 @@ export class FX {
       } else if (p.state === 'pound' && p.pound && p.pound.phase === 'drop' && dt >= 2) {
         this.ghostTick.set(p, world.tick);
         this.ghosts.spawn(rig, col.clone().lerp(new THREE.Color('#fff6e0'), 0.1 * p.pound.level).multiplyScalar(1.2 + 0.3 * p.pound.level), 0.26 + 0.06 * p.pound.level, 0.16 + 0.03 * p.pound.level);
-      } else if (p.state === 'attack' && p.move && ['echo_spin', 'echo_rise', 'echo_b4', 'echo_charged', 'nova_rise'].includes(p.moveId) && p.st >= p.move.su && p.st < p.move.su + p.move.ac && dt >= 3) {
+      } else if (p.state === 'attack' && p.move && ['echo_spin', 'echo_rise', 'echo_b4', 'echo_charged', 'nova_rise', 'ram_rise', 'ram_slam', 'fix_rise', 'fix_slam'].includes(p.moveId) && p.st >= p.move.su && p.st < p.move.su + p.move.ac && dt >= 3) {
         this.ghostTick.set(p, world.tick);
         this.ghosts.spawn(rig, col, 0.2, 0.14);
       } else if (p.rocketT > 0 && p.vy > 8 && (p.rocketPow || 0) > 0.55 && dt >= 3) {
@@ -904,7 +932,7 @@ export class FX {
     this.trails.update(dt, world, view.rigs);
     this.aegis.update(dt, world);
     this.beam.update(dt, world, view);
-    this.sub.update(dt, world, view); this.ult.update(dt, world, view);
+    this.sub.update(dt, world, view); this.ult.update(dt, world, view); this.ram.update(dt, world, view); this.fixfx.update(dt, world, view);
     this.updateSlashes(world);
     this.slideFx(world, view);
     this.poundFx(world, view, dt);
@@ -1054,6 +1082,16 @@ export class FX {
       },
       // A shot Echo's staff knocked back: now his, orange with a white-hot core
       deflected: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.24), em(echo, 4))); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), em('#ffffff', 4))); return g; },
+      // A shot RAM's Perfect Guard sent back: his blue
+      reflected: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.26), em(CHARS.ram.energy, 4))); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), em('#ffffff', 4))); return g; },
+      // RAM's cannon: a heavy slug, and the bigger Breach Shot with a hard-light collar
+      slug: () => new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.3, 3, 10), em('#d6e8ff', 3.5)),
+      breach: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 3, 12), em(CHARS.ram.energy, 4))); const r = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.04, 6, 18), em('#ffffff', 4)); r.rotation.x = Math.PI / 2; g.add(r); return g; },
+      // Fix: rivets, a glowing Hot Rivet, and her Sentry's bolts and rockets
+      rivet: () => new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.2, 3, 6), em('#ffe2a8', 3)),
+      hotRivet: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.26, 3, 8), em('#ff8a3a', 4))); g.add(new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), em(CHARS.fix.energy, 3))); return g; },
+      sentryBolt: () => new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.24, 3, 6), em('#ffcf5a', 4)),
+      sentryRocket: () => { const g = new THREE.Group(); g.add(new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.3, 3, 8), em('#ffcf5a', 2.5))); const n = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), em('#ffffff', 4)); n.position.y = 0.2; g.add(n); return g; },
     };
     // Each look is built once; projectiles are clones that share its geometry and materials
     const build = this.tmpl; this.tmpl = {}; this.protos = {};
@@ -1067,7 +1105,9 @@ export class FX {
       let m = this.projMeshes.get(pr);
       // A deflected enemy shot changes hands: swap its look for Echo's
       if (m && pr.deflected && !m.userData.defl) { this.scene.remove(m); m = null; }
-      if (!m) { m = (pr.deflected ? this.tmpl.deflected : this.tmpl[pr.kind] || this.tmpl.std)(); m.userData.defl = !!pr.deflected; this.scene.add(m); this.projMeshes.set(pr, m); }
+      if (!m) { m = (pr.deflected ? this.tmpl[pr.reflected ? 'reflected' : 'deflected'] : this.tmpl[pr.kind] || this.tmpl.std)(); m.userData.defl = !!pr.deflected; this.scene.add(m); this.projMeshes.set(pr, m); }
+      // A stuck Hot Rivet blinks faster as its fuse runs down
+      if (pr.stuck && pr.stuck.t % (pr.stuck.t < 12 ? 3 : 8) === 0) this.sprite(pr.x, pr.y, 'glow', pr.stuck.t < 12 ? '#ffffff' : '#ff9a4a', 0.5, 0.08, 1.2);
       const x = pr.px + (pr.x - pr.px) * alpha, y = pr.py + (pr.y - pr.py) * alpha;
       toWorld(x, y, 0.1, m.position);
       const d = planeDir(x, pr.vx, pr.vy, this.tmp).normalize();
@@ -1082,6 +1122,7 @@ export class FX {
       }
       if (pr.amplified) m.scale.setScalar(1.35);
       if (this.charge.wantsTrail(pr)) this.charge.trail(pr, m.position);
+      if (pr.kind === 'sentryRocket' && Math.random() < 0.7) this.smoke(x - pr.vx * 0.012, y - pr.vy * 0.012, '#8e97a3', 1, 0.3, 0.25, 0.4, { op: 0.4, grav: -0.3 });
       if (pr.kind === 'missile' && Math.random() < 0.8) this.smoke(x - pr.vx * 0.012, y - pr.vy * 0.012, '#8e97a3', 1, 0.4, 0.35, 0.5, { op: 0.45, grav: -0.3 });
       if (pr.kind === 'wave') { for (let i = 0; i < 3; i++) this.burst(x - Math.sign(pr.vx) * 0.2, y + (Math.random() - 0.5) * 1.3, Math.random() < 0.4 ? '#ffffff' : ECHO_ORANGE, 1, 1.5, 0.24, 0.2); }
       else if (Math.random() < (pr.kind === 'pellet' ? 0.25 : 0.6)) this.burst(x, y, trailColor(pr), 1, 0.6, pr.kind === 'rail' ? 0.5 : 0.22, 0.18);
@@ -1092,6 +1133,7 @@ export class FX {
   syncBarriers(world) {
     const seen = new Set();
     for (const b of world.barriers) {
+      if (b.kind === 'rampart') continue;   // RAM's Bulwark Walls are drawn by RamFX
       seen.add(b);
       let m = this.barrierMeshes.get(b);
       if (!m) {
@@ -1135,13 +1177,16 @@ export class FX {
     for (const s of world.shockwaves) {
       seen.add(s);
       let m = this.shockMeshes.get(s);
+      // Enemy shockwaves are magenta; RAM's Seismic Slam sends out his blue
+      const col = s.team === 'p' ? CHARS.ram.energy : HOSTILE;
       if (!m) {
-        m = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.1, 4), new THREE.MeshStandardMaterial({ color: HOSTILE, emissive: HOSTILE, emissiveIntensity: 3, transparent: true, opacity: 0.85 }));
+        m = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.1, 4), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 3, transparent: true, opacity: 0.85 }));
         this.scene.add(m); this.shockMeshes.set(s, m);
       }
       toWorld(s.x, s.y + 0.5, 0.2, m.position);
       m.rotation.y += 0.4;
-      if (Math.random() < 0.8) this.burst(s.x, s.y + 0.2, HOSTILE, 2, 3, 0.35, 0.25, { dir: Math.PI / 2, spread: 1.5 });
+      if (Math.random() < 0.8) this.burst(s.x, s.y + 0.2, col, 2, 3, 0.35, 0.25, { dir: Math.PI / 2, spread: 1.5 });
+      if (s.team === 'p' && Math.random() < 0.6) this.dust(s.x, s.y, 0.3, [s.dir > 0 ? 0 : Math.PI], { noRing: true, op: 0.45 });
     }
     for (const [s, m] of this.shockMeshes) if (!seen.has(s)) { this.scene.remove(m); this.shockMeshes.delete(s); }
   }
@@ -1269,8 +1314,10 @@ const ECHO_ORANGE = CHARS.echo.energy;
 const VEIL_PALE = '#dcecff';
 const SPIN = new Set(['std', 'heavy', 'snare', 'shell', 'prism', 'mortar', 'grenade', 'bomblet']);
 const KIND_TINT = { dart: ATTACH_LOOK.volley.tint, shell: ATTACH_LOOK.arc.tint, prism: ATTACH_LOOK.prism.tint, shard: ATTACH_LOOK.prism.tint, pellet: '#ffcf7a',
-  grenade: SUB_LOOK.grenade.tint, bomblet: SUB_LOOK.grenade.tint, disc: SUB_LOOK.disc.tint };
+  grenade: SUB_LOOK.grenade.tint, bomblet: SUB_LOOK.grenade.tint, disc: SUB_LOOK.disc.tint,
+  slug: '#cfe6ff', breach: CHARS.ram.energy, rivet: '#ffe2a8', hotRivet: '#ff9a4a', sentryBolt: '#ffcf5a', sentryRocket: '#ffcf5a' };
 function trailColor(pr) {
+  if (pr.reflected) return CHARS.ram.energy;
   if (pr.deflected || pr.kind === 'wave') return ECHO_ORANGE;
   if (pr.team === 'e') return HOSTILE;
   if (pr.kind === 'bolt' || pr.kind === 'tracer' || pr.kind === 'rifle' || pr.kind === 'markShot') return ECHO_ORANGE;

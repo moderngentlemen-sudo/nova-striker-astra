@@ -120,6 +120,12 @@ export function updateEnemy(e, world) {
     if (e.st >= e.stun) setState(e, 'idle');
     return;
   }
+  if (e.state === 'plowed') {
+    // Scooped up by RAM's charge: he carries it (world.ramPlow); if he lets go without throwing it, it drops
+    const p = e.plowBy;
+    if (!p || (p.state !== 'rush' && p.state !== 'ult') || e.st > 150) { e.plowBy = null; setState(e, 'hitstun'); e.stun = 16; physics(e); }
+    return;
+  }
 
   const fn = BEHAVIOUR[e.type];
   const before = e.target;

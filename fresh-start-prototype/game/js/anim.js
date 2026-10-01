@@ -3,15 +3,18 @@
 // after it, the torso twisting into blows, and secondary motion (breathing, bob, head counter-motion).
 // Attacks are keyframed per move (windup, a snapping strike, follow-through); everything eases toward its
 // target at a rate set per state, independent of frame rate.
-import { MOVES, SCARF, SETTINGS, ATTACH_LOOK, DASH_CHARGE, HUNTER, MARKSMAN, DASH_SLASH, ULT } from './config.js';
+import { MOVES, SCARF, SETTINGS, ATTACH_LOOK, DASH_CHARGE, HUNTER, MARKSMAN, DASH_SLASH, ULT, RAM, FIX, CHARS } from './config.js';
 import { chargeStage, burstStage } from './player.js';
 
 // Joints: spine pitch (+ leans forward), twist (torso turn), shoulders/elbows (near = weapon arm, far),
-// hips/knees, hip height, whole-body tilt, head pitch
-const J = ['spine', 'twist', 'shN', 'elN', 'shF', 'elF', 'hipN', 'knN', 'hipF', 'knF', 'hipY', 'bodyZ', 'head'];
-const REST = { spine: 0.04, twist: 0, shN: 0.12, elN: 0.3, shF: -0.1, elF: 0.3, hipN: 0.04, knN: -0.08, hipF: -0.04, knF: -0.08, hipY: 0.95, bodyZ: 0, head: 0 };
+// hips/knees, hip height, whole-body tilt, head pitch; and RAM's tower shield, which the poses place directly
+// in body space (sx, sy) and tilt (sr), so it can stay upright in front of him
+const J = ['spine', 'twist', 'shN', 'elN', 'shF', 'elF', 'hipN', 'knN', 'hipF', 'knF', 'hipY', 'bodyZ', 'head', 'sx', 'sy', 'sr'];
+const REST = { spine: 0.04, twist: 0, shN: 0.12, elN: 0.3, shF: -0.1, elF: 0.3, hipN: 0.04, knN: -0.08, hipF: -0.04, knF: -0.08, hipY: 0.95, bodyZ: 0, head: 0,
+  sx: 0.32, sy: 0.92, sr: 0 };
 // A ready fighting stance that attack poses build on
-const FIGHT = { spine: 0.18, twist: 0, shN: 0.7, elN: 1.0, shF: 0.35, elF: 1.1, hipN: 0.4, knN: -0.5, hipF: -0.32, knF: -0.35, hipY: 0.9, bodyZ: 0, head: -0.1 };
+const FIGHT = { spine: 0.18, twist: 0, shN: 0.7, elN: 1.0, shF: 0.35, elF: 1.1, hipN: 0.4, knN: -0.5, hipF: -0.32, knF: -0.35, hipY: 0.9, bodyZ: 0, head: -0.1,
+  sx: 0.55, sy: 1.0, sr: 0 };
 const AIR = { hipN: 0.9, knN: -1.35, hipF: 0.45, knF: -1.05, hipY: 0.95 };
 
 const ease = k => k * k * (3 - 2 * k);
@@ -71,6 +74,47 @@ const KEYS = {
     k(m.su + m.ac + 5, { spine: 0.5, twist: 0.3, shN: 0.5, shF: 0.4, hipN: 0.9, knN: -0.9, hipF: -0.72, hipY: 0.8 }), k(END(m), {})],
   echo_riposte: m => [k(0, { shN: 0.4, elN: 1.8, twist: -0.3 }), k(m.su, { spine: 0.48, twist: 0.5, shN: 1.62, elN: 0.0, shF: -0.6, hipN: 0.95, knN: -0.8, hipF: -0.8, knF: -0.15, hipY: 0.8 }, true), k(END(m), {})],
 };
+// RAM: the shield leads every move except the Piston Punch (his left fist, the far arm)
+Object.assign(KEYS, {
+  ram_b1: m => [k(0, { twist: -0.3, sx: 0.2, sy: 1.0, shN: 0.3, elN: 1.2, spine: 0.05 }),
+    k(m.su, { spine: 0.38, twist: 0.25, sx: 1.05, sy: 1.05, shN: 1.4, elN: 0.25, hipN: 0.75, knN: -0.7, hipF: -0.6, knF: -0.25, hipY: 0.86 }, true),
+    k(m.su + m.ac + 3, { spine: 0.32, sx: 0.95, sy: 1.0, shN: 1.3, elN: 0.3, hipN: 0.7, knN: -0.7, hipF: -0.55, hipY: 0.87 }), k(END(m), {})],
+  ram_b2: m => [k(0, { twist: 0.35, sx: 0.4, sy: 1.15, sr: -0.75, shN: 1.0, elN: 0.8 }),
+    k(m.su, { spine: 0.32, twist: -0.4, sx: 0.95, sy: 0.85, sr: 0.85, shN: 1.2, elN: 0.3, hipN: 0.7, knN: -0.75, hipF: -0.55, hipY: 0.86 }, true),
+    k(m.su + m.ac + 3, { spine: 0.28, twist: -0.3, sx: 0.85, sy: 0.85, sr: 0.7, shN: 1.1, elN: 0.35 }), k(END(m), {})],
+  ram_b3: m => [k(0, { spine: 0.1, sx: 0.3 }), k(m.su - 1, { spine: -0.15, twist: -0.7, sx: 0.15, sy: 0.9, shF: -0.9, elF: 2.0, shN: 0.4, elN: 1.0, hipN: 0.25, knN: -0.95, hipF: -0.85, knF: -0.2, hipY: 0.8 }),
+    k(m.su + 1, { spine: 0.5, twist: 0.65, sx: 0.25, sy: 0.85, shF: 1.65, elF: 0.0, shN: 0.2, elN: 1.1, hipN: 1.0, knN: -0.7, hipF: -0.85, knF: -0.1, hipY: 0.78 }, true),
+    k(m.su + m.ac + 5, { spine: 0.42, twist: 0.5, shF: 1.5, elF: 0.1, hipN: 0.95, knN: -0.7, hipF: -0.8, hipY: 0.8 }), k(END(m), {})],
+  ram_air: m => [k(0, { ...AIR, sx: 0.55, sy: 1.5, sr: -0.6, shN: 2.0, elN: 0.6, spine: -0.1 }),
+    k(m.su, { ...AIR, sx: 0.75, sy: 0.35, sr: 0.7, shN: 0.9, elN: 0.2, spine: 0.45 }, true), k(END(m), { ...AIR, sx: 0.6, sy: 0.6, sr: 0.3 })],
+  ram_bash: m => [k(0, { sx: 0.8, sy: 1.05, shN: 1.2, elN: 0.6, spine: 0.15, hipN: 0.55, knN: -0.8, hipF: -0.45, knF: -0.4, hipY: 0.86 }),
+    k(m.su, { sx: 1.2, sy: 1.08, shN: 1.5, elN: 0.15, spine: 0.4, hipN: 0.85, knN: -0.75, hipF: -0.65, knF: -0.2, hipY: 0.84 }, true), k(END(m), { sx: 0.8, sy: 1.0 })],
+  // Hydraulic Uplift: low behind the shield, then it scoops up over his head as the leg pistons fire
+  ram_rise: m => [k(0, { hipY: 0.66, spine: 0.55, sx: 0.85, sy: 0.4, sr: 0.5, shN: 0.9, elN: 0.4, hipN: 1.2, knN: -1.9, hipF: 0.2, knF: -1.8 }),
+    k(m.su, { hipY: 0.95, spine: -0.2, sx: 0.6, sy: 2.0, sr: 1.25, shN: 2.7, elN: 0.2, shF: 2.4, elF: 0.4, hipN: 0.3, knN: -0.4, hipF: -0.25, knF: -0.9, head: 0.3 }, true),
+    k(m.su + m.ac, { hipY: 0.95, spine: -0.1, sx: 0.55, sy: 2.05, sr: 1.35, shN: 2.75, elN: 0.25, shF: 2.5, elF: 0.4, hipN: 0.6, knN: -1.0, hipF: 0.1, knF: -1.0 }),
+    k(END(m), { ...AIR, sx: 0.6, sy: 1.2, sr: 0.3 })],
+  // Seismic Slam: the shield raised high in both hands, then driven down into the floor in front
+  ram_slam: m => [k(0, { spine: 0.1 }), k(m.su - 1, { spine: -0.35, sx: 0.25, sy: 2.15, sr: 1.45, shN: 2.9, elN: 0.3, shF: 2.8, elF: 0.4, hipN: 0.5, knN: -0.7, hipF: -0.5, knF: -0.3, hipY: 0.9, head: 0.3 }),
+    k(m.su + 1, { spine: 0.75, sx: 1.05, sy: 0.4, sr: 0.0, shN: 1.25, elN: 0.1, shF: 1.15, elF: 0.2, hipN: 1.2, knN: -1.3, hipF: -0.7, knF: -0.5, hipY: 0.66 }, true),
+    k(m.su + m.ac + 8, { spine: 0.65, sx: 1.0, sy: 0.42, shN: 1.2, elN: 0.15, shF: 1.1, hipN: 1.1, knN: -1.25, hipF: -0.7, hipY: 0.68 }), k(END(m), {})],
+  // Fix: the wrench is in her right (near) hand
+  fix_w1: m => [k(0, { spine: 0.0, twist: -0.4, shN: 2.5, elN: 1.0, hipY: 0.92 }), k(m.su, { spine: 0.35, twist: 0.45, shN: 0.65, elN: 0.1, hipN: 0.65, knN: -0.7, hipF: -0.55, hipY: 0.86 }, true),
+    k(m.su + m.ac + 3, { spine: 0.3, twist: 0.35, shN: 0.4, elN: 0.3, hipN: 0.6, knN: -0.65, hipF: -0.5 }), k(END(m), {})],
+  fix_w2: m => [k(0, { twist: 0.45, shN: -0.5, elN: 0.4, spine: 0.25 }), k(m.su, { spine: 0.2, twist: -0.45, shN: 2.3, elN: 0.15, hipN: 0.6, knN: -0.7, hipF: -0.5, hipY: 0.87 }, true),
+    k(m.su + m.ac + 3, { twist: -0.3, shN: 2.5, elN: 0.3 }), k(END(m), {})],
+  fix_w3: m => [k(0, { spine: 0.05 }), k(m.su - 1, { spine: -0.3, twist: -0.3, shN: 3.05, elN: 0.7, shF: 2.6, elF: 0.8, hipN: 0.5, knN: -0.7, hipF: -0.5, hipY: 0.9 }),
+    k(m.su + 1, { spine: 0.6, twist: 0.3, shN: 0.85, elN: 0.0, shF: 0.75, elF: 0.3, hipN: 0.95, knN: -0.95, hipF: -0.7, knF: -0.2, hipY: 0.8 }, true),
+    k(m.su + m.ac + 4, { spine: 0.5, shN: 0.75, elN: 0.1, hipN: 0.9, knN: -0.9, hipF: -0.65, hipY: 0.81 }), k(END(m), {})],
+  fix_air: m => [k(0, { ...AIR, shN: 2.2, elN: 0.5, spine: -0.1 }), k(m.su, { ...AIR, spine: 0.35, shN: 0.6, elN: 0.1, bodyZ: -0.2 }, true), k(END(m), { ...AIR })],
+  fix_slam: m => [k(0, { spine: 0.1 }), k(m.su - 1, { spine: -0.4, twist: -0.4, shN: 3.1, elN: 0.6, shF: 2.9, elF: 0.6, hipN: 0.55, knN: -0.8, hipF: -0.6, knF: -0.2, hipY: 0.86, head: 0.25 }),
+    k(m.su + 1, { spine: 0.72, twist: 0.4, shN: 0.7, elN: 0.0, shF: 0.6, elF: 0.2, hipN: 1.05, knN: -1.0, hipF: -0.8, knF: -0.15, hipY: 0.76 }, true),
+    k(m.su + m.ac + 6, { spine: 0.6, shN: 0.6, elN: 0.05, hipN: 1.0, knN: -0.95, hipF: -0.75, hipY: 0.78 }), k(END(m), {})],
+  // Jack-Up: crouched over the jack, then the wrench drives straight up as it fires
+  fix_rise: m => [k(0, { hipY: 0.66, spine: 0.45, twist: -0.4, hipN: 1.25, knN: -1.9, hipF: 0.2, knF: -1.8, shN: -0.4, elN: 1.6, shF: 0.6, elF: 1.4 }),
+    k(m.su, { hipY: 0.95, spine: -0.2, twist: 0.35, shN: 3.05, elN: 0.05, shF: -0.4, elF: 1.2, hipN: 0.3, knN: -0.4, hipF: -0.25, knF: -1.1, head: 0.3 }, true),
+    k(m.su + m.ac, { hipY: 0.95, spine: -0.1, shN: 2.9, elN: 0.15, shF: -0.3, hipN: 0.6, knN: -1.0, hipF: 0.1, knF: -1.0 }), k(END(m), { ...AIR })],
+});
 // The Pass 1 kits reuse the closest look
 Object.assign(KEYS, {
   nova_jab1: KEYS.nova_k1, nova_jab2: KEYS.nova_k2, nova_shove: KEYS.nova_k3, nova_brace: KEYS.nova_k3, nova_air: KEYS.nova_kair,
@@ -79,7 +123,7 @@ Object.assign(KEYS, {
 });
 // Whole-body spins (turns) spread over a move's active frames: 'y' turns about the vertical axis (a
 // corkscrew), 'z' is a somersault in the view plane about the hips, so the glaive draws a full disk on screen
-const SPIN = { echo_b4: [1, 'y'], echo_rise: [2, 'y'], echo_spin: [2, 'z'] };
+const SPIN = { echo_b4: [1, 'y'], echo_rise: [2, 'y'], echo_spin: [2, 'z'], fix_air: [1, 'z'] };
 
 const keyCache = new Map();
 function attackPose(p, out) {
@@ -105,18 +149,61 @@ const dashLevelOf = p => (p.state !== 'dashCharge' ? 0 : p.dashChargeT >= DASH_C
 // ---- The pose for this frame -----------------------------------------------------------------
 export function animatePlayer(rig, p, dt, t) {
   const P = { ...REST };
-  const speed = Math.abs(p.vx), st = p.state, echo = p.char === 'echo', mk = !echo && SETTINGS.novaKit === 'marksman';
+  const speed = Math.abs(p.vx), st = p.state, echo = p.char === 'echo', ram = p.char === 'ram', fix = p.char === 'fix';
+  const mk = p.char === 'nova' && SETTINGS.novaKit === 'marksman';
   const aimAng = Math.atan2(p.aimY, Math.abs(p.aimX) < 1e-3 ? 1e-3 : p.aimX * p.facing);
   let rate = 18, yaw = 0, roll = 0;   // rate: how fast joints ease toward the pose (per second)
   const breathe = Math.sin(t * 2.2 + (echo ? 1 : 0));
 
   if (st === 'downed' || st === 'dead') {
-    Object.assign(P, { bodyZ: 1.45, hipY: 0.2, shN: 2.6, shF: 2.2, hipN: 0.2, hipF: -0.1 }); rate = 10;
+    Object.assign(P, { bodyZ: 1.45, hipY: 0.2, shN: 2.6, shF: 2.2, hipN: 0.2, hipF: -0.1, sx: 0.1, sy: 0.5, sr: 1.3 }); rate = 10;
+  } else if (st === 'guard' && ram) {
+    // Braced behind the Rampart: wide, knees bent, both hands on it; it rises toward overhead with the aim.
+    // The shield stands right where the sim's guard plane is (RAM.guard.reach out from his chest).
+    const [nx, ny] = p.guardDir || [1, 0], a = Math.atan2(ny, Math.abs(nx)), u = Math.max(0, Math.min(1, a / (Math.PI / 2)));
+    const walk = Math.abs(p.vx) > 0.4; if (walk) rig.phase += dt * Math.abs(p.vx) * 2.2;
+    const s2 = walk ? Math.sin(rig.phase) * 0.25 : 0, sc = CHARS.ram.scale, G = RAM.guard;
+    Object.assign(P, { spine: 0.22 - 0.3 * u, hipN: 0.6 + s2, knN: -0.85, hipF: -0.5 - s2, knF: -0.45, hipY: 0.84, head: -0.05 + 0.3 * u,
+      shN: 1.15 + 1.3 * u, elN: 0.55 - 0.3 * u, shF: 1.0 + 1.2 * u, elF: 1.25 - 0.4 * u,
+      sx: Math.abs(nx) * G.reach / sc, sy: (CHARS.ram.height * 0.62 + ny * G.reach) / sc, sr: a });
+    rate = 30;
+  } else if (st === 'rush' && ram) {
+    // The Ram Charge: shoulder down behind the shield, driving with the legs
+    rig.phase += dt * Math.max(8, speed) * 1.5;
+    const s = Math.sin(rig.phase), c = Math.cos(rig.phase), L = p.rush ? p.rush.level : 0;
+    Object.assign(P, { spine: 0.6 + 0.04 * L, twist: 0.15, hipN: s * 0.8 + 0.25, hipF: -s * 0.8 + 0.25, knN: -Math.max(0, -c) * 1.3 - 0.3, knF: -Math.max(0, c) * 1.3 - 0.3,
+      shN: 1.25, elN: 0.55, shF: 0.9, elF: 1.4, hipY: 0.84 - Math.abs(c) * 0.05, head: -0.35, sx: 0.98, sy: 0.88, sr: -0.12 });
+    if (p.rush && p.rush.air) Object.assign(P, { hipN: 0.9, knN: -1.4, hipF: 0.3, knF: -1.1 });
+    rate = 30;
+  } else if (st === 'leap' && ram) {
+    // Guardian Link's bound: arms flung up on the way up, then the shield brought down for the landing
+    if (p.vy > 0) Object.assign(P, { spine: -0.25, shN: 2.5, elN: 0.4, shF: 2.3, elF: 0.5, hipN: 1.0, knN: -1.5, hipF: 0.4, knF: -1.2, head: 0.25, sx: 0.4, sy: 1.8, sr: 1.0 });
+    else Object.assign(P, { spine: 0.45, shN: 1.1, elN: 0.4, shF: 0.9, elF: 1.2, hipN: 1.2, knN: -1.7, hipF: 0.6, knF: -1.4, sx: 0.8, sy: 0.6, sr: 0.2 });
+    rate = 18;
+  } else if (st === 'patch' && fix) {
+    // The Patch Beam: her welder arm reaches toward whoever she patches (straight down at her own kit when
+    // she welds herself); the wrench hand hangs back
+    const q = p.patch && p.patch.target, c2 = { x: p.x, y: p.y + p.h * 0.62 };
+    let ang = -0.9;
+    if (q) ang = Math.atan2(q.y + q.h * 0.55 - c2.y, Math.abs(q.x - p.x) < 1e-3 ? 1e-3 : (q.x - p.x) * p.facing);
+    const walk = speed > 0.4; if (walk) rig.phase += dt * speed * 2.2;
+    const s2 = walk ? Math.sin(rig.phase) * 0.4 : 0;
+    Object.assign(P, { spine: 0.12, twist: -0.25, shF: ang + Math.PI / 2 + 0.12, elF: 0.12, shN: 0.2, elN: 0.9, hipN: 0.35 + s2, knN: -0.45, hipF: -0.3 - s2, knF: -0.35, hipY: 0.9, head: -0.1 });
+    if (!q) Object.assign(P, { shF: 0.6, elF: 1.6, spine: 0.35, head: 0.3 });
+    rate = 24;
   } else if (st === 'slide') {
     // Low slide: lead leg out straight, trailing leg folded, leaning back, the far hand dragging on the floor
     Object.assign(P, { hipY: 0.46, spine: -0.45, hipN: 1.38, knN: -0.08, hipF: -0.38, knF: -1.95, shN: 0.95, elN: 0.7, shF: -0.55, elF: 0.2, bodyZ: -0.06, head: 0.3 });
     if (mk) Object.assign(P, { hipY: 0.52, spine: 0.1, hipN: 1.05, knN: -1.0, hipF: -0.9, knF: -0.35, shN: -0.8, shF: -1.1, elN: 0.3, elF: 0.3, head: -0.05 });   // skate power slide
+    if (ram) Object.assign(P, { hipY: 0.36, spine: 0.95, hipN: 1.3, knN: -2.0, hipF: 0.3, knF: -2.1, shN: 1.0, elN: 0.6, shF: 0.7, elF: 1.2, head: -0.4, sx: 0.85, sy: 0.55, sr: -0.2 });   // down behind the shield
     rate = 30;
+  } else if (st === 'dashCharge' && ram) {
+    // The Battering Ram winding up: shoulder dropped behind the shield, a hoof pawing the floor
+    const f = Math.min(1, p.dashChargeT / DASH_CHARGE.charge[0]), paw = Math.sin(t * 9) * 0.35 * f;
+    Object.assign(P, { spine: 0.2 + 0.45 * f, hipY: 0.9 - 0.12 * f, hipN: 0.5 + paw, knN: -0.6 - 0.4 * f + paw * 0.5, hipF: -0.5, knF: -0.4, shN: 1.2, elN: 0.6, shF: 0.9, elF: 1.3,
+      head: -0.3 * f, sx: 0.6 + 0.35 * f, sy: 1.0 - 0.12 * f, sr: -0.1 * f });
+    if (p.dashChargeT >= DASH_CHARGE.charge[1]) P.hipY += (Math.random() - 0.5) * 0.03;
+    rate = 22;
   } else if (st === 'dashCharge') {
     const f = Math.min(1, p.dashChargeT / DASH_CHARGE.charge[0]);
     Object.assign(P, { hipY: 0.95 - 0.3 * f, spine: 0.1 + 0.45 * f, hipN: 0.4 + 0.9 * f, knN: -0.3 - 1.5 * f, hipF: -0.2 - 0.45 * f, knF: -0.2 - 0.5 * f,
@@ -141,20 +228,20 @@ export function animatePlayer(rig, p, dt, t) {
       // trembles more with each charge level. Echo whips round once as it starts.
       const k = Math.min(1, S.t / 6);
       Object.assign(P, { hipY: 0.95, spine: -0.18 * k, hipN: 1.55, knN: -2.2, hipF: 1.25, knF: -2.05, head: 0.18,
-        shN: echo ? 2.95 : 2.75, elN: echo ? 0.25 : 1.35, shF: echo ? 2.75 : 1.2, elF: echo ? 0.35 : 1.5 });
+        shN: echo || ram || fix ? 2.95 : 2.75, elN: echo || ram ? 0.25 : 1.35, shF: echo || ram ? 2.75 : 1.2, elF: echo || ram ? 0.35 : 1.5, sx: 0.25, sy: 2.1, sr: 1.5 });
       if (S.level) { const j = (Math.random() - 0.5) * 0.025 * S.level; P.spine += j; P.hipY += j; }
       if (echo && S.t <= 9) yaw = Math.PI * 2 * snapEase(S.t / 9);
       rate = 26;
     } else if (S.phase === 'drop') {
       // Dropping: upright and driving straight down, fist or glaive leading, one knee drawn up
       Object.assign(P, { spine: 0.18, bodyZ: 0, hipN: 0.9, knN: -1.6, hipF: -0.15, knF: -0.35, head: -0.5, hipY: 0.95,
-        shN: echo ? 0.12 : -0.05, elN: 0.02, shF: echo ? 0.2 : 1.1, elF: 1.2 });
+        shN: echo || fix ? 0.12 : ram ? 0.6 : -0.05, elN: 0.02, shF: echo ? 0.2 : ram ? 0.5 : 1.1, elF: 1.2, sx: 0.5, sy: 0.1, sr: 0 });
       rate = 42;
     } else {
       // The landing: down on one knee, the fist or glaive driven into the floor, then rising out of it
       const up = Math.max(0, Math.min(1, (S.t - 5) / 7));
       Object.assign(P, { hipY: 0.5 + 0.3 * up, spine: 0.72 - 0.4 * up, hipN: 1.55 - 0.8 * up, knN: -2.3 + 1.3 * up, hipF: -0.25, knF: -2.1 + 1.4 * up,
-        shN: 0.45, elN: 0.05, shF: -0.65, elF: 0.45, head: 0.1 });
+        shN: 0.45, elN: 0.05, shF: -0.65, elF: 0.45, head: 0.1, sx: 0.85, sy: 0.35, sr: 0 });
       rate = 40;
     }
   } else if (st === 'dive') {
@@ -177,6 +264,25 @@ export function animatePlayer(rig, p, dt, t) {
     if (back) Object.assign(P, { spine: -0.3 * u, hipN: 0.75, knN: -1.35, hipF: -0.35, knF: -1.0, shN: 1.25, elN: 1.7, shF: 0.35, elF: 1.3, hipY: 0.84, head: 0.2, bodyZ: 0.1 * u });
     else Object.assign(P, { spine: 0.5 * u, hipN: 1.05, knN: -1.45, hipF: -0.65, knF: -0.55, shN: -0.7, shF: -0.9, elN: 0.35, elF: 0.3, hipY: 0.78, head: -0.2, bodyZ: -0.12 * u, twist: 0.3 * u });
     rate = 34;
+  } else if (st === 'ult' && ram) {
+    // RAM: the shield raised high and a roar while it is called; crouched behind it as the ram's head forms,
+    // the charge, then the slam
+    const R = p.ultRun, U = ULT.ram;
+    if (!R) Object.assign(P, { spine: -0.35, shN: 2.6, elN: 0.35, shF: 2.4, elF: 0.4, sx: 0.35, sy: 2.05, sr: 1.4, hipN: 0.45, knN: -0.6, hipF: -0.45, knF: -0.4, hipY: 0.88, head: 0.5 });
+    else if (R.slamT) Object.assign(P, { spine: 0.8, sx: 1.1, sy: 0.4, sr: 0, shN: 1.25, elN: 0.1, shF: 1.15, elF: 0.2, hipN: 1.2, knN: -1.3, hipF: -0.7, knF: -0.5, hipY: 0.64 });
+    else if (R.t <= U.brace) Object.assign(P, { spine: 0.55, sx: 0.9, sy: 0.9, sr: -0.1, shN: 1.2, elN: 0.6, shF: 0.95, elF: 1.3, hipN: 0.8, knN: -1.3, hipF: -0.6, knF: -0.6, hipY: 0.74, head: -0.3 });
+    else {
+      rig.phase += dt * 20; const s = Math.sin(rig.phase), c = Math.cos(rig.phase);
+      Object.assign(P, { spine: 0.65, twist: 0.15, hipN: s * 0.85 + 0.25, hipF: -s * 0.85 + 0.25, knN: -Math.max(0, -c) * 1.3 - 0.3, knF: -Math.max(0, c) * 1.3 - 0.3,
+        shN: 1.25, elN: 0.55, shF: 0.9, elF: 1.4, hipY: 0.82, head: -0.35, sx: 1.0, sy: 0.9, sr: -0.12 });
+    }
+    rate = 26;
+  } else if (st === 'ult' && fix) {
+    // Fix: the wrench held high and a hand calling the drop; then braced, pointing at the pod
+    const R = p.ultRun;
+    if (!R || R.t <= ULT.fix.drop) Object.assign(P, { spine: -0.3, shN: 3.0, elN: 0.3, shF: 2.5, elF: 0.15, hipN: 0.35, knN: -0.5, hipF: -0.3, knF: -0.3, hipY: 0.92, head: 0.55 });
+    else Object.assign(P, { spine: 0.15, shN: 0.4, elN: 1.2, shF: 1.45, elF: 0.05, hipN: 0.55, knN: -0.75, hipF: -0.45, knF: -0.35, hipY: 0.88, head: -0.05, twist: -0.2 });
+    rate = 24;
   } else if (st === 'ult') {
     const R = p.ultRun;
     if (echo) {
@@ -226,6 +332,7 @@ export function animatePlayer(rig, p, dt, t) {
     const s = walk ? Math.sin(rig.phase) : 0;
     Object.assign(P, { hipY: 0.56 + breathe * 0.012, spine: 0.42 + breathe * 0.02, hipN: 1.25 + s * 0.25, knN: -2.0 - s * 0.15, hipF: 0.25 - s * 0.25, knF: -2.3 + s * 0.15,
       shN: echo ? 0.95 : 1.1, elN: echo ? 1.4 : 1.6, shF: -0.4, elF: 0.6, head: -0.25, twist: -0.12 });
+    if (ram) Object.assign(P, { hipY: 0.34 + breathe * 0.01, spine: 1.05, shN: 0.95, elN: 0.6, shF: 0.6, elF: 1.3, head: -0.5, sx: 0.78, sy: 0.5, sr: -0.15 });
     rate = 20;
   } else if (speed > 0.6) {
     const back = p.vx * p.facing < 0, amp = Math.min(1, speed / 7);
@@ -239,23 +346,31 @@ export function animatePlayer(rig, p, dt, t) {
       p.prevVx = p.vx;
     } else {
       // Sprint: knees high, arms pumping, leaning into it, torso counter-twisting the stride
-      rig.phase += dt * speed * 1.8 * (back ? -1 : 1);
+      rig.phase += dt * speed * (ram ? 1.45 : 1.8) * (back ? -1 : 1);
       const s = Math.sin(rig.phase), c = Math.cos(rig.phase);
       Object.assign(P, { hipN: s * 0.95 * amp + 0.05, hipF: -s * 0.95 * amp + 0.05, knN: -Math.max(0, -c) * 1.45 * amp - 0.15, knF: -Math.max(0, c) * 1.45 * amp - 0.15,
         shN: -s * 0.95 * amp, shF: s * 0.95 * amp, elN: 1.15, elF: 1.15, spine: (back ? 0.05 : 0.3) * amp, hipY: 0.95 - Math.abs(c) * 0.07, twist: -s * 0.15 * amp, head: -0.2 * amp });
+      // RAM: a heavy, planted stride, the shield carried forward at his side, bobbing with each step
+      if (ram) Object.assign(P, { hipN: s * 0.7 * amp + 0.1, hipF: -s * 0.7 * amp + 0.1, knN: -Math.max(0, -c) * 1.1 * amp - 0.25, knF: -Math.max(0, c) * 1.1 * amp - 0.25,
+        shN: 0.55, elN: 0.7, shF: s * 0.6 * amp, elF: 1.2, spine: (back ? 0.08 : 0.28) * amp, hipY: 0.92 - Math.abs(c) * 0.08, sx: 0.5, sy: 0.98 + Math.abs(c) * 0.05, sr: 0.05 });
     }
     rate = 22;
   } else {
     // Idle: weight settled, breathing, a small sway; each has their own ready stance
     Object.assign(P, echo ? { spine: 0.14 + breathe * 0.02, hipN: 0.3, knN: -0.35, hipF: -0.2, knF: -0.25, hipY: 0.92 + breathe * 0.006, shN: 0.35, elN: 0.6, shF: 0.1, elF: 0.7, head: -0.05, twist: 0.08 }
+      // RAM: a wide, settled stance, the shield grounded at his side; Fix: weight on one leg, wrench on her shoulder
+      : ram ? { spine: 0.1 + breathe * 0.015, hipN: 0.28, knN: -0.32, hipF: -0.24, knF: -0.28, hipY: 0.9 + breathe * 0.006, shN: 0.45, elN: 0.55, shF: -0.1, elF: 0.6, head: -0.08,
+        sx: 0.42, sy: 0.6 + breathe * 0.005, sr: 0.05 }
+      : fix ? { spine: 0.08 + breathe * 0.02, hipN: 0.18, knN: -0.12, hipF: -0.14, knF: -0.3, hipY: 0.93 + breathe * 0.006, shN: 2.4, elN: 2.2, shF: -0.1, elF: 0.5, head: 0.02, twist: -0.05, bodyZ: 0.03 }
       : { spine: 0.06 + breathe * 0.015, hipN: 0.12, knN: -0.15, hipF: -0.1, knF: -0.12, hipY: 0.94 + breathe * 0.005, shN: 0.3, elN: 0.7, shF: -0.05, elF: 0.4 });
     rate = 10;
   }
 
-  // Aiming layer: Nova's bracer arm and Echo's rifle follow the aim while shooting
+  // Aiming layer: Nova's bracer arm, Echo's rifle and Fix's rivet gun follow the aim while shooting (RAM's
+  // cannon turns on his shoulder instead, below)
   const rifle = echo && (p.rifleT >= HUNTER.rifle.raise || (p.rifleCd > 0 && (p.rifleCdMax || 0) - p.rifleCd < 14));
-  const shooting = (p.chargeT > 0 || p.fireCd > 0 || p.shootT > 0 || rifle || (p.aimFree && !echo)) && ['normal', 'dash', 'slide'].includes(st);
-  if (shooting) {
+  const shooting = (p.chargeT > 0 || p.fireCd > 0 || p.shootT > 0 || rifle || (p.aimFree && p.char === 'nova') || (fix && p.rivetQ > 0)) && ['normal', 'dash', 'slide'].includes(st);
+  if (shooting && !ram) {
     P.shN = aimAng + Math.PI / 2 + P.spine; P.elN = 0.02;
     if (echo) {
       P.shF = aimAng + Math.PI / 2 + P.spine - 0.28; P.elF = 0.75;
@@ -298,6 +413,7 @@ export function animatePlayer(rig, p, dt, t) {
   rig.body.position.y = st === 'downed' || st === 'dead' ? 0.1 : 0;
 
   // ---- Suit details ----
+  if (ram || fix) { newSuits(rig, p, cur, t, dt, aimAng, shooting); return; }
   if (!echo) {
     const ex = rig.extra;
     const open = st === 'bulwark' ? Math.min(1, p.st / 3) * (p.st < 12 ? 1 : Math.max(0, 1 - (p.st - 12) / 3)) : 0;
@@ -353,4 +469,45 @@ export function animatePlayer(rig, p, dt, t) {
     if (Math.abs(ck - veil) < 0.01) ck = veil;
     rig.setCloak(ck);
   }
+}
+
+// RAM's shield, cannon and glows; Fix's wrench, crane arm, welder and ponytail
+const LV = { L1: 1, L2: 2, L3: 3, perfect: 3, L4: 4 };
+function newSuits(rig, p, cur, t, dt, aimAng, shooting) {
+  const ex = rig.extra, st = p.state, stage = chargeStage(p), charge = LV[stage] || 0;
+  if (p.char === 'ram') {
+    // The shield sits where the pose puts it, nearer the body's middle as it comes round in front
+    const front = Math.max(0, Math.min(1, (cur.sx - 0.35) / 0.55));
+    ex.shield.position.set(cur.sx, cur.sy, 0.46 - 0.2 * front); ex.shield.rotation.z = cur.sr;
+    // The cannon turns to the aim (the spine's lean is taken out); at rest it points a little up
+    const aimNow = shooting || p.aimFree || p.chargeT > 0;
+    const want = aimNow ? aimAng + cur.spine : 0.25 + cur.spine * 0.5;
+    rig.cannonA = (rig.cannonA ?? want) + (want - (rig.cannonA ?? want)) * (1 - Math.exp(-dt * 22));
+    ex.cannon.rotation.z = rig.cannonA;
+    // Energy: Kinetic stored in the shield makes him glow brighter; charging, guarding and charges flare it
+    const kin = (p.kinetic || 0) / 100, guard = st === 'guard' ? 0.6 + Math.max(0, 1 - p.guardT / 8) * 2.5 : 0;
+    rig.mats.energy.emissiveIntensity = 2.0 + kin * 2.6 + charge * 1.1 + guard + (p.chargeT > 0 ? Math.sin(t * 30) * 0.35 : 0) + (st === 'rush' ? 1.5 : 0)
+      + (st === 'ult' ? 4 + Math.sin(t * 36) * 0.8 : 0) + (p.braceT > 0 ? 0.8 + Math.sin(t * 10) * 0.4 : 0);
+    const hot = st === 'rush' || (st === 'ult' && p.ultRun && !p.ultRun.slamT) || (st === 'attack' && p.moveId === 'ram_rise');
+    for (const s of ex.stacks) s.scale.setScalar(hot ? 1.3 + Math.random() * 0.2 : 1);
+    for (const r of ex.pistons) r.scale.setScalar(hot || (st === 'pound' && p.pound && p.pound.phase !== 'hold') ? 1.4 : 1);
+    return;
+  }
+  // Fix: the wrench is in her hand unless she is shooting or patching (then it is slung on her pack)
+  const melee = st === 'attack' || st === 'pound' || st === 'vb' || (st === 'ult');
+  const inHand = melee || !(shooting || st === 'patch');
+  ex.wrench.visible = inHand; ex.slung.visible = !inHand;
+  // The welder's tip burns while the Patch Beam runs
+  ex.tipMat.emissiveIntensity = st === 'patch' ? 4 + Math.sin(t * 40) * 1.2 : 1.6;
+  // The crane arm unfolds while she builds (fx sets craneT on a deploy), then folds away
+  rig.craneT = Math.max(0, (rig.craneT || 0) - dt);
+  const open = rig.craneT > 0 ? Math.min(1, rig.craneT / 0.15) : 0;
+  rig.craneK = (rig.craneK || 0) + (open - (rig.craneK || 0)) * (1 - Math.exp(-dt * 16));
+  ex.crane.rotation.z = 1.9 - 2.2 * rig.craneK; ex.craneFore.rotation.z = -2.6 + 1.7 * rig.craneK;
+  // The ponytail swings with her motion
+  const want = 0.5 - Math.max(-0.6, Math.min(0.6, p.vx * p.facing * 0.05)) + Math.max(-0.5, Math.min(0.8, -p.vy * 0.04));
+  rig.tail = (rig.tail ?? want) + (want - (rig.tail ?? want)) * (1 - Math.exp(-dt * 9));
+  ex.ponytail.rotation.z = rig.tail - 0.5 + Math.sin(t * 3) * 0.04;
+  rig.mats.energy.emissiveIntensity = 2.0 + charge * 1.1 + (p.chargeT > 0 ? Math.sin(t * 30) * 0.35 : 0) + (st === 'patch' ? 1 : 0) + (st === 'ult' ? 4 + Math.sin(t * 36) * 0.8 : 0)
+    + (p.overclockT > 0 ? 0.8 + Math.sin(t * 14) * 0.4 : 0);
 }

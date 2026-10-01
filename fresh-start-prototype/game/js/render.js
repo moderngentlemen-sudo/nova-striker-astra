@@ -8,7 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER } from './level.js';
-import { SETTINGS, PLAYER_COLORS } from './config.js';
+import { SETTINGS, PLAYER_COLORS, CHARS } from './config.js';
 import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
@@ -260,6 +260,7 @@ export class View {
         rig = buildPlayerRig(p.char);
         const ringMat = new THREE.MeshBasicMaterial({ color: PLAYER_COLORS[p.slot], transparent: true, opacity: 0.65, depthWrite: false });
         const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.55, 32), ringMat); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03;
+        ring.scale.setScalar(Math.max(1, CHARS[p.char].width / 0.72));   // RAM stands in a wider ring
         rig.root.add(ring); rig.ring = ring;
         this.scene.add(rig.root); this.rigs.set(p, rig);
       }
@@ -352,13 +353,19 @@ export class View {
       poundLand: 0.22 + 0.12 * (ev.level || 0), poundDrop: 0.03, aegisHit: 0.05, beamStart: 0.3,
       aegisOff: ev.why === 'break' ? 0.3 : ev.why === 'detonate' ? 0.4 : 0, bossSlam: ev.big ? 0.55 : 0.35, bossPhase: 0.6, bossDown: 0.9, bossCrash: 0.45, bossIntro: 0.15,
       frag: 0.12 + 0.05 * (ev.level || 0), cluster: 0.1, chain: 0.04 + 0.03 * (ev.level || 0), wellOpen: 0.08, wellCollapse: 0.18 + 0.06 * (ev.level || 1), riseBlast: 0.14, perfectDodge: 0.2,
-      ultCast: 0.35, ultJoin: 0.3, ultNova: 0.95, ultCut: 0.06, ultFinisher: 0.8, teamFinisher: 0.3 }[ev.type];
+      ultCast: 0.35, ultJoin: 0.3, ultNova: 0.95, ultCut: 0.06, ultFinisher: 0.8, teamFinisher: 0.3,
+      // RAM and Fix
+      guardBlock: ev.heavy ? 0.2 : 0.07, perfectGuard: 0.18, rampartBreak: 0.45, kineticRelease: 0.25 + 0.5 * (ev.k || 0), rush: ev.level ? 0.05 + 0.06 * ev.level : 0.04,
+      plowCatch: 0.08, ramSplat: 0.55, ramBonk: 0.3, wallUp: 0.18, wallDown: ev.broken ? 0.25 : 0, wallHit: 0.04, leapLand: 0.4, provoke: 0.3, quake: 0.4, upliftBlast: 0.2,
+      linkHit: 0.05, ramSlam: 1, fortify: 0.2, padBounce: 0.05, rivetBlast: 0.12, sparkRing: 0.2, podLand: 0.7, overhaulPulse: 0.3, gadgetEnd: ev.why === 'broken' ? 0.1 : 0 }[ev.type];
     if (shake) this.trauma = Math.min(1, this.trauma + shake);
     // Big releases light the whole frame for a moment (bloom) and the rocket jump thumps the camera
     const glow = { rocketJump: 0.45 + 0.75 * (ev.power || 0.5), perfectRelease: 0.4, dash: ev.level >= 3 ? 0.35 : 0,
       shot: ev.level >= 3 ? 0.22 : 0, blast: ev.level >= 3 ? 0.15 : 0, snipe: ev.full ? 0.3 : 0.08, beamStart: 0.6, chargeLevel: ev.level >= 4 ? 0.3 : 0,
       aegisOff: ev.why === 'detonate' ? 0.5 : ev.why === 'break' ? 0.3 : 0, poundLand: ev.level >= 2 ? 0.2 + 0.1 * ev.level : 0, bossPhase: 0.6, bossDown: 1,
-      wellCollapse: 0.25, riseBlast: 0.2, perfectDodge: 0.35, ultCast: 0.6, ultJoin: 0.5, ultNova: 1.4, ultFinisher: 1, teamFinisher: 1.4, chain: 0.08 * (1 + (ev.level || 0)) }[ev.type];
+      wellCollapse: 0.25, riseBlast: 0.2, perfectDodge: 0.35, ultCast: 0.6, ultJoin: 0.5, ultNova: 1.4, ultFinisher: 1, teamFinisher: 1.4, chain: 0.08 * (1 + (ev.level || 0)),
+      perfectGuard: 0.3, kineticRelease: 0.3 + 0.7 * (ev.k || 0), ramSplat: 0.5, quake: 0.3, upliftBlast: 0.25, ramSlam: 1.3, podLand: 0.8, overhaulPulse: 0.7, overhaulDone: 0.6,
+      fortify: 0.4, wallUp: 0.25, leapLand: 0.3, provoke: 0.35, sparkRing: 0.3, gadgetUp: 0.15, powerUp: 0.15 }[ev.type];
     if (glow) this.bloomKick = Math.min(1.4, this.bloomKick + glow);
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
@@ -373,7 +380,14 @@ export class View {
     else if (ev.type === 'ultFinisher') this.startImpact(ev.x, ev.y, 1.2, true);
     else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5 };   // when the eclipse shatters
     else if (ev.type === 'perfectDodge') this.startImpact(ev.x, ev.y, 0.6);
+    else if (ev.type === 'ramSplat' && ev.n >= 2) this.startImpact(ev.x, ev.y, 0.9);
+    else if (ev.type === 'kineticRelease' && ev.k >= 0.8) this.startImpact(ev.x, ev.y, 0.9);
+    else if (ev.type === 'perfectGuard' && ev.heavy) this.startImpact(ev.x, ev.y, 0.7);
+    else if (ev.type === 'ramSlam') this.startImpact(ev.x, ev.y, 1.4, true);
+    else if (ev.type === 'podLand') this.startImpact(ev.x, ev.y + 1, 1.1, true);
     if (ev.type === 'ultNova') this.punch = Math.min(this.punch, -0.6);
+    if (ev.type === 'ramSplat' || ev.type === 'leapLand' || ev.type === 'quake') this.punch = Math.min(this.punch, -0.3);
+    if (ev.type === 'ramSlam' || ev.type === 'podLand') this.punch = Math.min(this.punch, -0.6);
   }
 
   // Impact frame (Q-C test; sci-fi look since Version 9), phased: a cyan photonegative flash, then a hologram
