@@ -1072,7 +1072,7 @@ export class World {
       const hb = hurtbox(e), qx = Math.max(hb.x0, Math.min(ox, hb.x1)), qy = Math.max(hb.y0, Math.min(oy, hb.y1));
       const dx = qx - ox, dy = qy - oy, d = Math.hypot(dx, dy);
       if (d > r || (d > 0.9 && (dx * nx + dy * ny) / d < cos)) continue;
-      hitEnemy(this, e, { owner: p, dmg, poise, kb: [(sign(e.x - p.x) || p.facing) * kb, 4 + 4 * k], armorBreak: k >= 0.5, heavy: true, ram: true }, 'pulse');
+      hitEnemy(this, e, { owner: p, dmg, poise, kb: [(sign(e.x - p.x) || p.facing) * kb, 4 + 4 * k], armorBreak: k >= 0.5, heavy: true, ram: true, ramKnock: true }, 'pulse');
     }
     for (const pr of this.projectiles) {
       if (pr.team !== 'e' || pr.dead) continue;
@@ -1096,7 +1096,7 @@ export class World {
       r.hit.add(e);
       const rooted = e.boss || ['post', 'turret', 'sniper', 'mortar'].includes(e.type), heavy = !e.light;
       if (rooted || (heavy && L < R.heavyFrom)) {
-        hitEnemy(this, e, { owner: p, dmg: R.bonk.dmg[L], poise: R.bonk.poise[L], kb: [dir * 6, 2], armorBreak: L >= 2, heavy: true, ram: true }, 'pulse');
+        hitEnemy(this, e, { owner: p, dmg: R.bonk.dmg[L], poise: R.bonk.poise[L], kb: [dir * 6, 2], armorBreak: L >= 2, heavy: true, ram: true, ramKnock: true }, 'pulse');
         this.endRush(p, 'bonk', e); p.state = 'normal'; p.st = 0;
         return;
       }
@@ -1221,7 +1221,7 @@ export class World {
     const L = RAM.link, leap = p.leap; p.leap = null;
     p.state = 'normal'; p.st = 0; p.vx *= 0.2;
     this.spawnHitbox({ owner: p, team: 'p', x0: p.x - L.land.r, x1: p.x + L.land.r, y0: p.y - 0.3, y1: p.y + 1.9, dmg: L.land.dmg, poise: L.land.poise,
-      kb: [9, 5], radial: true, cx: p.x, instance: this.newInstance(), scatter: true });
+      kb: [9, 5], radial: true, cx: p.x, instance: this.newInstance(), scatter: true, ramKnock: true });
     this.emit('leapLand', { p, x: p.x, y: p.y });
     const q = leap && leap.q;
     if (q && this.players.includes(q) && q.state !== 'dead' && q.state !== 'downed') this.makeLink(p, q);

@@ -1,16 +1,19 @@
 // RAM's effects. The Rampart's hard-light pane where the sim's shield stands (it flares when it blocks, flickers
 // and cracks as its Integrity runs low, and shatters when it breaks); the Bulwark Wall; the Ram Charge's
 // hard-light wedge, streaks and dust; the Guardian Link's tether; the Kinetic Release's cone of force; the
-// Hydraulic Uplift's jets; Provoke's roar; and Siege Breaker's colossal ram's head. Presentation only: reads the
-// sim, never changes it.
+// Hydraulic Uplift's jets; Provoke's roar; Siege Breaker's colossal ram's head; the sparks his charge throws
+// up; and the craters his big impacts leave in floors and walls. Presentation only: reads the sim, never
+// changes it.
 import * as THREE from 'three';
 import { CHARS, RAM, ULT } from './config.js';
 import { toWorld, planeDir } from './space.js';
-import { pathFrame } from './level.js';
+import { pathFrame, groundBelow, pointInSolid } from './level.js';
 import { chest } from './player.js';
 import { Strip } from './beamfx.js';
 
 const BLUE = CHARS.ram.energy, PALE = '#cfe6ff', WHITE = '#ffffff';
+const SPARKS = ['#fff1c4', '#ffc24a', '#ff8a1f', '#ff6a00'];   // hot steel on stone
+const CRATER = { life: 9, fade: 2.5, glow: 1.2, pool: 10 };   // seconds a crater stays, fades out over, its cracks glow for
 
 function canvasTex(size, draw) {
   const c = document.createElement('canvas'); c.width = c.height = size;
@@ -38,6 +41,36 @@ const hexTex = cracks => canvasTex(256, (g, s) => {
   }
 });
 
+// A crater: a scorched hollow with a broken rim and cracks running out of it (normal blending), and the same
+// cracks again as a glow map (still hot with hard light for a moment after the impact)
+const craterTex = (seed, glow) => canvasTex(256, (g, s) => {
+  let r = seed; const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
+  const c = s / 2, R = s * 0.3;
+  const cracks = [];
+  for (let k = 0; k < 9; k++) {
+    let a = (k / 9) * Math.PI * 2 + rnd() * 0.5, d = R * (0.5 + rnd() * 0.3); const pts = [[c + Math.cos(a) * d, c + Math.sin(a) * d]];
+    const len = R * (0.7 + rnd() * 0.75);
+    for (let i = 0; i < 5; i++) { d += len / 5; a += (rnd() - 0.5) * 0.45; pts.push([c + Math.cos(a) * d, c + Math.sin(a) * d]); }
+    cracks.push(pts);
+  }
+  const crack = (w, col) => { g.strokeStyle = col; g.lineCap = 'round'; for (const pts of cracks) { g.lineWidth = w; g.beginPath(); g.moveTo(...pts[0]); for (const q of pts.slice(1)) { g.lineTo(...q); g.lineWidth *= 0.8; } g.stroke(); } };
+  if (glow) { crack(6, 'rgba(255,255,255,0.95)'); const gg = g.createRadialGradient(c, c, 0, c, c, R); gg.addColorStop(0, 'rgba(255,255,255,0.8)'); gg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gg; g.fillRect(0, 0, s, s); return; }
+  // the broken rim: a jagged ring of churned-up ground
+  g.beginPath();
+  for (let i = 0; i <= 40; i++) { const a = (i / 40) * Math.PI * 2, rr = R * (1.08 + (rnd() - 0.5) * 0.2); g.lineTo(c + Math.cos(a) * rr, c + Math.sin(a) * rr); }
+  g.fillStyle = 'rgba(120,128,140,0.55)'; g.fill();
+  // the hollow, darkest at its heart
+  const hg = g.createRadialGradient(c, c, 0, c, c, R);
+  hg.addColorStop(0, 'rgba(8,10,14,0.95)'); hg.addColorStop(0.6, 'rgba(22,26,32,0.85)'); hg.addColorStop(1, 'rgba(40,45,54,0.6)');
+  g.beginPath();
+  for (let i = 0; i <= 40; i++) { const a = (i / 40) * Math.PI * 2, rr = R * (0.92 + (rnd() - 0.5) * 0.14); g.lineTo(c + Math.cos(a) * rr, c + Math.sin(a) * rr); }
+  g.fillStyle = hg; g.fill();
+  crack(5, 'rgba(10,12,16,0.85)');
+  // flecks of debris thrown around it
+  g.fillStyle = 'rgba(30,34,40,0.7)';
+  for (let i = 0; i < 26; i++) { const a = rnd() * Math.PI * 2, d = R * (1.1 + rnd() * 0.6), z = 1.5 + rnd() * 3; g.fillRect(c + Math.cos(a) * d, c + Math.sin(a) * d, z, z); }
+});
+
 export class RamFX {
   constructor(fx) {
     this.fx = fx; this.scene = fx.scene; this.t = 0;
@@ -49,6 +82,25 @@ export class RamFX {
       wedge: new THREE.MeshBasicMaterial({ color: new THREE.Color(BLUE).multiplyScalar(1.3), transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
       edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(PALE).multiplyScalar(1.6), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }) };
     this.panes = new Map(); this.walls = new Map(); this.wedges = new Map(); this.links = new Map(); this.heads = new Map(); this.ghostTick = new Map();
+    // Craters: a small pool of decals (the oldest is reused), three looks picked at random
+    this.craterTex = [1, 2, 3].map(k => ({ base: craterTex(k * 7919, false), glow: craterTex(k * 7919, true) }));
+    this.craters = [];
+    for (let i = 0; i < CRATER.pool; i++) {
+      const g = new THREE.PlaneGeometry(1, 1);
+      const base = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      const glow = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: BLUE, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+      base.visible = glow.visible = false; base.renderOrder = 1; glow.renderOrder = 2; this.scene.add(base); this.scene.add(glow);
+      this.craters.push({ base, glow, life: 0, age: 0 });
+    }
+    // Sparks: thin streaks stretched along their flight (one instanced mesh, ordinary blending so they read on
+    // bright floors as well as dark ones); they fall, bounce off the floor and cool from white-hot to red
+    this.spk = Array.from({ length: 160 }, () => ({ life: 0, max: 1, x: 0, y: 0, vx: 0, vy: 0, d: 0, c: new THREE.Color() }));
+    this.si = 0;
+    this.spkMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }), this.spk.length);
+    this.spkMesh.frustumCulled = false; this.spkMesh.renderOrder = 6;
+    for (let i = 0; i < this.spk.length; i++) { this.spkMesh.setMatrixAt(i, new THREE.Matrix4().makeScale(0, 0, 0)); this.spkMesh.setColorAt(i, new THREE.Color(WHITE)); }
+    this.scene.add(this.spkMesh);
+    this.q = new THREE.Quaternion(); this.sc = new THREE.Vector3(); this.cool = new THREE.Color('#8a1c00'); this.col = new THREE.Color();
     this.v = new THREE.Vector3(); this.v2 = new THREE.Vector3(); this.m4 = new THREE.Matrix4();
   }
 
@@ -112,6 +164,8 @@ export class RamFX {
         F.dust(p.x, p.y, 0.4 + 0.2 * L, [ev.dx > 0 ? Math.PI : 0], { noRing: L < 2 });
         F.smoke(x, p.y + 0.3, '#8e97a3', 4 + 3 * L, 3 + L, 0.5, 0.5, { dir: ev.dx > 0 ? Math.PI : 0, spread: 0.8, op: 0.45 });
         if (L) { F.sprite(p.x, p.y + 1.2, 'ring', BLUE, 0.8 + 0.3 * L, 0.2, 2.4); F.burst(p.x, p.y + 1.2, BLUE, 12 + 8 * L, 8 + 3 * L, 0.3, 0.3, { dir: ev.dx > 0 ? Math.PI : 0, spread: 1.1 }); }
+        // The shield's edge bites the floor: a spray of sparks
+        if (p.onGround) this.sparks(p.x + ev.dx * (p.w / 2 + 0.2), p.y + 0.08, ev.dx, 10 + 6 * L, 1.2);
         // The exhaust stacks roar
         for (let i = 0; i < 6; i++) F.smoke(p.x - p.facing * 0.55, p.y + 2.25, '#6f7883', 1, 2, 0.4, 0.6, { dir: Math.PI / 2 + (ev.dx > 0 ? 0.6 : -0.6), spread: 0.5, op: 0.45, grav: -1.2 });
         break;
@@ -123,6 +177,7 @@ export class RamFX {
         F.burst(ev.x, ev.y, '#5d6674', 20, 9, 0.32, 0.6, { dir: Math.PI / 2, spread: 2.4, grav: 18 }); F.burst(ev.x, ev.y, BLUE, 26, 11, 0.32, 0.35);
         F.dust(ev.x, p.y, 0.9, [0, Math.PI], { reach: 1.5 }); F.smoke(ev.x, ev.y, '#8e97a3', 8, 1.8, 0.7, 0.9, { op: 0.45, grow: 2.4, grav: -0.6 });
         F.popText(ev.x, ev.y + 1.1, 'SLAM', PALE, 0.65);
+        this.wallCrater(ev.x, ev.y, Math.sign(ev.x - p.x) || p.facing, 0.75 + 0.12 * Math.min(4, ev.n) + 0.1 * ev.level);
         break;
       }
       case 'ramBonk': { F.sprite(ev.x, ev.y, 'star', WHITE, 1.6, 0.14, 1.5); F.sprite(ev.x, ev.y, 'ring', PALE, 1.0, 0.25, 2.6); F.burst(ev.x, ev.y, PALE, 18, 8, 0.28, 0.3, { grav: 8 }); break; }
@@ -155,6 +210,7 @@ export class RamFX {
         F.groundRing(ev.x, ev.y, WHITE, 0.4, 3.2, 0.32, 0.8); F.groundRing(ev.x, ev.y, BLUE, 0.3, 2.4, 0.3, 0.9);
         F.dust(ev.x, ev.y, 0.9, [0, Math.PI]); F.burst(ev.x, ev.y + 0.3, '#5d6674', 14, 8, 0.3, 0.55, { dir: Math.PI / 2, spread: 2.2, grav: 18 });
         F.sprite(ev.x, ev.y + 0.5, 'star', WHITE, 1.6, 0.16, 1.5);
+        this.crater(ev.x, ev.y, 1.0);
         break;
       }
       case 'provoke': {
@@ -163,7 +219,7 @@ export class RamFX {
         F.popText(ev.x, ev.y + 1.6, 'PROVOKE', PALE, 0.7);
         break;
       }
-      case 'quake': F.groundRing(ev.x, ev.y, BLUE, 0.4, 2.6, 0.32, 0.9); F.dust(p.x, p.y, 1.0, [0, Math.PI], { reach: 1.2 }); F.sprite(ev.x, ev.y + 0.3, 'star', WHITE, 1.8, 0.16, 1.5); break;
+      case 'quake': F.groundRing(ev.x, ev.y, BLUE, 0.4, 2.6, 0.32, 0.9); F.dust(p.x, p.y, 1.0, [0, Math.PI], { reach: 1.2 }); F.sprite(ev.x, ev.y + 0.3, 'star', WHITE, 1.8, 0.16, 1.5); this.crater(ev.x, ev.y, 1.15); break;
       case 'upliftBlast': {
         F.sprite(ev.x, ev.y, 'star', WHITE, 1.8, 0.16, 1.5); F.sprite(ev.x, ev.y, 'ring', BLUE, ev.r * 0.9, 0.3, 2.8);
         F.burst(ev.x, ev.y, BLUE, 26, 9, 0.3, 0.32); F.burst(ev.x, ev.y, PALE, 10, 6, 0.24, 0.25, { dir: Math.PI / 2, spread: 1.4 });
@@ -178,6 +234,7 @@ export class RamFX {
         const fl = F.floorUnder(x, y, 3);
         if (fl !== null) { F.groundRing(x, fl, WHITE, 0.5, r * 1.3, 0.55, 0.95); F.groundRing(x, fl, BLUE, 0.4, r, 0.5, 0.9); F.dust(x, fl, 1.4, [0, Math.PI], { reach: 3 }); }
         F.smoke(x, y, '#8e97a3', 14, 2.5, 1.2, 1.3, { op: 0.45, grow: 2.6, grav: -0.8 });
+        this.crater(x, y, Math.min(3, r * 0.5), 3);
         break;
       }
     }
@@ -185,6 +242,7 @@ export class RamFX {
 
   update(dt, world, view) {
     this.t += dt;
+    this.updateCraters(dt); this.updateSparks(dt);
     const F = this.fx, cam = view.camera.position, seenP = new Set(), seenW = new Set(), seenL = new Set();
     for (const p of world.players) {
       if (p.char !== 'ram') continue;
@@ -228,6 +286,9 @@ export class RamFX {
         this.mat.wedge.opacity = 0.32 + 0.08 * L;
         for (let i = 0; i < 2 + L; i++) F.burst(p.x + dir * (p.w / 2 + 0.4), p.y + 0.3 + Math.random() * p.h, Math.random() < 0.5 ? WHITE : BLUE, 1, 14 + 4 * L, 0.2, 0.14, { dir: dir > 0 ? Math.PI : 0, spread: 0.12 });
         if (p.onGround && Math.random() < 0.7) F.dust(p.x - dir * 0.3, p.y, 0.3 + 0.08 * L, [dir > 0 ? Math.PI : 0], { noRing: true, op: 0.45 });
+        // Sparks: the shield's lower edge and his boots grind along the floor; in the air the shield's rim crackles
+        if (p.onGround) { this.sparks(p.x + dir * (p.w / 2 + 0.25), p.y + 0.06, dir, 3 + L, 1); if (Math.random() < 0.6) this.sparks(p.x - dir * 0.15, p.y + 0.04, dir, 1, 0.7); }
+        else if (Math.random() < 0.6) F.burst(p.x + dir * (p.w / 2 + 0.3), p.y + 0.4 + Math.random() * 1.6, Math.random() < 0.5 ? WHITE : PALE, 2, 6, 0.14, 0.18, { dir: dir > 0 ? Math.PI : 0, spread: 1.6, grav: 6 });
         const last = this.ghostTick.get(p) ?? -99;
         if (rig && world.tick - last >= (L >= 2 ? 3 : 4)) { this.ghostTick.set(p, world.tick); F.ghosts.spawn(rig, new THREE.Color(BLUE).multiplyScalar(1.2 + 0.25 * L), 0.22 + 0.06 * L, 0.18); }
       } else W.visible = false;
@@ -321,10 +382,88 @@ export class RamFX {
     }
   }
 
+  // Sparks thrown back from a point scraping along the floor, `dir` the way he is moving (streaks, see updateSparks),
+  // with a few glowing particles among them that show on dark backgrounds
+  sparks(x, y, dir, n, k = 1) {
+    const a0 = dir > 0 ? Math.PI - 0.35 : 0.35;
+    for (let i = 0; i < n; i++) {
+      const S = this.spk[this.si]; this.si = (this.si + 1) % this.spk.length;
+      const a = a0 + (Math.random() - 0.5) * 0.9, sp = (6 + Math.random() * 9) * k;
+      Object.assign(S, { x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, d: 0.1 + Math.random() * 0.55 });
+      S.life = S.max = 0.22 + Math.random() * 0.25; S.c.set(SPARKS[(Math.random() * SPARKS.length) | 0]);
+      if (i % 2 === 0) this.fx.burst(x, y, SPARKS[0], 1, sp * 0.8, 0.2, 0.25, { dir: a, spread: 0.3, grav: 18, drag: 0.95 });   // a glow on dark backgrounds
+    }
+    // where the steel meets the floor it glows white-hot
+    if (n >= 2) this.fx.sprite(x, y + 0.05, 'glow', '#ffb24a', 0.55 + 0.05 * n, 0.08, 1.3);
+  }
+  updateSparks(dt) {
+    const M = this.spkMesh;
+    for (let i = 0; i < this.spk.length; i++) {
+      const S = this.spk[i];
+      if (S.life <= 0) { if (S.max) { M.setMatrixAt(i, this.m4.makeScale(0, 0, 0)); S.max = 0; } continue; }
+      S.life -= dt; S.vy -= 22 * dt; S.vx *= Math.pow(0.97, dt * 60);
+      S.x += S.vx * dt; S.y += S.vy * dt;
+      const g = groundBelow(S.x, S.y + 0.3);
+      if (S.y < g && S.y > g - 0.3) { S.y = g; S.vy = Math.abs(S.vy) * 0.35; S.vx *= 0.7; }   // skips off the floor
+      const k = Math.max(0, S.life / S.max), spd = Math.hypot(S.vx, S.vy);
+      const T = planeDir(S.x, S.vx, S.vy, this.v).normalize(), f = pathFrame(S.x), Z = this.v2.set(f.nx, 0, f.nz).normalize();
+      const X = new THREE.Vector3().crossVectors(T, Z).normalize();
+      this.q.setFromRotationMatrix(this.m4.makeBasis(X, T, Z));
+      this.m4.compose(toWorld(S.x, S.y, S.d, this.sc.clone()), this.q, this.sc.set(0.06 * (0.5 + 0.5 * k), 0.06 + spd * 0.028, 1));
+      M.setMatrixAt(i, this.m4);
+      M.setColorAt(i, this.col.copy(this.cool).lerp(S.c, Math.min(1, k * 1.6)));
+    }
+    M.instanceMatrix.needsUpdate = true; if (M.instanceColor) M.instanceColor.needsUpdate = true;
+  }
+  // A crater in the floor under (x, y), `r` m across its hollow, sized down to fit the ledge it is on; `heat`
+  // makes its cracks glow brighter
+  crater(x, y, r, heat = 1) {
+    const fl = this.fx.floorUnder(x, y, 2.5); if (fl === null) return;
+    const same = xx => Math.abs(groundBelow(xx, fl + 0.3) - fl) < 0.05;
+    while (r > 0.4 && !(same(x - r) && same(x + r))) r -= 0.1;
+    const C = this.nextCrater(r * 3.3);
+    toWorld(x, fl + 0.02, 0, C.base.position); C.glow.position.copy(C.base.position);
+    C.base.rotation.set(-Math.PI / 2, 0, Math.random() * Math.PI * 2); C.glow.rotation.copy(C.base.rotation);
+    C.heat = heat;
+  }
+  // A crater in the wall a pile was slammed into: found by probing ahead of the impact for solid ground
+  wallCrater(x, y, dir, r) {
+    let wx = null;
+    for (let d = 0; d <= 4; d += 0.05) if (pointInSolid(x + dir * d, y)) { wx = x + dir * (d - 0.02); break; }
+    if (wx === null) return;
+    const C = this.nextCrater(r * 3.3), f = pathFrame(wx);
+    toWorld(wx, y, 0, C.base.position); C.glow.position.copy(C.base.position);
+    C.base.lookAt(C.base.position.x - f.tx * dir, C.base.position.y, C.base.position.z - f.tz * dir);
+    C.base.rotateZ(Math.random() * Math.PI * 2); C.glow.quaternion.copy(C.base.quaternion);
+    C.heat = 1.4;
+  }
+  nextCrater(size) {
+    const C = this.craters.find(q => q.life <= 0) || this.craters.reduce((a, b) => (a.age > b.age ? a : b));
+    const T = this.craterTex[(Math.random() * this.craterTex.length) | 0];
+    C.base.material.map = T.base; C.glow.material.map = T.glow; C.base.material.needsUpdate = C.glow.material.needsUpdate = true;
+    C.base.scale.set(size, size, 1); C.glow.scale.set(size, size, 1);
+    C.life = CRATER.life; C.age = 0; C.base.visible = C.glow.visible = true;
+    return C;
+  }
+  updateCraters(dt) {
+    for (const C of this.craters) {
+      if (C.life <= 0) { C.base.visible = C.glow.visible = false; continue; }
+      C.life -= dt; C.age += dt;
+      C.base.material.opacity = Math.min(1, C.age * 12) * Math.min(1, Math.max(0, C.life) / CRATER.fade);
+      C.glow.material.opacity = Math.max(0, 1 - C.age / CRATER.glow) * 0.9 * C.heat;
+    }
+  }
+
   warmShow(at) {
     const P = this.paneOf('warm'), out = [P.face, P.crack, P.rim];
+    const C = this.craters[0]; C.base.material.map = this.craterTex[0].base; C.glow.material.map = this.craterTex[0].glow;
+    out.push(C.base, C.glow, this.spkMesh);
     for (const m of out) { m.position.copy(at); m.visible = true; }
     return out;
   }
-  warmDone() { const P = this.panes.get('warm'); if (P) { P.face.visible = P.crack.visible = P.rim.visible = false; this.panes.delete('warm'); } }
+  warmDone() {
+    const P = this.panes.get('warm'); if (P) { P.face.visible = P.crack.visible = P.rim.visible = false; this.panes.delete('warm'); }
+    for (const C of this.craters) { C.life = 0; C.base.visible = C.glow.visible = false; }
+    this.spkMesh.position.set(0, 0, 0);   // (its instances are placed in world space)
+  }
 }

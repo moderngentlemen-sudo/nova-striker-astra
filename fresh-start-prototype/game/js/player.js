@@ -745,7 +745,7 @@ function landPound(p, world) {
   const r = (L.r + P.fallBonus * Math.min(1, fall / 12)) * K;
   const inst = world.newInstance();
   world.spawnHitbox({ owner: p, team: 'p', x0: p.x - r, x1: p.x + r, y0: p.y - 0.3, y1: p.y + 1.6 + 0.3 * S.level, dmg: L.dmg * K, poise: L.poise * K,
-    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak || K > 1, instance: inst, scatter: true });
+    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak || K > 1, instance: inst, scatter: true, ramKnock: p.char === 'ram' });
   if (p.char === 'fix') world.repairPulse(p, p.x, p.y, r + 1, FIX.poundHeal[S.level]);
   S.phase = 'land'; S.t = 0; S.inst = inst; S.hit = false;
   p.vx = 0; p.hitConfirm = false; p.hitstop = 2 + S.level;   // a beat of impact freeze, longer the bigger the pound
@@ -794,7 +794,7 @@ function stateAttack(p, cmd, world) {
     world.spawnHitbox({ owner: p, team: 'p', x0: cx - b.w / 2, x1: cx + b.w / 2, y0: p.y + b.y - b.h / 2, y1: p.y + b.y + b.h / 2,
       dmg: m.dmg, poise: m.poise, kb: [p.facing * m.kb[0], m.kb[1]], armorBreak: !!m.armorBreak, heavy: !!m.heavy,
       launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x,
-      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield });
+      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield, ramKnock: p.char === 'ram' });
   }
   if (m.launcher && t === activeEnd && p.hitConfirm) p.vy = 9;   // Echo hops after a launched enemy
   if (p.buf.melee <= ACTION_BUFFER && m.next && t >= activeStart) p.queued = m.next;

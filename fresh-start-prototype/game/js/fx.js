@@ -589,6 +589,7 @@ export class FX {
         this.dust(ev.x, ev.y, 0.5, [0, Math.PI], { reach: 1.6 });
         this.sprite(ev.x, ev.y, 'ring', c, ev.r * 0.9, 0.3, 2.6); this.sprite(ev.x, ev.y, 'star', '#ffffff', ev.r * 0.8, 0.16, 1.4); this.fireball(ev.x, ev.y, '#9fd0ff', ev.r * 0.6, 0.25);
         this.burst(ev.x, ev.y, c, 26, 8 + ev.r * 2, 0.4, 0.4, { grav: 6 });
+        if (this.floorUnder(ev.x, ev.y, 0.8) !== null) this.ram.crater(ev.x, ev.y, 0.8);   // bursting at the floor, it digs in
         break;
       }
       case 'plateHit': this.burst(ev.x, ev.y, '#a9c8ff', 10, 5, 0.24, 0.25); this.sprite(ev.x, ev.y, 'ring', '#a9c8ff', 0.8, 0.16, 2); break;
@@ -647,6 +648,7 @@ export class FX {
     this.burst(x, y + 0.3, '#ffffff', 10 + 4 * L, 6 + 2 * L, 0.22, 0.25);
     if (p.char === 'echo') { this.slashMark(x, y + 0.5, '#fff1d6', 1.6 + 0.4 * L, 0.6, 0.18); this.slashMark(x, y + 0.5, c, 1.6 + 0.4 * L, -0.6, 0.18); }
     else this.sprite(x, y + 0.5, 'ring', '#fff1c9', 0.8 + 0.3 * L, 0.3, 3);
+    if (p.char === 'ram') this.ram.crater(x, y, Math.min(2.2, 0.8 + 0.3 * L + 0.12 * r), 1 + 0.3 * L);   // the Meteor Drop leaves a crater
     this.poundT.delete(p);
   }
 

@@ -431,7 +431,11 @@ export const RAM = {
   // the Battering Ram: longer and faster, and from level `heavyFrom` it carries heavy enemies too and breaks
   // armor. Bosses and rooted enemies stop it with a heavy hit (bonk). Arrays: ordinary charge, then levels 1-3.
   rush: { ticks: [14, 18, 24, 30], speed: [15, 17, 19.5, 22], keep: 0.35, catchDmg: [2, 3, 4.5, 6], poise: [30, 45, 70, 100], reach: 0.95,
-    end: { kb: [10, 4] }, splat: { dmg: [4, 5, 7, 10], poise: [60, 80, 110, 160], stun: 70 }, bonk: { dmg: [3, 4, 6, 9], poise: [45, 65, 95, 140] }, heavyFrom: 2 },
+    end: { kb: [14, 5] }, splat: { dmg: [4, 5, 7, 10], poise: [60, 80, 110, 160], stun: 70 }, bonk: { dmg: [3, 4, 6, 9], poise: [45, 65, 95, 140] }, heavyFrom: 2 },
+  // Knockback: his melee and close-range hits (the shield and fist, the Meteor Drop, Kinetic Release, the leap's
+  // landing) throw enemies `light` times as far (heavy enemies `heavy` times). A light enemy pushed at `launchAt`
+  // m/s or more leaves its feet and flies (at least `lift` m/s upward), so a finisher sends it well clear.
+  knock: { light: 1.6, heavy: 1.25, launchAt: 9, lift: 6 },
   // Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). During a Ram Charge nothing
   // does, and he takes `rushTaken` of the damage.
   rushTaken: 0.6,
@@ -447,7 +451,7 @@ export const RAM = {
   link: { cd: 720, ticks: 480, range: 18, leapAt: 4.5, leapTicks: 34, share: 0.6, plate: 25, breakAt: 22, land: { r: 2.4, dmg: 3, poise: 45 } },
   // Provoke (LB): a war cry. Every enemy within `range` m turns on him for `ticks`; he braces (takes `brace` of
   // the damage) for as long, and the roar shoves light enemies close by.
-  provoke: { cd: 600, ticks: 240, range: 11, brace: 0.6, shove: { r: 2.6, kb: 9 } },
+  provoke: { cd: 600, ticks: 240, range: 11, brace: 0.6, shove: { r: 2.6, kb: 13 } },
 };
 
 // Fix (Mechanic): heals, tunes up and revives the team, and builds gadgets and power-ups from Scrap.

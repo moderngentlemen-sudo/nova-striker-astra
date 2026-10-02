@@ -151,6 +151,15 @@ export function hitEnemy(world, e, hit, source) {
   if (canMove && !armored && hit.kb && !e.boss && !hit.well) {
     if (e.state !== 'launched') { e.vx = hit.kb[0]; if (hit.kb[1] > 0) e.vy = Math.max(e.vy, hit.kb[1] * 0.6); }
   }
+  // RAM's close-range hits throw enemies much further (RAM.knock): a hard enough push sends a light enemy flying,
+  // a heavy one is shoved back. Launchers keep their own arc; bosses, armor and held enemies don't budge.
+  if (hit.ramKnock && canMove && !armored && hit.kb && !e.boss && !hit.launcher && !['caught', 'snared', 'plowed'].includes(e.state)) {
+    const K = RAM.knock, vx = hit.kb[0] * (e.light ? K.light : K.heavy);
+    if (e.light && !e.flier && Math.abs(vx) >= K.launchAt) {
+      world.director.release(e);
+      e.state = 'launched'; e.st = 0; e.vx = vx; e.vy = hit.kb[1] < 0 ? hit.kb[1] * K.light : Math.max(e.vy, hit.kb[1] * K.light, K.lift);   // (a downward swat drives it down)
+    } else e.vx = vx;
+  }
   return 'hit';
 }
 

@@ -60,8 +60,13 @@ scrolls.
 
 ### RAM, Vanguard (the tank)
 
-Much bigger than Nova and Echo (2.3 m to their 1.7 m) with 160 health; slower, with lower jumps.
-**Stalwart:** ordinary hits don't knock him about (heavy hits and blasts still do).
+Much bigger than Nova and Echo (2.3 m to their 1.7 m) with 160 health, the most on the team; slower, with
+lower jumps. **Stalwart:** ordinary hits don't knock him about (heavy hits and blasts still do).
+**Heavyweight:** his melee and close-range hits (shield and fist, Meteor Drop, Kinetic Release, the Guardian
+Link landing) throw enemies 1.6 times as far, and a hard enough one sends a light enemy flying (a Piston Punch
+throws a Swarmer about 7.5 m). Bosses and armour still hold their ground. His Ram Charge throws sparks off the
+floor, and his big impacts (Meteor Drop, Seismic Slam, a Breach Shot bursting on the floor, the Guardian Link
+landing, Siege Breaker's slam, and enemies slammed into walls) leave craters that fade after a few seconds.
 
 - **Rampart** (hold LT): a tower shield. It blocks strikes, shots and blasts from in front (shockwaves along
   the floor still pass under it), and enemy shots stop at it, so it covers everyone behind him. The damage comes off its Integrity (the blue bar) instead of
@@ -157,7 +162,7 @@ All tuning lives in `config.js`.
 ## Tests
 
 `node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-220 checks, including two random-input soaks (the newer one runs all four characters, swapping them
+222 checks, including two random-input soaks (the newer one runs all four characters, swapping them
 mid-fight). The browser screenshot, smoke and performance runs were done separately and are not included.
 
 ## Known limits
