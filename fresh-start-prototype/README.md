@@ -124,7 +124,7 @@ scrolls.
 
 ### RAM, Vanguard (the tank)
 
-Much bigger than Nova and Echo (2.3 m to their 1.7 m) with 160 health, the most on the team; slower, with
+Much bigger than Nova and Echo (2.3 m to their 1.7 m) with 350 health (160 before Version 12), the most on the team; slower, with
 lower jumps. **Stalwart:** ordinary hits don't knock him about (heavy hits and blasts still do).
 **Heavyweight:** his melee and close-range hits (shield and fist, Meteor Drop, Kinetic Release, the Guardian
 Link landing) throw enemies 1.6 times as far, and a hard enough one sends a light enemy flying (a Piston Punch

@@ -44,7 +44,7 @@ export const CHARS = {
   // on his feet, lower jumps, more health. He still fits under the gym tunnel crouched and under the arena's
   // floating columns standing.
   ram: {
-    name: 'RAM', role: 'Vanguard', hp: 160,
+    name: 'RAM', role: 'Vanguard', hp: 350,
     run: 6.3, backpedal: 0.75, accelG: 62, decelG: 85, accelA: 42, crouchSpeed: 0.35,
     jumpV: 16.4, dblV: 13.8,
     dash: { ticks: 14, speed: 15, exitKeep: 0.35, cooldown: 26 },
