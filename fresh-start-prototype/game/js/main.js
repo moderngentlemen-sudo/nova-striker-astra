@@ -1,5 +1,5 @@
 // Bootstrap: fixed 60 Hz simulation, interpolated rendering, drop-in joining, menus.
-import { SETTINGS, loadSettings, DT, ROSTER, nextChar } from './config.js';
+import { SETTINGS, loadSettings, saveSettings, DT, ROSTER, nextChar } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { View } from './render.js';
@@ -7,6 +7,7 @@ import { UI } from './ui.js';
 import { Sound } from './audio.js';
 import { Music } from './music.js';
 import { Haptics } from './haptics.js';
+import { Bots, isBot } from './bot.js';
 
 loadSettings();
 const app = document.getElementById('app');
@@ -17,6 +18,7 @@ const view = new View(canvas);
 const sound = new Sound();
 const music = new Music();
 const haptics = new Haptics(input);
+const bots = new Bots();
 let started = false, paused = false;
 
 const ui = new UI(document.getElementById('overlay'), {
@@ -24,7 +26,11 @@ const ui = new UI(document.getElementById('overlay'), {
   zone: id => { world.teleport(id); setPaused(false); },
   boss: id => { world.bossRush(id); setPaused(false); },
   pick: (p, c) => world.swapCharacter(p, c),
-  remove: p => { sound.jet(p, false); world.removePlayer(p.slot); },
+  remove: p => {
+    // removing an AI teammate turns the setting down by one, so it isn't simply added back
+    if (isBot(p)) { SETTINGS.aiTeammates = Math.max(0, (Number(SETTINGS.aiTeammates) || 0) - 1); saveSettings(); }
+    sound.jet(p, false); world.removePlayer(p.slot);
+  },
 });
 
 function resize() {
@@ -39,7 +45,8 @@ function setPaused(on) { paused = on; ui.setPaused(on, world); if (!on) { canvas
 function tryJoin() {
   const devices = input.pollJoins(new Set(world.players.map(p => p.device)));
   for (const dev of devices) {
-    if (world.players.length >= 4 || paused) break;
+    if (paused) break;
+    if (world.players.length >= 4 && !bots.makeRoom(world)) break;   // a person joining a full team takes an AI teammate's place
     // Each new player takes the next character no one is playing yet (Nova, Echo, RAM, Fix)
     const used = new Set(world.players.map(p => p.char)), char = ROSTER.find(c => !used.has(c)) || ROSTER[world.players.length % ROSTER.length];
     world.addPlayer(dev, char);
@@ -69,10 +76,13 @@ function handleMenuEvents() {
 }
 
 function stepSim() {
+  bots.sync(world, Number(SETTINGS.aiTeammates) || 0);
   let cmds = {};
   for (const p of world.players) {
+    if (isBot(p)) continue;
     cmds[p.slot] = input.sample(p.device, (mx, my) => view.aimFromMouse(mx, my, p), SETTINGS.p1Aim);
   }
+  bots.commands(world, cmds);
   if (window.__NS.inject) cmds = window.__NS.inject(world.tick, cmds) || cmds;
   world.step(cmds);
   for (const ev of world.events) { view.onEvent(ev); sound.play(ev); ui.onEvent(ev, world); haptics.onEvent(ev); }
@@ -116,7 +126,7 @@ requestAnimationFrame(frame);
 
 // Test hooks (used by automated checks; harmless otherwise)
 window.__NS = {
-  world, view, ui, input, music, sound, haptics, SETTINGS, manual: false, inject: null,
+  world, view, ui, input, music, sound, haptics, bots, SETTINGS, manual: false, inject: null,
   start(char = 'nova') { if (!started) { world.addPlayer('kbm', char); started = true; ui.hideStart(); } },
   step(n = 1) { for (let i = 0; i < n; i++) stepSim(); },
   stats() { return { fps, players: world.players.length, enemies: world.enemies.length, tick: world.tick }; },

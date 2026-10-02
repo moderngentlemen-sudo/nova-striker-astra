@@ -1,4 +1,5 @@
 // DOM overlays: start screen, HUD, markers, barks, banners, pause/settings, help, debug.
+import { isBot } from './bot.js';
 import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE, AEGIS, SUB_LOOK, ULT, RAM, FIX, FIX_LOOK, ROSTER } from './config.js';
 
 // Echo's scarf mode chip: every player can read which mode his scarf is in
@@ -113,6 +114,7 @@ const SETTING_DEFS = [
   { key: 'haptics', label: 'Rumble and vibration', bool: true },
   { key: 'hapticStrength', label: 'Rumble strength', range: [0, 1, 0.05] },
   { key: 'p1Aim', label: 'Keyboard player aims with', opts: [['mouse', 'Mouse'], ['keys', 'Movement keys (8-way)']] },
+  { key: 'aiTeammates', label: 'AI teammates (fill empty slots; a player joining takes one over)', opts: [['0', 'Off'], ['1', '1'], ['2', '2'], ['3', '3']] },
   { key: 'difficulty', label: 'Difficulty', opts: [['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard']] },
   { key: 'barks', label: 'Character lines (CP-09 test)', bool: true },
   { key: 'shake', label: 'Screen shake', bool: true },
@@ -219,7 +221,7 @@ export class UI {
     this.playerList.innerHTML = '';
     for (const p of world.players) {
       const row = h('div', 'prow');
-      row.appendChild(h('span', 'pmark', `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${p.device === 'kbm' ? 'Keyboard + mouse' : 'Gamepad ' + (Number(p.device.slice(3)) + 1)}`));
+      row.appendChild(h('span', 'pmark', `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${isBot(p) ? 'AI teammate' : p.device === 'kbm' ? 'Keyboard + mouse' : 'Gamepad ' + (Number(p.device.slice(3)) + 1)}`));
       for (const c of ROSTER) {
         const b = h('button', 'btn small' + (p.char === c ? ' on' : ''), CHARS[c].name);
         b.addEventListener('click', () => { this.H.pick(p, c); this.renderPlayerList(world); }); row.appendChild(b);
@@ -324,13 +326,13 @@ export class UI {
     switch (ev.type) {
       case 'banner': this.showBanner(ev.text, ev.sub); break;
       case 'checkpoint': this.toast('Checkpoint reached'); break;
-      case 'join': this.toast(`Player ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`); break;
+      case 'join': this.toast(`${isBot(ev.p) ? 'AI teammate' : 'Player'} ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`); break;
       case 'leave': this.toast(`Player ${ev.slot + 1} left`); break;
       case 'downed': this.toast(ev.secondWind ? 'Second Wind: getting back up' : `Player ${ev.p.slot + 1} is down. Stand next to them to revive${world.players.some(q => q.char === 'fix' && q !== ev.p) ? ' (Fix: faster, and her beam works from range)' : ''}`); break;
       case 'wipe': this.showBanner('Team down', 'Returning to the last checkpoint'); break;
       case 'bark': this.bark(ev.p, ev.text); break;
       case 'swap': this.toast(`Player ${ev.p.slot + 1} is now ${CHARS[ev.p.char].name}`); break;
-      case 'ultReady': this.toast(`P${ev.p.slot + 1} ultimate ready: ${ev.p.device === 'kbm' ? 'press V' : 'pull both triggers'}`); break;
+      case 'ultReady': if (isBot(ev.p)) break; this.toast(`P${ev.p.slot + 1} ultimate ready: ${ev.p.device === 'kbm' ? 'press V' : 'pull both triggers'}`); break;
     }
   }
 
@@ -339,7 +341,7 @@ export class UI {
   updateUlt(world) {
     const U = world.ultCast, el = this.ultEl;
     if (!U) { if (this.ultKey) { this.ultKey = ''; el.className = 'ultcast'; } return; }
-    const joiners = U.phase === 'cast' ? world.players.filter(q => !U.members.includes(q) && q.ult >= ULT.max && q.state !== 'dead' && q.state !== 'downed') : [];
+    const joiners = U.phase === 'cast' ? world.players.filter(q => !isBot(q) && !U.members.includes(q) && q.ult >= ULT.max && q.state !== 'dead' && q.state !== 'downed') : [];
     const key = `${U.phase}|${U.name}|${U.members.map(m => m.slot).join()}|${joiners.map(q => q.slot).join()}`;
     if (key === this.ultKey) return;
     this.ultKey = key;
@@ -398,7 +400,7 @@ export class UI {
           ult: $('.ultbar i', el), ultTxt: $('.ultbar b', el), ultReady: null };
         this.panels.set(p.slot, P);
       }
-      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}`;
+      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? ' · AI' : ''}`;
       P.name.textContent = CHARS[p.char].name; P.role.textContent = CHARS[p.char].role;
       P.fill.style.width = `${Math.max(0, p.hp / p.maxHp) * 100}%`;
       P.strain.style.width = `${Math.max(0, (p.hp + p.strain) / p.maxHp) * 100}%`;
@@ -446,7 +448,7 @@ export class UI {
       const s = view.screenOf(p.x, p.y + p.h + 0.45);
       const r = view.canvas.getBoundingClientRect();
       const x = Math.max(16, Math.min(r.width - 16, s.x)), y = Math.max(16, Math.min(r.height - 16, s.y));
-      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}` + (p.state === 'downed' ? ' · DOWN' : p.veiled ? ' · hidden' : '');
+      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? ' AI' : ''}` + (p.state === 'downed' ? ' · DOWN' : p.veiled ? ' · hidden' : '');
       m.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
       m.hidden = p.state === 'dead';
     }

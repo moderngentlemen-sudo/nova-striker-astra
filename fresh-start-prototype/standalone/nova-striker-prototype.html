@@ -1101,6 +1101,8 @@ var DEFAULT_SETTINGS = {
   haptics: true,
   // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
+  aiTeammates: 0,
+  // computer-controlled players filling the team's empty slots (0-3; see bot.js)
   settingsVersion: 9
 };
 var SETTINGS = { ...DEFAULT_SETTINGS };
@@ -1569,8 +1571,8 @@ function moveBody(body, dt) {
       body.vy = 0;
       body.hitCeil = true;
     } else {
-      const up = b.y1 - body.y, down = body.y + body.h - b.y0;
-      if (up < down) {
+      const up2 = b.y1 - body.y, down = body.y + body.h - b.y0;
+      if (up2 < down) {
         body.y = b.y1;
         body.onGround = true;
       } else {
@@ -6173,8 +6175,8 @@ var World = class {
     const H = rocketHeight(p.chargeT, A, perfect), near = Math.max(0, d - R.close) / Math.max(0.01, reach - R.close);
     const air = p.onGround ? 1 : R.air[Math.min(p.rockets, R.air.length - 1)];
     const k2 = Math.sqrt(2 * GRAVITY * H) * (1 - R.falloff * Math.min(1, near)) * air;
-    const up = Math.max(p.vy, k2);
-    return { x: p.x, y: p.y, apex: p.y + apexGain(up), level: level2, perfect, h: H };
+    const up2 = Math.max(p.vy, k2);
+    return { x: p.x, y: p.y, apex: p.y + apexGain(up2), level: level2, perfect, h: H };
   }
   // ---- Nova: the Level 4 beam ----
   // Every tick: trace the beam to the first wall (a Prism beam bounces once), erase enemy shots it touches,
@@ -8938,8 +8940,8 @@ var World = class {
       this.emit("banner", { text: "Concourse Lock", sub: "Gate sealed. Break the lock." });
       this.emit("gates", { closed: true });
     } else if (A.state === "wave1") {
-      const alive = this.enemies.filter((e) => e.zone === "arena" && !e.dead).length;
-      if (alive <= 1) {
+      const alive2 = this.enemies.filter((e) => e.zone === "arena" && !e.dead).length;
+      if (alive2 <= 1) {
         A.state = "wave2";
         const count = n === 1 ? 3 : n === 2 ? 4 : 6;
         for (let i = 0; i < count; i++) {
@@ -9033,14 +9035,14 @@ World.prototype.updateSkyline = function(n) {
           this.emit("kill", { x: e.x, y: e.y + e.h / 2, e, owner: null });
         }
       }
-      const alive = this.enemies.filter((e) => e.enc === E.id && !e.dead).length;
+      const alive2 = this.enemies.filter((e) => e.enc === E.id && !e.dead).length;
       const last2 = E.boss ? true : S.wave >= E.waves.length - 1;
-      if (!last2 && alive <= 1) {
+      if (!last2 && alive2 <= 1) {
         S.wave++;
         this.spawnWave(S, n);
         const b = E.waveBanners && E.waveBanners[S.wave];
         if (b) this.emit("banner", { text: b[0], sub: b[1] });
-      } else if (last2 && alive === 0) {
+      } else if (last2 && alive2 === 0) {
         S.state = "cleared";
         if (E.boss) this.bossClearedT = this.tick;
         if (E.gates) {
@@ -10077,14 +10079,14 @@ function animatePlayer(rig, p, dt, t) {
       });
       rate = 42;
     } else {
-      const up = Math.max(0, Math.min(1, (S.t - 5) / 7));
+      const up2 = Math.max(0, Math.min(1, (S.t - 5) / 7));
       Object.assign(P, {
-        hipY: 0.5 + 0.3 * up,
-        spine: 0.72 - 0.4 * up,
-        hipN: 1.55 - 0.8 * up,
-        knN: -2.3 + 1.3 * up,
+        hipY: 0.5 + 0.3 * up2,
+        spine: 0.72 - 0.4 * up2,
+        hipN: 1.55 - 0.8 * up2,
+        knN: -2.3 + 1.3 * up2,
         hipF: -0.25,
-        knF: -2.1 + 1.4 * up,
+        knF: -2.1 + 1.4 * up2,
         shN: 0.45,
         elN: 0.05,
         shF: -0.65,
@@ -11999,13 +12001,13 @@ var Dome = class {
     for (let k2 = 0; k2 < 3; k2++) this.crack[f * 3 + k2] = c;
   }
   // Send one panel flying off in world space
-  detach(f, now, speed, life, spread = 1.2, up = 1) {
+  detach(f, now, speed, life, spread = 1.2, up2 = 1) {
     if (this.gone[f]) return;
     this.gone[f] = 1;
     const wc = this.w.copy(this.centers[f]).multiplyScalar(AEGIS.radius);
     this.mesh.localToWorld(wc);
     const nrm = this.v.copy(this.centers[f]).normalize().transformDirection(this.mesh.matrixWorld);
-    const vx = nrm.x * speed + (Math.random() - 0.5) * spread, vy = nrm.y * speed + (Math.random() - 0.2) * spread * up, vz = nrm.z * speed + (Math.random() - 0.5) * spread;
+    const vx = nrm.x * speed + (Math.random() - 0.5) * spread, vy = nrm.y * speed + (Math.random() - 0.2) * spread * up2, vz = nrm.z * speed + (Math.random() - 0.5) * spread;
     const ax = Math.random() - 0.5, ay = Math.random() - 0.5, az = Math.random() - 0.5, am = Math.hypot(ax, ay, az) || 1, rate = 6 + Math.random() * 10;
     for (let k2 = 0; k2 < 3; k2++) {
       const v = f * 3 + k2;
@@ -13462,8 +13464,8 @@ var RamFX = class {
       const rig = view2.rigs.get(p), vis = !!rig && rig.root.visible && p.state !== "dead";
       const P = this.paneOf(p);
       seenP.add(p);
-      const up = vis && p.state === "guard";
-      P.k += ((up ? 1 : 0) - P.k) * (1 - Math.exp(-dt * (up ? 30 : 14)));
+      const up2 = vis && p.state === "guard";
+      P.k += ((up2 ? 1 : 0) - P.k) * (1 - Math.exp(-dt * (up2 ? 30 : 14)));
       P.flash = Math.max(0, P.flash - dt * 5);
       if (P.k > 0.02) {
         const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
@@ -17183,6 +17185,286 @@ var View = class {
   }
 };
 
+// ../ns-proto/js/bot.js
+var BTNS2 = ["jump", "dash", "melee", "fire", "parry", "sig", "mode", "lock", "sub", "ult"];
+var BOT = {
+  sight: 11,
+  // m: enemies this close are fought
+  leash: 9,
+  // m: ...unless the bot is this far from the player it follows (it catches up first)
+  follow: 1.6,
+  // m: where it stands behind the player it follows (more for each further bot)
+  reviveRange: 22,
+  // m: a downed teammate this close is gone to first
+  react: 0.55,
+  // chance of answering a given wind-up or shot at all
+  delay: 8,
+  // ticks before it does
+  range: { nova: 6.5, echo: 1.3, ram: 1.5, fix: 5.5 }
+  // m it likes to fight at
+};
+var isBot = (p) => typeof p.device === "string" && p.device.startsWith("cpu");
+var sign4 = (v) => v > 0 ? 1 : v < 0 ? -1 : 0;
+var alive = (e) => !e.dead && e.hp > 0;
+var up = (q) => q.state !== "downed" && q.state !== "dead";
+var Bots = class {
+  constructor() {
+    this.mem = /* @__PURE__ */ new Map();
+  }
+  // Keep the number of AI players at `want`, never more than the slots the human players leave free. They
+  // take the characters no one is playing (Nova, Echo, RAM, Fix order), and are only added once a person has.
+  sync(world2, want) {
+    const humans = world2.players.filter((p) => !isBot(p)), bots2 = world2.players.filter(isBot);
+    const allowed = humans.length ? Math.max(0, Math.min(want, 4 - humans.length)) : 0;
+    for (let i = bots2.length - 1; i >= allowed; i--) {
+      world2.removePlayer(bots2[i].slot);
+      this.mem.delete(bots2[i]);
+    }
+    for (let n = Math.min(bots2.length, allowed); n < allowed; n++) {
+      const used = new Set(world2.players.map((p) => p.char)), char = ROSTER.find((c) => !used.has(c)) || ROSTER[n % ROSTER.length];
+      let id = 1;
+      const devs = new Set(world2.players.map((p) => p.device));
+      while (devs.has("cpu" + id)) id++;
+      world2.addPlayer("cpu" + id, char);
+    }
+  }
+  // Free a slot for a person joining a full team: the last AI player leaves
+  makeRoom(world2) {
+    const bots2 = world2.players.filter(isBot);
+    if (world2.players.length < 4 || !bots2.length) return false;
+    const b = bots2[bots2.length - 1];
+    world2.removePlayer(b.slot);
+    this.mem.delete(b);
+    return true;
+  }
+  // The commands for every AI player this tick, added to `cmds` (by slot)
+  commands(world2, cmds) {
+    for (const p of world2.players) if (isBot(p)) cmds[p.slot] = this.command(world2, p);
+    for (const p of this.mem.keys()) if (!world2.players.includes(p)) this.mem.delete(p);
+    return cmds;
+  }
+  command(world2, p) {
+    let M = this.mem.get(p);
+    if (!M) {
+      M = { prev: {}, jumpT: 0, fireT: 0, meleeT: 0, guardT: 0, seen: /* @__PURE__ */ new Set(), react: /* @__PURE__ */ new Map(), seed: (p.slot + 1) * 7919, t: 0, target: null, retarget: 0, gadgetT: 240 };
+      this.mem.set(p, M);
+    }
+    M.t++;
+    const rnd = () => (M.seed = M.seed * 16807 % 2147483647) / 2147483647;
+    const held = {};
+    let mx = 0, my = 0, aimFree = false, ax = 0, ay = 0;
+    const out = () => {
+      const pressed = {}, released = {};
+      for (const b of BTNS2) {
+        held[b] = !!held[b];
+        pressed[b] = held[b] && !M.prev[b];
+        released[b] = !held[b] && !!M.prev[b];
+      }
+      M.prev = { ...held };
+      return { mx, my, aimFree, ax, ay, held, pressed, released };
+    };
+    if (p.state === "downed" || p.state === "dead" || p.state === "ult") return out();
+    const team = world2.players.filter((q) => q !== p);
+    const leader = team.find((q) => !isBot(q) && up(q)) || team.find(up) || null;
+    const order = world2.players.filter(isBot).indexOf(p);
+    const cx = p.x, cy = p.y + p.h / 2;
+    const dist = (e) => Math.hypot(e.x - cx, e.y + e.h / 2 - cy);
+    if (world2.ultCast && !world2.ultCast.members.includes(p) && p.ult >= ULT.max) {
+      held.ult = M.t % 4 < 2;
+      return out();
+    }
+    if (--M.retarget <= 0 || !M.target || !alive(M.target)) {
+      M.retarget = 10;
+      let best = null, bd = BOT.sight;
+      for (const e of world2.enemies) {
+        if (!alive(e) || e.state === "plowed") continue;
+        const d2 = dist(e);
+        if (d2 < bd) {
+          bd = d2;
+          best = e;
+        }
+      }
+      M.target = best;
+    }
+    let tgt = M.target && alive(M.target) ? M.target : null;
+    const farFromLeader = leader && Math.abs(leader.x - p.x) > BOT.leash;
+    if (farFromLeader && tgt && Math.abs(tgt.x - leader.x) > BOT.leash) tgt = null;
+    const downed = team.filter((q) => q.state === "downed" && Math.abs(q.x - p.x) < BOT.reviveRange).sort((a, b) => Math.abs(a.x - p.x) - Math.abs(b.x - p.x))[0];
+    let goal = p.x, stopAt = 0.5;
+    if (downed && !(p.char === "fix" && Math.abs(downed.x - p.x) < FIX.beam.range - 1)) {
+      goal = downed.x;
+      stopAt = 0.6;
+    } else if (tgt && !farFromLeader) {
+      const R = BOT.range[p.char], side = sign4(p.x - tgt.x) || -tgt.facing || 1;
+      goal = tgt.x + side * (R + tgt.w / 2);
+      stopAt = p.char === "nova" || p.char === "fix" ? 1.2 : 0.35;
+    } else if (leader) {
+      goal = leader.x - (leader.facing || 1) * BOT.follow * (1 + order * 0.7);
+      stopAt = 0.8;
+    }
+    const dx = goal - p.x;
+    if (Math.abs(dx) > stopAt) mx = sign4(dx);
+    const dir = mx || p.facing, goalY = downed && goal === downed.x ? downed.y : leader && !tgt ? leader.y : tgt ? tgt.y : p.y;
+    const wall = mx && !hasHeadroom(p.x + dir * 0.45, p.y + 0.3, p.w, Math.max(0.6, p.h - 0.4));
+    const floorAhead = groundBelow(p.x + dir * (p.w / 2 + 0.6), p.y + 0.2);
+    const gap = mx && p.onGround && floorAhead < p.y - 1.2;
+    const goalPastGap = Math.abs(dx) > 2.2;
+    if (gap && !goalPastGap && goalY >= p.y - 0.5) mx = 0;
+    const wantUp = goalY > p.y + 1.1 && Math.abs(dx) < 5;
+    const climb = !p.onGround && p.wallDir !== 0 && p.wallDir === dir && (wall || goalY > p.y + 0.5);
+    if (M.jumpT <= 0 && p.onGround && (wall || gap && goalPastGap && goalY >= p.y - 0.5 || wantUp)) {
+      M.jumpT = 14;
+      M.jumpNew = true;
+    } else if (M.jumpT <= 0 && !p.onGround && (climb ? p.vy < 3 : p.vy < 1 && p.jumpsUsed < 1 && (wall || goalY > p.y + 0.8 && Math.abs(dx) < 4 || floorAhead < p.y - 3 && goalPastGap))) {
+      M.jumpT = 10;
+      M.jumpNew = true;
+    }
+    if (M.jumpT > 0) {
+      if (M.jumpNew && M.prev.jump) held.jump = false;
+      else {
+        held.jump = true;
+        M.jumpNew = false;
+        M.jumpT--;
+      }
+    }
+    if (M.t % 60 === 0) {
+      M.stuck = !tgt && Math.abs(dx) > 3 && Math.abs(p.x - (M.lastX ?? p.x + 9)) < 0.6 ? (M.stuck || 0) + 1 : 0;
+      M.lastX = p.x;
+      if (M.stuck >= 3) {
+        M.stuck = 0;
+        world2.recall(p, false);
+        return out();
+      }
+    }
+    if (!tgt) {
+      M.fireT = 0;
+      this.support(world2, p, M, held, leader, rnd);
+      return out();
+    }
+    const d = dist(tgt), tx = tgt.x - p.x, ty = tgt.y + tgt.h / 2 - cy, len = Math.hypot(tx, ty) || 1;
+    aimFree = true;
+    ax = tx / len;
+    ay = ty / len;
+    if (!mx && Math.abs(tx) > 0.2 && sign4(tx) !== p.facing) mx = sign4(tx) * 0.3;
+    if (!p.onGround) {
+      ay = Math.max(ay, -0.3);
+    }
+    const threat = this.threat(world2, p, M, rnd);
+    const close = Math.abs(tx) < 2 + tgt.w / 2 && Math.abs(ty) < 1.6;
+    switch (p.char) {
+      case "nova": {
+        if (threat) {
+          held.parry = true;
+          mx = -sign4(tx) || -p.facing;
+        } else if (close) {
+          aimFree = false;
+          held.melee = M.t % 9 < 3;
+        } else {
+          held.fire = this.fireCycle(M, 46);
+        }
+        break;
+      }
+      case "echo": {
+        if (threat) held.parry = M.t % 3 === 0;
+        else if (close) {
+          aimFree = false;
+          held.melee = M.t % 8 < 3;
+        } else if (d > 3 && d < 6.5 && p.onGround && Math.abs(ty) < 1 && M.t % 70 === 0) {
+          held.dash = true;
+          mx = sign4(tx);
+        } else if (d >= 6.5) held.fire = this.fireCycle(M, 20);
+        break;
+      }
+      case "ram": {
+        const guarding = p.state === "guard";
+        if (threat || guarding && M.guardT > 0) {
+          held.parry = true;
+          aimFree = true;
+          ax = sign4(tx) || p.facing;
+          ay = 0;
+          if (threat) M.guardT = 30;
+          M.guardT--;
+          if (p.kinetic >= 45) held.fire = M.t % 6 < 2;
+        } else if (close) {
+          aimFree = false;
+          held.melee = M.t % 12 < 3;
+        } else if (d > 3 && d < 8 && p.onGround && Math.abs(ty) < 0.8 && M.t % 90 === 0 && !p.rush) {
+          held.dash = true;
+          mx = sign4(tx);
+        } else if (d < 10) held.fire = this.fireCycle(M, 26);
+        const crowd = world2.enemies.filter((e) => alive(e) && dist(e) < 6).length;
+        const hurt = team.find((q) => up(q) && q.hp < q.maxHp * 0.45 && Math.abs(q.x - p.x) < RAM.link.range);
+        if (crowd >= 3 && p.provokeCd === 0 && M.t % 30 === 0) held.sub = true;
+        else if (hurt && p.linkCd === 0 && !p.link && M.t % 30 === 15) held.mode = true;
+        break;
+      }
+      case "fix": {
+        if (this.patch(world2, p, team)) {
+          held.parry = true;
+          aimFree = false;
+        } else if (close) {
+          aimFree = false;
+          held.melee = M.t % 9 < 3;
+        } else held.fire = this.fireCycle(M, 18);
+        if (p.scrap >= 70 && --M.gadgetT <= 0 && !world2.gadgets.some((g) => g.owner === p && !g.dead && g.kind !== "pad")) {
+          held.sig = true;
+          M.gadgetT = 600;
+        }
+        break;
+      }
+    }
+    if (p.ult >= ULT.max && !world2.ultCast && d < 7 && M.t % 20 === 0) held.ult = true;
+    return out();
+  }
+  // Out of a fight: Fix keeps the team patched up; RAM holds his guard up if shots are coming
+  support(world2, p, M, held, leader, rnd) {
+    if (p.char === "fix" && this.patch(world2, p, world2.players.filter((q) => q !== p))) held.parry = true;
+    if (p.char === "ram" && this.threat(world2, p, M, rnd)) held.parry = true;
+  }
+  // Fix: someone in Patch Beam range is down or hurt (or she is, with no one else to see to)
+  patch(world2, p, team) {
+    const R = FIX.beam.range;
+    const need = team.some((q) => (q.state === "downed" || up(q) && q.hp < q.maxHp * 0.75) && Math.hypot(q.x - p.x, q.y - p.y) < R);
+    return need || p.patch || p.hp < p.maxHp * 0.5;
+  }
+  // Charged shots: hold for `hold` ticks, let go, a short pause, again
+  fireCycle(M, hold) {
+    M.fireT = (M.fireT + 1) % (hold + 6);
+    return M.fireT < hold;
+  }
+  // An enemy winding up an attack on us, or an enemy shot that will reach us within a few ticks. Each one is
+  // answered (or not) once, decided by chance, and only after BOT.delay ticks.
+  threat(world2, p, M, rnd) {
+    const cx = p.x, cy = p.y + p.h / 2;
+    let seen = null;
+    for (const e of world2.enemies) {
+      if (!alive(e) || e.state !== "windup" || e.target && e.target !== p) continue;
+      if (Math.abs(e.x - cx) < 3.2 && Math.abs(e.y - p.y) < 2) {
+        seen = e;
+        break;
+      }
+    }
+    if (!seen) for (const pr of world2.projectiles) {
+      if (pr.team !== "e" || pr.dead) continue;
+      const rx = cx - pr.x, ry = cy - pr.y, d = Math.hypot(rx, ry);
+      if (d > 5 || rx * pr.vx + ry * pr.vy <= 0) continue;
+      const tHit = d / (Math.hypot(pr.vx, pr.vy) || 1) * 60;
+      if (tHit < 22) {
+        seen = pr;
+        break;
+      }
+    }
+    for (const [k2, r2] of M.react) if (world2.tick - r2.at > 90) M.react.delete(k2);
+    if (!seen) return false;
+    let r = M.react.get(seen);
+    if (!r) {
+      r = { at: world2.tick, yes: rnd() < BOT.react };
+      M.react.set(seen, r);
+    }
+    return r.yes && world2.tick - r.at >= BOT.delay;
+  }
+};
+
 // ../ns-proto/js/ui.js
 function scarfChip(p) {
   if (p.scarfMode === "veil") {
@@ -17270,6 +17552,7 @@ var SETTING_DEFS = [
   { key: "haptics", label: "Rumble and vibration", bool: true },
   { key: "hapticStrength", label: "Rumble strength", range: [0, 1, 0.05] },
   { key: "p1Aim", label: "Keyboard player aims with", opts: [["mouse", "Mouse"], ["keys", "Movement keys (8-way)"]] },
+  { key: "aiTeammates", label: "AI teammates (fill empty slots; a player joining takes one over)", opts: [["0", "Off"], ["1", "1"], ["2", "2"], ["3", "3"]] },
   { key: "difficulty", label: "Difficulty", opts: [["easy", "Easy"], ["normal", "Normal"], ["hard", "Hard"]] },
   { key: "barks", label: "Character lines (CP-09 test)", bool: true },
   { key: "shake", label: "Screen shake", bool: true },
@@ -17435,7 +17718,7 @@ var UI = class {
     this.playerList.innerHTML = "";
     for (const p of world2.players) {
       const row = h("div", "prow");
-      row.appendChild(h("span", "pmark", `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${p.device === "kbm" ? "Keyboard + mouse" : "Gamepad " + (Number(p.device.slice(3)) + 1)}`));
+      row.appendChild(h("span", "pmark", `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${isBot(p) ? "AI teammate" : p.device === "kbm" ? "Keyboard + mouse" : "Gamepad " + (Number(p.device.slice(3)) + 1)}`));
       for (const c of ROSTER) {
         const b = h("button", "btn small" + (p.char === c ? " on" : ""), CHARS[c].name);
         b.addEventListener("click", () => {
@@ -17580,7 +17863,7 @@ var UI = class {
         this.toast("Checkpoint reached");
         break;
       case "join":
-        this.toast(`Player ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`);
+        this.toast(`${isBot(ev.p) ? "AI teammate" : "Player"} ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`);
         break;
       case "leave":
         this.toast(`Player ${ev.slot + 1} left`);
@@ -17598,6 +17881,7 @@ var UI = class {
         this.toast(`Player ${ev.p.slot + 1} is now ${CHARS[ev.p.char].name}`);
         break;
       case "ultReady":
+        if (isBot(ev.p)) break;
         this.toast(`P${ev.p.slot + 1} ultimate ready: ${ev.p.device === "kbm" ? "press V" : "pull both triggers"}`);
         break;
     }
@@ -17613,7 +17897,7 @@ var UI = class {
       }
       return;
     }
-    const joiners = U.phase === "cast" ? world2.players.filter((q) => !U.members.includes(q) && q.ult >= ULT.max && q.state !== "dead" && q.state !== "downed") : [];
+    const joiners = U.phase === "cast" ? world2.players.filter((q) => !isBot(q) && !U.members.includes(q) && q.ult >= ULT.max && q.state !== "dead" && q.state !== "downed") : [];
     const key = `${U.phase}|${U.name}|${U.members.map((m) => m.slot).join()}|${joiners.map((q) => q.slot).join()}`;
     if (key === this.ultKey) return;
     this.ultKey = key;
@@ -17694,7 +17978,7 @@ var UI = class {
         };
         this.panels.set(p.slot, P);
       }
-      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}`;
+      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? " \xB7 AI" : ""}`;
       P.name.textContent = CHARS[p.char].name;
       P.role.textContent = CHARS[p.char].role;
       P.fill.style.width = `${Math.max(0, p.hp / p.maxHp) * 100}%`;
@@ -17752,7 +18036,7 @@ var UI = class {
       const s = view2.screenOf(p.x, p.y + p.h + 0.45);
       const r = view2.canvas.getBoundingClientRect();
       const x = Math.max(16, Math.min(r.width - 16, s.x)), y = Math.max(16, Math.min(r.height - 16, s.y));
-      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}` + (p.state === "downed" ? " \xB7 DOWN" : p.veiled ? " \xB7 hidden" : "");
+      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? " AI" : ""}` + (p.state === "downed" ? " \xB7 DOWN" : p.veiled ? " \xB7 hidden" : "");
       m.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
       m.hidden = p.state === "dead";
     }
@@ -19819,6 +20103,7 @@ var view = new View(canvas);
 var sound = new Sound();
 var music = new Music();
 var haptics = new Haptics(input);
+var bots = new Bots();
 var started = false;
 var paused = false;
 var ui = new UI(document.getElementById("overlay"), {
@@ -19833,6 +20118,10 @@ var ui = new UI(document.getElementById("overlay"), {
   },
   pick: (p, c) => world.swapCharacter(p, c),
   remove: (p) => {
+    if (isBot(p)) {
+      SETTINGS.aiTeammates = Math.max(0, (Number(SETTINGS.aiTeammates) || 0) - 1);
+      saveSettings();
+    }
     sound.jet(p, false);
     world.removePlayer(p.slot);
   }
@@ -19854,7 +20143,8 @@ function setPaused(on) {
 function tryJoin() {
   const devices = input.pollJoins(new Set(world.players.map((p) => p.device)));
   for (const dev of devices) {
-    if (world.players.length >= 4 || paused) break;
+    if (paused) break;
+    if (world.players.length >= 4 && !bots.makeRoom(world)) break;
     const used = new Set(world.players.map((p) => p.char)), char = ROSTER.find((c) => !used.has(c)) || ROSTER[world.players.length % ROSTER.length];
     world.addPlayer(dev, char);
     if (!started) {
@@ -19884,10 +20174,13 @@ function handleMenuEvents() {
   }
 }
 function stepSim() {
+  bots.sync(world, Number(SETTINGS.aiTeammates) || 0);
   let cmds = {};
   for (const p of world.players) {
+    if (isBot(p)) continue;
     cmds[p.slot] = input.sample(p.device, (mx, my) => view.aimFromMouse(mx, my, p), SETTINGS.p1Aim);
   }
+  bots.commands(world, cmds);
   if (window.__NS.inject) cmds = window.__NS.inject(world.tick, cmds) || cmds;
   world.step(cmds);
   for (const ev of world.events) {
@@ -19959,6 +20252,7 @@ window.__NS = {
   music,
   sound,
   haptics,
+  bots,
   SETTINGS,
   manual: false,
   inject: null,

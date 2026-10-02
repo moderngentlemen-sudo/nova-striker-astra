@@ -123,6 +123,14 @@ weapon charge, ability cooldowns and recharges, and ultimate bar build-up.
 
 ### Also new
 
+- **AI teammates** (Settings: AI teammates, Off to 3): computer-controlled players fill the team's empty
+  slots with the characters no one is playing. They follow the first player (climbing walls and jumping
+  gaps, and catching up if they get stuck), revive anyone who is down, and fight in their character's role:
+  Nova keeps her distance and shoots, Echo closes in with blade combos and parries, RAM guards, charges,
+  Provokes crowds and links a teammate in trouble, and Fix keeps the team patched up with her beam and builds
+  gadgets. They use their ultimates and join yours. They only react to some attacks, and after a short delay.
+  A person joining a full team takes an AI teammate's place, and removing one in the pause menu turns the
+  setting down by one. HUD panels and name tags mark them **AI**.
 - **Team ultimates** have names for every pair, for example Heavy Metal (RAM + Fix), Starbreaker (Nova +
   RAM) and Razorwire (Echo + Fix).
 - **Swapping** goes Nova, Echo, RAM, Fix; keys 1–4 pick a character directly.
@@ -149,7 +157,8 @@ weapon charge, ability cooldowns and recharges, and ultimate bar build-up.
 
 `game/js/` has one ES module per concern. The simulation (`world.js`, `player.js`, `enemies.js`,
 `bosses.js`, `combat.js`, `level.js`) runs on plain data at a fixed 60 Hz and never touches the DOM or
-three.js. It emits events, and these react to them:
+three.js. It emits events, and these react to them. AI teammates (`bot.js`) sit on the input side: each
+one produces the same command a gamepad would, once a tick.
 
 - rendering (`render.js`, `rigs.js`, `enemyRigs.js`, `anim.js`, `fx.js`, `chargefx.js`, `subfx.js`,
   `ultfx.js`, `beamfx.js`, `aegisfx.js`, `ramfx.js`, `fixfx.js`, `trails.js`, `ghosts.js`)
@@ -162,7 +171,7 @@ All tuning lives in `config.js`.
 ## Tests
 
 `node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-222 checks, including two random-input soaks (the newer one runs all four characters, swapping them
+232 checks, including two random-input soaks (the newer one runs all four characters, swapping them
 mid-fight). The browser screenshot, smoke and performance runs were done separately and are not included.
 
 ## Known limits

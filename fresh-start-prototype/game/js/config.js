@@ -577,6 +577,7 @@ export const DEFAULT_SETTINGS = {
   dashCharge: true,     // hold dash while standing still to charge it (off: dash is always instant)
   haptics: true,        // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
+  aiTeammates: 0,       // computer-controlled players filling the team's empty slots (0-3; see bot.js)
   settingsVersion: 9,
 };
 
