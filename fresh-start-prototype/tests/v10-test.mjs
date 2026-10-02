@@ -311,7 +311,7 @@ const GUARD = { held: { parry: true }, aim: [1, 0] };
 { // With no one to toss to, it drops at her feet, and she can pick it up herself
   const { w, p, run, log } = setup(100, ['fix']);
   p.scrap = 100; tap(run, 'melee'); run({}, 45);
-  const dropped = w.pickups.length === 1 && w.pickups[0].rest;
+  const mine = w.pickups.filter(k => !k.level), dropped = mine.length === 1 && mine[0].rest;   // (not the level's own power-ups)
   run({ mx: 1 }, 6); run({ mx: -1 }, 20);
   assert(dropped && count(log, 'powerUp', e => e.p === p) === 1 && p.overclockT > 0, `Alone, the power-up drops at her feet and she picks it up (Overclock)`);
 }

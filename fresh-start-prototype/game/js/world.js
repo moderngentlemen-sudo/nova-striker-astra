@@ -1,7 +1,8 @@
 // World: owns every entity, runs the fixed-tick simulation, and emits events for
 // rendering, audio and UI. Nothing in here touches the DOM or Three.js.
-import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL } from './config.js';
-import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid } from './level.js';
+import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL, POWERUPS } from './config.js';
+import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid,
+  killYAt, routeAt, ROUTES, restoreBoxes, LEVEL_PICKUPS, DESTRUCT, breakableAt, LIFTS } from './level.js';
 import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate, beamSpec } from './player.js';
 import { createEnemy, updateEnemy, ENEMY_TYPES } from './enemies.js';
 import { spawnBoss, BOSS } from './bosses.js';
@@ -54,7 +55,8 @@ export class World {
     this.hitSets = new Map(); this.tick = 0; this.instanceSeq = 1;
     this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
     this.arena = { state: 'idle' }; this.towerSpawned = false;
-    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 })); this.routeDone = false;
+    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 })); this.routeDone = false; this.routesDone = {};
+    restoreBoxes(); this.spawnLevelPickups();
     this.aspect = 16 / 9;
     this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
     this.director = makeDirector(this);
@@ -142,6 +144,7 @@ export class World {
   // shot already hit directly; with `rocket` set it can also launch Nova. An enemy blast hits players
   // and cannot be parried.
   explode({ owner, team = 'p', x, y, spec, level = 0, perfect = false, family = null, skip = null, rocket = false, kind = 'splash' }) {
+    this.blastBoxes(x, y, spec.r, (spec.dmg || 2) * 1.5, owner);
     const reach = (ent, r) => {
       const nx = Math.max(ent.x - ent.w / 2, Math.min(x, ent.x + ent.w / 2)), ny = Math.max(ent.y, Math.min(y, ent.y + ent.h));
       return Math.hypot(x - nx, y - ny) <= r;
@@ -236,6 +239,8 @@ export class World {
       sx = h.x + h.nx * 0.05; sy = h.y + h.ny * 0.05;
     }
     b.segs = segs; b.pulse++;
+    const endBox = segs.length && rayCast(segs[segs.length - 1].x0, segs[segs.length - 1].y0, dx, dy, B.range).box;
+    if (endBox && endBox.type === 'd' && b.pulse % B.pulse === 1) this.damageBox(endBox, B.dmg * b.mult * 2, segs[segs.length - 1].x1, segs[segs.length - 1].y1, p);
     const near = (x, y, r) => segs.some(g => distToSeg(x, y, g) < r);
     for (const pr of this.projectiles) if (pr.team === 'e' && !pr.dead && near(pr.x, pr.y, B.width + pr.r)) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
     if (b.pulse % B.pulse === 1) {
@@ -325,6 +330,7 @@ export class World {
   fireSniper(p, f) {
     const R = HUNTER.rifle, c = chest(p), ax = p.aimX, ay = p.aimY, full = f >= 1;
     const x0 = c.x + ax * 0.9, y0 = c.y + ay * 0.9, wall = rayCast(x0, y0, ax, ay, R.range);
+    if (wall.box && wall.box.type === 'd') this.damageBox(wall.box, R.minDmg + (R.maxDmg - R.minDmg) * f, wall.x, wall.y, p);
     const line = [];
     for (const e of this.enemies) {
       if (e.dead) continue;
@@ -920,6 +926,7 @@ export class World {
     });
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = []; this.wells = []; this.ultCast = null;
     this.gadgets = []; this.pickups = [];
+    restoreBoxes(); this.spawnLevelPickups();
     for (const e of this.enemies) if (e.state === 'plowed') { e.state = 'idle'; e.plowBy = null; }
     for (const p of this.players) p.leash = null;
     if (this.arena.state !== 'cleared') this.resetArena();
@@ -1089,6 +1096,11 @@ export class World {
   ramPlow(p) {
     const R = RAM.rush, r = p.rush; if (!r) return;
     const L = r.level, dir = r.dx, front = p.x + dir * p.w / 2;
+    // A breakable piece in the way is smashed (a pillar takes a Battering Ram); he carries on through what breaks
+    for (const hy of [0.4, p.h * 0.5, p.h - 0.4]) {
+      const bk = breakableAt(front + dir * 0.2, p.y + hy, 0.05);
+      if (bk && this.damageBox(bk, 25 + 30 * L, front + dir * 0.2, p.y + hy, p)) p.hitWall = 0;
+    }
     for (const e of this.enemies) {
       if (e.dead || r.hit.has(e) || e.state === 'plowed') continue;
       const ax0 = dir > 0 ? front - 0.3 : front - R.reach, ax1 = dir > 0 ? front + R.reach : front + 0.3;
@@ -1532,7 +1544,7 @@ export class World {
         if (pointInSolid(nx, k.y)) k.vx *= -0.3; else k.x = nx;
         const g = groundBelow(k.x, k.y + 0.05);
         if (k.vy <= 0 && g > -Infinity && ny - 0.18 <= g) { k.y = g + 0.18; k.vy = 0; k.vx = 0; k.rest = true; } else k.y = ny;
-        if (k.y < KILL_Y) k.dead = true;
+        if (k.y < killYAt(k.x)) k.dead = true;
       }
       for (const q of this.players) {
         if (k.dead || q.state === 'dead' || q.state === 'downed' || (q === k.owner && k.t < P.ownerDelay)) continue;
@@ -1546,9 +1558,66 @@ export class World {
     const P = FIX.power;
     if (kind === 'overclock') q.overclockT = Math.max(q.overclockT, P.overclock.ticks);
     else if (kind === 'plating') addPlate(q, P.plating.plate);
+    else if (kind === 'ultcell') gainUlt(q, POWERUPS.ultcell.ult, this);
+    else if (kind === 'fury') q.furyT = Math.max(q.furyT || 0, POWERUPS.fury.ticks);
     else this.heal(q, P.medkit.heal, from);
     this.emit('powerUp', { p: q, kind, from });
   }
+  // Lift pads (level.js LIFTS): a player coming down onto one is thrown up to the platform over it
+  liftTick() {
+    for (const [x, y, top] of LIFTS) for (const q of this.players) {
+      if (q.padCd > 0 || !['normal', 'guard', 'patch', 'attack'].includes(q.state) || q.vy > 0.5) continue;
+      if (Math.abs(q.x - x) > 0.8 + q.w / 2 || q.y < y - 0.05 || q.y > y + 0.45) continue;
+      q.vy = Math.sqrt(2 * GRAVITY * (top - y + 1.6)); q.onGround = false; q.coyote = 0; q.jumpsUsed = 0; q.airDashes = 1; q.airRise = true;
+      q.fastFall = false; q.dashCarry = true; q.padCd = 30;   // (dashCarry: the full rise, as off Fix's spring pad)
+      this.emit('liftBounce', { p: q, x, y, top });
+    }
+  }
+
+  // Power-ups along the routes (level.js LEVEL_PICKUPS): they wait where they are until someone takes them
+  spawnLevelPickups() {
+    this.pickups = this.pickups.filter(k => !k.level);
+    for (const [x, y, kind] of LEVEL_PICKUPS) this.addLevelPickup(x, y + 0.18, kind, true);
+  }
+  addLevelPickup(x, y, kind, rest = false, vy = 0) {
+    const k = { id: this.newInstance(), kind, owner: null, x, y, px: x, py: y, vx: 0, vy, target: null, t: 0, life: rest ? 1e9 : POWERUPS.dropLife, rest, dead: false, level: true };
+    this.pickups.push(k); return k;
+  }
+
+  // ---- Breakable pieces (level.js DESTRUCT) ----
+  // Damage to a breakable piece: a pillar ignores blows under its `min`; at 0 it breaks (it stops being solid,
+  // anything on it falls) and drops its power-up, if it holds one
+  damageBox(b, dmg, x, y, by = null) {
+    if (!b || b.broken || b.type !== 'd') return false;
+    const D = DESTRUCT[b.tag];
+    if (dmg < D.min) { this.emit('boxChip', { b, x, y, hard: true }); return false; }
+    b.hp -= dmg; b.hitT = this.tick;
+    if (b.hp > 0) { this.emit('boxChip', { b, x, y }); return false; }
+    b.broken = true;
+    this.emit('boxBreak', { b, x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, by });
+    if (b.loot) this.addLevelPickup((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.loot, false, 5);
+    return true;
+  }
+  // Every breakable piece touching a box (a strike), once per attack instance
+  strikeBoxes(hb) {
+    let set = this.hitSets.get(hb.instance); if (!set) { set = new Set(); this.hitSets.set(hb.instance, set); }
+    for (const b of BOXES) {
+      if (b.type !== 'd' || b.broken || set.has('b' + b.id)) continue;
+      if (hb.x0 < b.x1 && hb.x1 > b.x0 && hb.y0 < b.y1 && hb.y1 > b.y0) {
+        set.add('b' + b.id);
+        this.damageBox(b, (hb.dmg || 1) * (hb.heavy || hb.armorBreak ? 2 : 1) + (hb.ram ? 6 : 0), (b.x0 + b.x1) / 2, Math.min(b.y1, Math.max(b.y0, (hb.y0 + hb.y1) / 2)), hb.owner);
+      }
+    }
+  }
+  // A blast: every breakable piece within r (more damage the closer)
+  blastBoxes(x, y, r, dmg, by) {
+    for (const b of BOXES) {
+      if (b.type !== 'd' || b.broken) continue;
+      const nx = Math.max(b.x0, Math.min(x, b.x1)), ny = Math.max(b.y0, Math.min(y, b.y1)), d = Math.hypot(x - nx, y - ny);
+      if (d <= r) this.damageBox(b, dmg * (1.5 - 0.5 * d / Math.max(0.1, r)), nx, ny, by);
+    }
+  }
+
   // An enemy fell: Fix picks up Scrap from it if she is close
   onKill(e) {
     for (const p of this.players) {
@@ -1856,6 +1925,7 @@ export class World {
     this.updateSnares();
     this.updateGadgets();
     this.updatePickups();
+    this.liftTick();
     resolveHitboxes(this);
     if (this.ultCast) this.ultTick();
     for (const b of this.barriers) {
@@ -1939,7 +2009,7 @@ export class World {
     const multi = act.length > 1;
     for (const p of this.players) {
       if (p.state === 'dead') continue;
-      if (p.y < KILL_Y) { this.recall(p, true); continue; }
+      if (p.y < killYAt(p.x)) { this.recall(p, true); continue; }
       if (!multi) continue;
       const right = this.cam.x + halfW - 0.7;
       if (p.x > right) { p.x = right; if (p.vx > 0) p.vx = 0; }
@@ -2016,7 +2086,7 @@ export class World {
     }
     this.updateSkyline(n);
     // Storm Spire climb enemies
-    if (!this.towerSpawned && this.players.some(p => p.x > TOWER_TRIGGER_X)) {
+    if (!this.towerSpawned && this.players.some(p => p.x > TOWER_TRIGGER_X && p.x < 162)) {
       this.towerSpawned = true;
       for (const [t, x, y] of [['swarmer', 122, 5.2], ['swarmer', 134, 11.2], ['drone', 129, 12], ['shield', 152, 15.6], ['drone', 147, 19.5], ['sniper', 158, 15.6]]) {
         const e = createEnemy(t, x, y); e.zone = 'tower'; this.enemies.push(e);
@@ -2040,11 +2110,12 @@ function segHitsBox(g, b, w) {
 
 // Skyline Relay: data-driven encounters (level.js ENCOUNTERS)
 World.prototype.updateSkyline = function (n) {
-  const here = x0 => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0);
+  // (a trigger counts only for players on that encounter's route: the routes share one long x axis)
+  const here = (x0, route = 'skyport') => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0 && routeAt(p.x).id === route);
   for (const S of this.encounters) {
     const E = S.def;
     if (S.state === 'idle') {
-      if (!here(E.trigger)) continue;
+      if (!here(E.trigger, E.route)) continue;
       S.state = 'active'; S.wave = 0;
       if (E.boss) S.boss = spawnBoss(this, E.boss, E.bossAt[0], E.bossAt[1], { zone: 'skyline', enc: E.id });
       else this.spawnWave(S, n);
@@ -2077,10 +2148,14 @@ World.prototype.updateSkyline = function (n) {
       }
     }
   }
-  // The route completes once every encounter is won (a few seconds after a boss falls, so the banners don't collide)
-  if (!this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X) && this.tick - (this.bossClearedT ?? -1e9) > 150) {
-    this.routeDone = true;
-    this.emit('banner', { text: 'Route complete', sub: 'You reached the end of this build.' });
+  // A route completes once every encounter on it is won and someone reaches its end (a few seconds after a boss
+  // falls, so the banners don't collide)
+  this.routesDone = this.routesDone || {};
+  for (const R of ROUTES) {
+    if (this.routesDone[R.id] || !here(R.endX, R.id) || this.tick - (this.bossClearedT ?? -1e9) <= 150) continue;
+    if (!this.encounters.every(S => S.def.route !== R.id || S.state === 'cleared')) continue;
+    this.routesDone[R.id] = true; if (R.id === 'skyport') this.routeDone = true;
+    this.emit('banner', { text: 'Route complete', sub: R.id === 'skyport' ? 'You reached the end of the Skyport route.' : `${R.name} cleared.` });
   }
 };
 

@@ -36,7 +36,7 @@ function soak(zone) {
     for (const e of w.events) ev[e.type] = (ev[e.type] || 0) + 1;
     w.events.length = 0;
     max.proj = Math.max(max.proj, w.projectiles.length); max.enemies = Math.max(max.enemies, w.enemies.length);
-    max.gadgets = Math.max(max.gadgets, w.gadgets.length); max.pickups = Math.max(max.pickups, w.pickups.length);
+    max.gadgets = Math.max(max.gadgets, w.gadgets.length); max.pickups = Math.max(max.pickups, w.pickups.filter(k => !k.level).length);   // (not the level's own power-ups)
     max.walls = Math.max(max.walls, w.barriers.filter(b => b.kind === 'rampart').length);
     if (tick % 900 === 450) for (const p of ps) p.ult = 100;   // ultimates now and then
     if (tick % 1500 === 1499 && !w.ultCast) for (const p of ps) if (p.state !== 'ult') w.swapCharacter(p, nextChar(p.char));

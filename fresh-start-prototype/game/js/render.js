@@ -7,7 +7,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER } from './level.js';
+import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER, curvedSpan, routeAt } from './level.js';
+import { buildLandmarks, Breakables, ATMOS } from './landmarks.js';
 import { SETTINGS, PLAYER_COLORS, CHARS, IMPACT_STYLES, IMPACT_ACCENT } from './config.js';
 import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
@@ -40,7 +41,7 @@ export class View {
     this.trauma = 0; this.time = 0; this.bloomKick = 0; this.punch = 0; this.impact = null; this.impactCd = 0; this.hitPause = 0;
     this.rigs = new Map(); this.enemyRigs = new Map();
 
-    const hemi = new THREE.HemisphereLight(0xd8ecff, 0x7a6f63, 0.95); this.scene.add(hemi);
+    const hemi = new THREE.HemisphereLight(0xd8ecff, 0x7a6f63, 0.95); this.scene.add(hemi); this.hemi = hemi;
     this.sun = new THREE.DirectionalLight(0xffeed6, 2.1);
     this.sun.position.set(-18, 30, 22); this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
@@ -51,7 +52,8 @@ export class View {
 
     this.fx = new FX(this.scene, this.rigs);
     this.baked = new Map();
-    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps(); this.flushBaked();
+    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps(); buildLandmarks(this); this.flushBaked();
+    this.breakables = new Breakables(this.scene, this.fx);
 
     this.composer = new EffectComposer(this.r);
     this.renderPass = new RenderPass(this.scene, this.camera);
@@ -174,7 +176,8 @@ export class View {
     for (const b of BOXES) {
       const depth = depthFor(b), h = b.y1 - b.y0;
       const segs = [];
-      const curved = b.x1 > ARC_START && b.x0 < ARC_END;
+      if (b.type === 'd') continue;   // (breakable pieces have their own meshes: landmarks.js Breakables)
+      const curved = curvedSpan(b.x0, b.x1);
       if (!curved) segs.push([b.x0, b.x1]);
       else { const n = Math.ceil((b.x1 - b.x0) / 0.9); for (let i = 0; i < n; i++) segs.push([b.x0 + (b.x1 - b.x0) * i / n, b.x0 + (b.x1 - b.x0) * (i + 1) / n]); }
       for (const [x0, x1] of segs) {
@@ -319,6 +322,13 @@ export class View {
     if (world.players.some(p => p.state === 'beam' && p.beam)) this.trauma = Math.max(this.trauma, 0.22);   // the beam shakes the frame the whole time
     if (world.players.some(p => p.state === 'ult' && p.ultRun && p.ultRun.segs)) this.trauma = Math.max(this.trauma, 0.4);   // and Supernova far more
     this.punch *= Math.exp(-dt * 10); this.bloomKick = Math.max(0, this.bloomKick - dt * 3.2);
+    // Each route has its own light (landmarks.js ATMOS): it blends in as the camera arrives
+    const A = ATMOS[routeAt(this.cam.x).id] || ATMOS.skyport, ka = 1 - Math.exp(-dt * 2.5);
+    if (!this.atmos) this.atmos = { fog: new THREE.Color(A.fog), near: A.near, far: A.far };
+    const lerpC = (c, hex) => c.lerp(this.tmpC.set(hex), ka); this.tmpC = this.tmpC || new THREE.Color();
+    lerpC(this.scene.fog.color, A.fog); this.scene.fog.near += (A.near - this.scene.fog.near) * ka; this.scene.fog.far += (A.far - this.scene.fog.far) * ka;
+    const SU = this.sky.material.uniforms; lerpC(SU.top.value, A.top); lerpC(SU.mid.value, A.mid); lerpC(SU.bot.value, A.bot);
+    lerpC(this.sun.color, A.sun); lerpC(this.hemi.color, A.hemi);
     const f = pathFrame(this.cam.x);
     const look = new THREE.Vector3(f.px, this.cam.y, f.pz);
     const ortho = SETTINGS.camera === 'ortho';
@@ -343,6 +353,8 @@ export class View {
 
   onEvent(ev) {
     this.fx.onEvent(ev);
+    if (ev.type === 'boxChip' || ev.type === 'boxBreak' || ev.type === 'liftBounce') this.breakables.onEvent(ev);
+    if (ev.type === 'boxBreak') this.trauma = Math.min(1, this.trauma + (ev.b.tag === 'pillar' ? 0.4 : ev.b.tag === 'glass' ? 0.12 : 0.2));
     const shake = { armorBreak: 0.5, slam: 0.45, guardBreak: 0.3, impact: 0.5, ambush: 0.35, challenge: 0.2, playerHit: ev.heavy ? 0.35 : 0.15,
       blast: 0.14 + (ev.level || 1) * 0.06 + (ev.perfect ? 0.1 : 0), burst: ev.charged ? 0.06 + ev.level * 0.04 : 0.05, perfectRelease: 0.1,
       splash: ev.level ? 0.04 + ev.level * 0.03 : 0, rocketJump: 0.2 + 0.42 * (ev.power || 0.5), enemyBlast: 0.3, chargeCrash: 0.3,
@@ -437,6 +449,7 @@ export class View {
     this.syncEntities(world, alpha, dt);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });
+    this.breakables.update(dt, world);
     const inking = this.updateImpact(dt, world);
     if (SETTINGS.quality === 'low' && !inking) {
       this.r.shadowMap.enabled = false;

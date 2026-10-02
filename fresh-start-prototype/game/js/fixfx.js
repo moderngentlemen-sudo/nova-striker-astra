@@ -25,7 +25,7 @@ export class FixFX {
       field: new THREE.MeshBasicMaterial({ map: fx.tex.ring, color: MINT, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
       coilField: new THREE.MeshBasicMaterial({ map: fx.tex.ring, color: CYAN, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }) };
     this.capMats = {};
-    for (const k of FIX.powers) this.capMats[k] = glow(FIX_LOOK[k].tint, 1.8);
+    for (const k of [...FIX.powers, 'ultcell', 'fury']) this.capMats[k] = glow(FIX_LOOK[k].tint, 1.8);
   }
 
   // ---- Gadget models (built once a gadget appears; shared materials) ----
@@ -67,8 +67,14 @@ export class FixFX {
     this.scene.add(root);
     return G;
   }
-  pickupMesh(kind) {
+  pickupMesh(kind, level = false) {
     const g = new THREE.Group(), body = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.22, 4, 12), this.capMats[kind]); body.rotation.z = Math.PI / 2; g.add(body);
+    if (level) {
+      // Power-ups along the route stand out from a distance: bigger, with a column of light over them
+      g.scale.setScalar(1.7);
+      const beam = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.fx.tex.glow, color: FIX_LOOK[kind].tint, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
+      beam.scale.set(0.35, 3.2, 1); beam.position.y = 1.2; g.add(beam);
+    }
     const band = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.03, 6, 16), this.mat.body); band.rotation.y = Math.PI / 2; g.add(band);
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.fx.tex.glow, color: FIX_LOOK[kind].tint, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     glow.scale.setScalar(0.9); g.add(glow);
@@ -300,7 +306,7 @@ export class FixFX {
     for (const k of world.pickups || []) {
       seenK.add(k);
       let m = this.pickups.get(k);
-      if (!m) { m = this.pickupMesh(k.kind); this.pickups.set(k, m); }
+      if (!m) { m = this.pickupMesh(k.kind, !!k.level); this.pickups.set(k, m); }
       const a = view.alpha ?? 1, x = k.px + (k.x - k.px) * a, y = k.py + (k.y - k.py) * a;
       toWorld(x, y + (k.rest ? 0.12 + Math.sin(this.t * 4 + k.id) * 0.06 : 0), 0.15, m.position);
       m.rotation.y += dt * 3; m.visible = k.life > 90 || Math.floor(this.t * 10) % 2 === 0;

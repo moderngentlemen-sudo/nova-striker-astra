@@ -3,6 +3,7 @@
 
 const BTNS = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock', 'sub', 'ult'];
 
+const ORDER_HOLD = 380;   // ms of D-pad up/down held for the second command (Cover me, Hold here)
 const KEYMAP = {
   Space: 'jump', ShiftLeft: 'dash', ShiftRight: 'dash',
   KeyJ: 'melee', KeyK: 'fire', KeyL: 'parry', KeyQ: 'parry', KeyE: 'sig', KeyI: 'sig',
@@ -50,6 +51,9 @@ export class Input {
       if (e.code === 'Digit2') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'echo' });
       if (e.code === 'Digit3') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'ram' });
       if (e.code === 'Digit4') this.menuEvents.push({ dev: 'kbm', type: 'pick', char: 'fix' });
+      // Team commands to the AI teammates (bot.js): Z attack my target · G cover me · X regroup on me · C hold here
+      const order = { KeyZ: 'attack', KeyG: 'cover', KeyX: 'regroup', KeyC: 'hold' }[e.code];
+      if (order) this.menuEvents.push({ dev: 'kbm', type: 'order', order });
     });
     window.addEventListener('keyup', e => {
       this.keys.delete(e.code);
@@ -120,6 +124,17 @@ export class Input {
         ['left', now[14] || sx < -0.6, { type: 'swap', dir: -1 }], ['right', now[15] || sx > 0.6, { type: 'swap', dir: 1 }],
       ];
       const R = this.repeat[id] || (this.repeat[id] = {});
+      // In play, D-pad up and down are team commands: a tap of up is Attack my target and holding it Cover me;
+      // a tap of down is Regroup on me and holding it Hold here (ORDER_HOLD ms)
+      if (!this.menuOpen) {
+        for (const [btn, tap, hold] of [[12, 'attack', 'cover'], [13, 'regroup', 'hold']]) {
+          const k = 'o' + btn, r = R[k];
+          if (now[btn] && !r) R[k] = { t0: t, done: false };
+          else if (now[btn] && r && !r.done && t - r.t0 >= ORDER_HOLD) { r.done = true; this.menuEvents.push({ dev: id, type: 'order', order: hold }); }
+          else if (!now[btn] && r) { if (!r.done) this.menuEvents.push({ dev: id, type: 'order', order: tap }); R[k] = null; }
+        }
+        dirs.splice(0, 2);   // (so they are not menu directions too)
+      }
       for (const [k, on, ev] of dirs) {
         const r = R[k];
         if (!on) { R[k] = null; continue; }

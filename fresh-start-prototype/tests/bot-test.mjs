@@ -135,3 +135,54 @@ function duo(char, mine = 'nova', x = 20, bx = 18.5) {
     assert(beamed, `${char} as a bot fires a Level 4 beam down a line of 4 training posts`);
   }
 }
+
+// ---- Team commands ----
+function squad(chars = ['echo', 'ram', 'fix']) {
+  const w = new World(); w.teleport('gym');
+  const me = w.addPlayer('kbm', 'nova'); me.x = 20; me.y = 0; me.mercy = 99999;
+  const bots = new Bots(), pad = person();
+  const team = chars.map((c, i) => { const b = w.addPlayer('cpu' + (i + 1), c); b.x = 16 + i; b.y = 0; b.mercy = 99999; return b; });
+  const step = (n = 1, o = {}) => { for (let i = 0; i < n; i++) { const cmds = { [me.slot]: pad(o) }; bots.commands(w, cmds); w.step(cmds); w.events.length = 0; } };
+  return { w, me, bots, team, step };
+}
+{ // Attack my target: every bot goes for the commander's lock-on target, even a far one, and the order lapses when it falls
+  const { w, me, bots, team, step } = squad();
+  const near = createEnemy('swarmer', 21.5, 0, { cd: 9999 }), far = createEnemy('swarmer', 27, 0, { cd: 9999 });
+  near.hp = 60; far.hp = 40; w.enemies.push(near, far); w.setLock(me, far, 'test');
+  const answers = bots.issue(w, me, 'attack');
+  step(20);
+  const all = team.every(b => bots.mem.get(b).target === far);
+  let t = 0; for (; t < 900 && !far.dead; t++) step(1);
+  step(2);
+  assert(answers.length === 3 && all && far.dead && bots.order === null,
+    `Attack my target: all 3 bots go for the far locked Swarmer (${all}), kill it in ${t} ticks, and the order lapses`);
+}
+{ // Hold here: the bots stay around the spot while the commander walks off
+  const { w, me, bots, team, step } = squad();
+  bots.issue(w, me, 'hold');
+  step(200, { mx: -1 });
+  const spread = team.map(b => Math.abs(b.x - 20).toFixed(1));
+  assert(team.every(b => Math.abs(b.x - 20) < 3) && me.x < 14, `Hold here: the bots stay within 3 m of the spot (${spread.join(', ')} m) as the player walks off to x ${me.x.toFixed(0)}`);
+}
+{ // Cover me: RAM stands between the commander and the enemy with his shield up; Fix beams the commander
+  const { w, me, bots, team, step } = squad(['ram', 'fix']);
+  const sn = createEnemy('sniper', 30, 0, { cd: 9999 }); sn.hp = 999; w.enemies.push(sn);
+  me.hp = 80; bots.issue(w, me, 'cover');
+  let guard = 0, beam = 0;
+  for (let i = 0; i < 240; i++) {
+    if (i % 40 === 0) w.spawnProjectile({ team: 'e', owner: sn, x: 28, y: 1.2, vx: -14, vy: 0, ttl: 120, r: 0.2, dmg: 6, kind: 'std' });
+    step(1); if (team[0].state === 'guard') guard++; if (team[1].state === 'patch') beam++;
+  }
+  const ram = team[0];
+  assert(ram.x > me.x && ram.x - me.x < 3 && guard > 20 && beam > 30 && me.hp >= 80,
+    `Cover me: RAM ${ (ram.x - me.x).toFixed(1)} m in front of the player (${guard} ticks guarding), Fix's beam on them ${beam} ticks, their health ${me.hp}/${me.maxHp}`);
+}
+{ // Regroup on me: the bots come in close, then go back to following; the same command again cancels it
+  const { w, me, bots, team, step } = squad();
+  for (const b of team) b.x = 6;
+  bots.issue(w, me, 'regroup'); step(240);
+  const close = team.every(b => Math.abs(b.x - me.x) < 3.5);
+  step(200); const lapsed = bots.order === null;
+  bots.issue(w, me, 'hold'); const cancel = bots.issue(w, me, 'hold');
+  assert(close && lapsed && bots.order === null && cancel.length === 3, `Regroup: the bots come within 3.5 m (${team.map(b => (b.x - me.x).toFixed(1)).join(', ')}), it lapses after ${(360 / 60).toFixed(0)} s, and giving a command twice cancels it`);
+}

@@ -1,5 +1,5 @@
 // Bootstrap: fixed 60 Hz simulation, interpolated rendering, drop-in joining, menus.
-import { SETTINGS, loadSettings, saveSettings, DT, ROSTER, nextChar } from './config.js';
+import { SETTINGS, loadSettings, saveSettings, DT, ROSTER, nextChar, PLAYER_COLORS } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { View } from './render.js';
@@ -7,7 +7,7 @@ import { UI } from './ui.js';
 import { Sound } from './audio.js';
 import { Music } from './music.js';
 import { Haptics } from './haptics.js';
-import { Bots, isBot } from './bot.js';
+import { Bots, isBot, ORDERS } from './bot.js';
 
 loadSettings();
 const app = document.getElementById('app');
@@ -55,6 +55,16 @@ function tryJoin() {
   if (!started && input.gamepadBlocked) ui.gamepadNotice(true);
 }
 
+// A team command to the AI teammates: they answer, and the HUD shows it while it stands
+function giveOrder(p, type) {
+  if (p.state === 'dead' || isBot(p)) return;
+  const answers = bots.issue(world, p, type);
+  if (!answers.length) { ui.toast('No AI teammates to command (Settings: AI teammates)'); return; }
+  ui.toast(bots.order ? `P${p.slot + 1}: ${ORDERS.names[type]}` : `P${p.slot + 1}: back to following`);
+  answers.forEach(([b, line], i) => setTimeout(() => { if (world.players.includes(b)) ui.bark(b, line); }, 150 + i * 350));
+  if (bots.order) view.fx.groundRing(p.x, p.y, PLAYER_COLORS[p.slot], 0.4, 2.4, 0.5, 0.85);
+}
+
 function handleMenuEvents() {
   for (const ev of input.takeMenuEvents()) {
     // The controls screen closes with any controller's B, A, Start or View (H or Esc on the keyboard); the
@@ -72,6 +82,7 @@ function handleMenuEvents() {
     else if (paused) ui.menuNav(ev);
     else if (ev.type === 'swap') world.swapCharacter(p, nextChar(p.char, ev.dir || 1));
     else if (ev.type === 'pick') world.swapCharacter(p, ev.char);
+    else if (ev.type === 'order') giveOrder(p, ev.order);
   }
 }
 
@@ -83,6 +94,11 @@ function stepSim() {
     cmds[p.slot] = input.sample(p.device, (mx, my) => view.aimFromMouse(mx, my, p), SETTINGS.p1Aim);
   }
   bots.commands(world, cmds);
+  // The command in force: on the HUD, a marker where they hold, and a word when an attack order's target falls
+  const O = bots.order;
+  ui.setOrder(O && world.players.includes(O.by) ? { name: ORDERS.names[O.type], slot: O.by.slot } : null);
+  if (O && O.type === 'hold' && world.tick % 50 === 0) view.fx.groundRing(O.x, O.y, PLAYER_COLORS[O.by.slot], 0.5, 1.8, 0.45, 0.6);
+  if (bots.done === world.tick) { const b = world.players.find(isBot); if (b) ui.bark(b, ORDERS.lines[b.char].done); }
   if (window.__NS.inject) cmds = window.__NS.inject(world.tick, cmds) || cmds;
   world.step(cmds);
   for (const ev of world.events) { view.onEvent(ev); sound.play(ev); ui.onEvent(ev, world); haptics.onEvent(ev); }
@@ -128,6 +144,7 @@ requestAnimationFrame(frame);
 // Test hooks (used by automated checks; harmless otherwise)
 window.__NS = {
   world, view, ui, input, music, sound, haptics, bots, SETTINGS, manual: false, inject: null,
+  order(type, slot = 0) { const p = world.players.find(q => q.slot === slot); if (p) giveOrder(p, type); },
   start(char = 'nova') { if (!started) { world.addPlayer('kbm', char); started = true; ui.hideStart(); } },
   step(n = 1) { for (let i = 0; i < n; i++) stepSim(); },
   stats() { return { fps, players: world.players.length, enemies: world.enemies.length, tick: world.tick }; },

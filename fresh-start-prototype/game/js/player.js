@@ -48,7 +48,7 @@ export function createPlayer(slot, device, charId, x, y) {
     // Fix: Scrap, the selected gadget and power-up, the Patch Beam, and a tossed power-up waiting for the button
     scrap: FIX.scrap.start, gadgetSel: 'pylon', powerSel: 'overclock', patch: null, tossArmed: false, rivetQ: 0, rivetT: 0,
     // Support anyone can carry: Plating (an overshield), Overclock, the Patch Beam's Tune-Up, an Amp Coil's field
-    plate: 0, overclockT: 0, tuneT: 0, ampK: 1, fixRevive: false, padCd: 0,
+    plate: 0, overclockT: 0, tuneT: 0, ampK: 1, fixRevive: false, padCd: 0, furyT: 0,
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
     lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0, lockSuspend: false,
@@ -134,7 +134,7 @@ export function updatePlayer(p, cmd, world) {
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
     'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'shootT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd']) if (p[k] > 0) p[k]--;
+    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd', 'furyT']) if (p[k] > 0) p[k]--;
   // Ability cooldowns recharge faster under Fix's boosts (Overclock, Tune-Up, an Amp Coil)
   const rate = boostRate(p);
   for (const k of ['aegisCd', 'burstCd', 'wallCd', 'linkCd', 'provokeCd']) if (p[k] > 0) p[k] = Math.max(0, p[k] - rate);

@@ -68,6 +68,7 @@ function fixChips(p, world) {
 // Boosts anyone can carry: Plating (from Fix or RAM), Overclock, Tune-Up (Fix's beam), an Amp Coil's field
 function boostChips(p) {
   return (p.plate > 0.5 ? `<span class="chip plate">Plating ${Math.ceil(p.plate)}</span>` : '') + (p.overclockT > 0 ? `<span class="chip over2">Overclock ${Math.ceil(p.overclockT / 60)}s</span>` : '') +
+    (p.furyT > 0 ? `<span class="chip fury">Fury ${Math.ceil(p.furyT / 60)}s</span>` : '') +
     (p.tuneT > 0 ? '<span class="chip fix on">Tuned up</span>' : '') + (p.ampK > 1 ? `<span class="chip over2">Amp x${p.ampK}</span>` : '') + (p.braceT > 0 ? '<span class="chip ram">Braced</span>' : '');
 }
 
@@ -167,6 +168,7 @@ export class UI {
             <li>RT fire · LT parry / dodge / guard / beam · LB character action</li>
             <li>LT + RT ultimate · D-pad swap character · Start pause</li></ul></div>
         </div>
+        <p class="fine">New in Version 12: team commands for AI teammates (D-pad up/down, or <kbd>Z</kbd> <kbd>G</kbd> <kbd>X</kbd> <kbd>C</kbd>), two long new levels that wind through 3D (the <b>Helix Foundry</b> and the <b>Undercity Descent</b>, in <kbd>Esc</kbd>/Start), breakable crates, barricades, glass and pillars, and power-ups along the way.</p>
         <p class="fine">New in Version 11: smarter AI teammates with a skill setting, a controller-friendly pause menu, RAM's Level 4 <b>Breach Beam</b> (keep holding fire) and a shield that cracks and shatters, seven impact frame styles that can take your player colour, and Echo's snares on LB as an option. All in <kbd>Esc</kbd>/Start.</p>
         <p class="fine">New in Version 10: two new characters. <b>RAM</b>, the tank: hold LT to raise his tower shield (it blocks, covers everyone behind him and stores Kinetic; fire while guarding releases it), a dash that plows enemies into walls, a hard-light wall, a guardian link and a war cry. <b>Fix</b>, the support: hold LT for a beam that heals, revives from range and tunes teammates up (faster charging and bars), gadgets on Y, power-ups tossed with X. Players join as Nova, Echo, RAM and Fix; swap with the D-pad or <kbd>1</kbd>–<kbd>4</kbd>.</p>
         <p class="fine">Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd>/View shows every control; <kbd>Esc</kbd>/Start opens settings, zones and the boss fights.</p>
@@ -195,6 +197,8 @@ export class UI {
     mk('Concourse Lock', () => this.H.zone('arena'));
     mk('Storm Spire Climb', () => this.H.zone('tower'));
     mk('Skyline Relay', () => this.H.zone('skyline'));
+    mk('Helix Foundry', () => this.H.zone('foundry'));
+    mk('Undercity Descent', () => this.H.zone('undercity'));
     mk('Boss: Lockwarden', () => this.H.boss('warden'));
     mk('Boss: Stormcaller', () => this.H.boss('stormcaller'));
     mk('Controls', () => this.toggleHelp(true));
@@ -338,6 +342,8 @@ export class UI {
       <tr><td>Patch Beam: hold to beam the teammate who needs it most. It heals fast, then adds Plating, and Tunes Up whoever it holds: they charge, recharge and fill their bars 1.5 times as fast. On a downed teammate it revives them from range; with no one near she welds herself. She moves slowly while it runs</td><td>Hold LT</td><td>Hold Q or L</td></tr>
       <tr><td>Field Mechanic: beside a downed teammate she revives three times as fast as anyone else, and whoever she brings back has 60% of their health</td><td colspan="2">Stand next to them</td></tr>
       <tr><td>Gadgets (cost Scrap): build the selected one in front of her; building it again moves it. <b>Patch Pylon</b>: heals everyone in its field, and a downed teammate inside gets back up on their own. <b>Sentry</b>: shoots the nearest enemy in sight (rockets too at level 3). <b>Amp Coil</b>: teammates in its field charge and fill their bars faster. Two wrench hits raise a gadget a level (up to 3) and refresh it</td><td>Y build · RB pick</td><td>E build · R pick</td></tr>
+      <tr><td>Team commands to the AI teammates (Settings: AI teammates): <b>Attack my target</b> (all go for your lock-on target), <b>Cover me</b> (RAM shields you, Fix beams you, the others take what comes for you), <b>Regroup on me</b> (they close in for a few seconds), <b>Hold here</b> (they stand their ground where you were). The same command again cancels it</td><td>D-pad up: tap Attack · hold Cover · D-pad down: tap Regroup · hold Hold</td><td>Z Attack · G Cover · X Regroup · C Hold</td></tr>
+      <tr><td>Breakable pieces and power-ups along the routes: crates, barricades, glass and pillars break under attacks (a pillar only under heavy blows; RAM's charge goes through), and some crates hold a power-up. Power-ups wait along the way under a column of light: <b>Medkit</b>, <b>Plating</b>, <b>Overclock</b>, an <b>Ult Cell</b> (40 ultimate) and <b>Fury</b> (+50% damage and knockback for 12 s)</td><td>Walk into it</td><td>Walk into it</td></tr>
       <tr><td>Power-ups (cost Scrap): melee with no enemy or gadget of hers close tosses the selected one to the nearest teammate in front (or drops it at her feet; anyone can pick it up). <b>Overclock</b>: everything charges, recharges and fills 1.6 times as fast for 10 s. <b>Plating</b>: an overshield over the health bar. <b>Medkit</b>: 40 health</td><td>X (nothing close) · LB pick</td><td>Right click or J · T pick</td></tr>
       <tr><td>Rivet Gun: tap for a burst of rivets; hold for a Hot Rivet that sticks in what it hits and bursts</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
       <tr><td>Wrench: swing, backswing and a clanging overhead (close to an enemy or one of her gadgets); hold for the Torque Slam, a ring of sparks that stuns light enemies and drones. Her ground pound's landing heals teammates close by</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
@@ -358,6 +364,14 @@ export class UI {
 
   // ---- In-game messages ----
   showBanner(text, sub) { this.banner.innerHTML = `<strong>${text}</strong>${sub ? `<span>${sub}</span>` : ''}`; this.banner.hidden = false; this.bannerT = 2.8; }
+  // The team command in force (bot.js), shown above the toast line
+  setOrder(o) {
+    const key = o ? o.name + o.slot : '';
+    if (key === this.orderKey) return; this.orderKey = key;
+    if (!this.orderEl) { this.orderEl = h('div', 'order'); this.root.appendChild(this.orderEl); }
+    this.orderEl.hidden = !o;
+    if (o) { this.orderEl.innerHTML = `<b style="color:${PLAYER_COLORS[o.slot]}">${PLAYER_MARKS[o.slot]} P${o.slot + 1}</b> Team order · <strong>${o.name}</strong>`; }
+  }
   toast(text) { this.toastEl.textContent = text; this.toastEl.hidden = false; this.toastT = 2.2; }
   bark(p, text) {
     const el = h('div', 'bark', `<b>${CHARS[p.char].name}</b> ${text}`);

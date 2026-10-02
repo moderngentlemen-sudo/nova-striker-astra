@@ -1,4 +1,4 @@
-# Nova Striker: fresh-start prototype (Version 11)
+# Nova Striker: fresh-start prototype (Version 12)
 
 **Scope.** This folder is an isolated, hypothetical fresh-start track. It does not replace, cancel, reset or
 change the existing Nova Striker project or any current work, and it is not a decision to restart the
@@ -50,11 +50,41 @@ browser tab for controllers and rumble, because embedded viewers may block gamep
 | Nova's secondary weapon · Provoke (RAM) · pick a power-up (Fix) · Echo's snares (Settings: Echo's utility belt on LB) | T or Y | LB |
 | Lock-on (automatic by default: tap to switch, hold to let go) | F, O or mouse forward | R3 |
 | Ultimate (full bar) | V or N | LT + RT together |
+| Team commands to AI teammates: Attack my target · Cover me · Regroup on me · Hold here | Z · G · X · C | D-pad up tap · up hold · down tap · down hold |
 | Swap character · pause · help | 1–4 or Tab · Esc or P · H | D-pad left/right · Start · View |
 
 Extra gamepads join by pressing any button, up to four players; each new player gets the first character
 nobody is using. H or View shows the full controls in game; B, A, Start or View closes them, and the D-pad
 scrolls.
+
+## What changed in Version 12
+
+- **Team commands for the AI teammates.** D-pad up: a tap is **Attack my target** (every bot goes for your
+  lock-on target, or the enemy nearest you, until it falls) and holding it is **Cover me** (RAM stands in front
+  of you with his shield up, Fix keeps her beam on you, Nova and Echo take whatever comes for you). D-pad down:
+  a tap is **Regroup on me** (they close in for six seconds) and holding it is **Hold here** (they stand their
+  ground where you were, a ring marks the spot). Keyboard: Z, G, X, C. Each bot answers in character, the
+  order shows above the toast line, and giving the same command again cancels it.
+- **Two new long levels that use the 3D path** (pause menu: Helix Foundry, Undercity Descent; about 360 m
+  and 380 m). The path is now a chain of straight runs and arcs: some wrap round a structure away from the
+  camera (as the Storm Spire did), others bend toward it so the level sweeps round the camera, and the
+  simulation stays 2D. The original route is unchanged.
+  - **Helix Foundry:** an approach through crates and barricades, an S-bend (a trench that curves round the
+    camera, then a bend round the furnace dome), then a 300° climb up rising platforms round the reactor core;
+    fall off and the lift pads on the floor throw you back up. A sky bridge crosses back over the climb to the
+    Crucible, a sealed arena with a Brute.
+  - **Undercity Descent:** rooftops at dusk, a bend through the vents, gaps over the street, a stair that winds
+    down round a cooling tower, the transit line through barricades under the rail, and a sealed plaza with
+    two Brutes.
+  - Each level has its own light (warm foundry haze, violet city dusk), checkpoints, encounters and set
+    pieces.
+- **Breakable pieces:** crates, barricades, glass and pillars, on the new levels and a few on the Skyport
+  route. Strikes, shots, blasts, beams, the sniper, shockwaves and enemy fire all wear them down. Glass
+  shatters at anything, a pillar only gives to heavy blows, and RAM's charge goes straight through. They shake
+  and darken as they take damage and burst into debris. A reset to a checkpoint puts them back.
+- **Power-ups along the routes and in crates:** Medkit, Plating and Overclock (as Fix's), plus two new ones:
+  the **Ult Cell** (40 ultimate) and **Fury** (+50% damage and knockback for 12 s). Each waits under a column of
+  light, and some crates hold one. AI teammates pick up a Medkit or Plating when hurt and leave the rest for you.
 
 ## What changed in Version 11
 
@@ -192,7 +222,9 @@ weapon charge, ability cooldowns and recharges, and ultimate bar build-up.
 `game/js/` has one ES module per concern. The simulation (`world.js`, `player.js`, `enemies.js`,
 `bosses.js`, `combat.js`, `level.js`) runs on plain data at a fixed 60 Hz and never touches the DOM or
 three.js. It emits events, and these react to them. AI teammates (`bot.js`) sit on the input side: each
-one produces the same command a gamepad would, once a tick.
+one produces the same command a gamepad would, once a tick. `level.js` holds the routes: the path pieces
+(`ROUTES`, `pathFrame`), boxes (including breakables), encounters, checkpoints, power-ups and lift pads;
+`landmarks.js` builds the new routes' set pieces, atmosphere and breakable meshes.
 
 - rendering (`render.js`, `rigs.js`, `enemyRigs.js`, `anim.js`, `fx.js`, `chargefx.js`, `subfx.js`,
   `ultfx.js`, `beamfx.js`, `aegisfx.js`, `ramfx.js`, `fixfx.js`, `trails.js`, `ghosts.js`)
@@ -205,7 +237,7 @@ All tuning lives in `config.js`.
 ## Tests
 
 `node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-242 checks, including two random-input soaks (the newer one runs all four characters, swapping them
+254 checks, including two random-input soaks (the newer one runs all four characters, swapping them
 mid-fight). The browser screenshot, smoke and performance runs were done separately and are not included.
 
 ## Known limits

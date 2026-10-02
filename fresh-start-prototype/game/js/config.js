@@ -509,6 +509,7 @@ export const PLATE_MAX = 60;
 export const FIX_LOOK = {
   pylon: { name: 'Patch Pylon', tint: '#5cf2a6' }, sentry: { name: 'Sentry', tint: '#ffcf5a' }, coil: { name: 'Amp Coil', tint: '#6fe3ff' },
   overclock: { name: 'Overclock', tint: '#6fe3ff' }, plating: { name: 'Plating', tint: '#a9c8ff' }, medkit: { name: 'Medkit', tint: '#5cf2a6' },
+  ultcell: { name: 'Ult Cell', tint: '#ffd23f' }, fury: { name: 'Fury', tint: '#ff5a4a' },
 };
 
 // Ultimates. Everyone has an ultimate bar that fills in play (dealing damage, taking it, kills, perfect
@@ -592,6 +593,11 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const SETTINGS = { ...DEFAULT_SETTINGS };
+
+// Power-ups found along the routes and in broken crates (level.js LEVEL_PICKUPS, DESTRUCT), besides Fix's three
+// (Overclock, Plating, Medkit: FIX.power): an Ult Cell adds `ult` to the ultimate bar; Fury makes every hit do
+// `dmg` times the damage and `kb` times the knockback for `ticks`. A crate's power-up lasts `dropLife` ticks.
+export const POWERUPS = { ultcell: { ult: 40 }, fury: { ticks: 720, dmg: 1.5, kb: 1.3 }, dropLife: 1500 };
 
 // Impact frame looks (Settings: Impact frame style; drawn by fx.js ImpactShader, in this order) and each one's own
 // key colour (used unless Settings: Impact frame colour picks the player's)

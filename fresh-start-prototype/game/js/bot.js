@@ -28,6 +28,17 @@
 //   Everyone uses their ultimate when it is ready and enemies are close, and joins a teammate's team ultimate.
 // Skill (BOT.skill) sets how often and how fast a bot answers a wind-up or shot, how far it reads the fight,
 // and whether it uses the advanced plays (beams, walls, snares, kiting).
+//
+// Team commands (any person can give them; input.js: D-pad up tap/hold, down tap/hold, or Z/G/X/C):
+//   attack   Attack my target: every bot goes for the commander's lock-on target (or the enemy nearest them)
+//            wherever it is, until it falls
+//   cover    Cover me: the bots stay at the commander's side: RAM in front with his shield toward the enemy,
+//            Fix with her beam on them, Nova and Echo on whatever goes for them
+//   regroup  Regroup on me: the bots come in tight around the commander, fighting only what is on top of them,
+//            for ORDERS.regroup ticks; then they go back to following as usual
+//   hold     Hold here: the bots stand their ground around where the commander stood, fighting what comes
+//            within ORDERS.holdRange of it, until another command
+// A new command replaces the last one; giving the same one again cancels it (back to following).
 import { ULT, RAM, FIX, ROSTER, MARKSMAN, HUNTER, SETTINGS } from './config.js';
 import { groundBelow, hasHeadroom, segmentBlocked } from './level.js';
 
@@ -54,9 +65,45 @@ const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 const alive = e => !e.dead && e.hp > 0;
 const up = q => q.state !== 'downed' && q.state !== 'dead';
 const RANGED_FOES = new Set(['sniper', 'mortar', 'turret', 'drone']);
+export const ORDERS = {
+  names: { attack: 'Attack my target', cover: 'Cover me', regroup: 'Regroup on me', hold: 'Hold here' },
+  regroup: 360, holdRange: 7, coverRange: 6,
+  // Each character's answer
+  lines: {
+    nova: { attack: 'Marking it. Going in.', cover: 'I have your back.', regroup: 'Coming to you.', hold: 'Holding this line.', done: 'Target down.' },
+    echo: { attack: 'It is mine.', cover: 'Nothing gets near you.', regroup: 'On my way.', hold: 'I will hold.', done: 'Done.' },
+    ram: { attack: 'Plowing through!', cover: 'Behind me. Stay there.', regroup: 'Falling back to you.', hold: 'They will not pass.', done: 'Down it goes.' },
+    fix: { attack: 'Rivets out!', cover: 'Beam on you, stay close.', regroup: 'Right behind you!', hold: 'Setting up here.', done: 'Scrap it!' },
+  },
+};
 
 export class Bots {
-  constructor() { this.mem = new Map(); }
+  constructor() { this.mem = new Map(); this.order = null; }
+
+  // A team command from player `by`: returns each bot's answer as [bot, line] (empty if there are no bots)
+  issue(world, by, type) {
+    const bots = world.players.filter(isBot);
+    if (!bots.length || !ORDERS.names[type]) return [];
+    if (this.order && this.order.type === type && this.order.by === by && type !== 'attack') { this.order = null; return bots.map(b => [b, 'Back to following.']); }
+    let target = null;
+    if (type === 'attack') {
+      target = by.lockT && alive(by.lockT) ? by.lockT : null;
+      if (!target) { let bd = BOT.sight + 6; for (const e of world.enemies) { if (!alive(e)) continue; const d = Math.hypot(e.x - by.x, e.y - by.y); if (d < bd) { bd = d; target = e; } } }
+      if (!target) return bots.map(b => [b, 'No target in sight.']);
+    }
+    this.order = { type, by, target, x: by.x, y: by.y, t: world.tick };
+    for (const b of bots) { const M = this.mem.get(b); if (M) { M.retarget = 0; M.hold = 0; } }
+    return bots.map(b => [b, ORDERS.lines[b.char][type]]);
+  }
+  // The command in force (it lapses when its commander leaves, its target falls, or a regroup has run its time);
+  // `done` is set once when an attack order's target falls
+  activeOrder(world) {
+    const O = this.order; if (!O) return null;
+    if (!world.players.includes(O.by)) { this.order = null; return null; }
+    if (O.type === 'attack' && !(O.target && alive(O.target) && world.enemies.includes(O.target))) { this.order = null; this.done = world.tick; return null; }
+    if (O.type === 'regroup' && world.tick - O.t > ORDERS.regroup) { this.order = null; return null; }
+    return O;
+  }
 
   // Keep the number of AI players at `want`, never more than the slots the human players leave free. They
   // take the characters no one is playing (Nova, Echo, RAM, Fix order), and are only added once a person has.
@@ -100,27 +147,34 @@ export class Bots {
     if (p.state === 'downed' || p.state === 'dead' || p.state === 'ult') { M.hold = 0; return out(); }
 
     const team = world.players.filter(q => q !== p);
-    const leader = team.find(q => !isBot(q) && up(q)) || team.find(up) || null;
+    const O = this.activeOrder(world);
+    const leader = (O && O.by !== p && up(O.by) ? O.by : null) || team.find(q => !isBot(q) && up(q)) || team.find(up) || null;
     const bots = world.players.filter(isBot), order = bots.indexOf(p);
     const cx = p.x, cy = p.y + p.h / 2;
     const dist = e => Math.hypot(e.x - cx, e.y + e.h / 2 - cy);
-    const foes = world.enemies.filter(e => alive(e) && e.state !== 'plowed' && dist(e) < BOT.sight + 4);
+    let foes = world.enemies.filter(e => alive(e) && e.state !== 'plowed' && dist(e) < BOT.sight + 4);
+    // Commands narrow what it fights: a regroup only what is on top of it; a hold only what comes near the spot
+    if (O && O.type === 'regroup') foes = foes.filter(e => dist(e) < 3.5);
+    if (O && O.type === 'hold') foes = foes.filter(e => Math.abs(e.x - O.x) < ORDERS.holdRange || ((p.char === 'nova' || p.char === 'fix') && dist(e) < BOT.sight && Math.abs(e.x - O.x) < BOT.sight));
 
     // ---- Join a teammate's team ultimate ----
     if (world.ultCast && !world.ultCast.members.includes(p) && p.ult >= ULT.max) { held.ult = (M.t % 4) < 2; return out(); }
 
     // ---- 2. Who to fight ----
-    if (--M.retarget <= 0 || !M.target || !alive(M.target)) {
+    if (O && O.type === 'attack') { M.target = O.target; M.retarget = S.retarget; }
+    else if (--M.retarget <= 0 || !M.target || !alive(M.target) || !foes.includes(M.target)) {
       M.retarget = S.retarget;
       let best = null, bs = Infinity;
       for (const e of foes) {
-        const s = this.score(world, p, e, dist(e), leader, team, M, S);
+        let s = this.score(world, p, e, dist(e), leader, team, M, S);
+        if (O && O.type === 'cover') s += (e.target === O.by ? -4 : 0) + Math.abs(e.x - O.by.x) * 0.5;   // what threatens the commander
         if (s < bs) { bs = s; best = e; }
       }
       M.target = best;
     }
-    let tgt = M.target && alive(M.target) && dist(M.target) < BOT.sight + 2 ? M.target : null;
-    const farFromLeader = leader && Math.abs(leader.x - p.x) > BOT.leash;
+    const attackOrder = O && O.type === 'attack';
+    let tgt = M.target && alive(M.target) && (attackOrder || dist(M.target) < BOT.sight + 2) ? M.target : null;
+    const farFromLeader = !attackOrder && leader && Math.abs(leader.x - p.x) > BOT.leash;
     if (farFromLeader && tgt && Math.abs(tgt.x - leader.x) > BOT.leash) tgt = null;   // catch up first
 
     // ---- 3. Where to stand ----
@@ -130,7 +184,33 @@ export class Bots {
     else if (tgt && !farFromLeader) {
       [goal, stopAt] = this.post(world, p, tgt, foes, leader, team, S, dist);
       goalY = tgt.y;
-    } else if (leader) { goal = leader.x - (leader.facing || 1) * BOT.follow * (1 + order * 0.7); goalY = leader.y; stopAt = 0.8; }
+    } else if (leader) {
+      goal = leader.x - (leader.facing || 1) * BOT.follow * (1 + order * 0.7); goalY = leader.y; stopAt = 0.8;
+      // Climbing after them (a stair of platforms): aim for the platform they are on, not the gap behind it
+      if (leader.y > p.y + 1.5 && leader.onGround) { goal = leader.x - (leader.facing || 1) * 0.4 * order; stopAt = 0.3; }
+    }
+    // Commands move where it stands
+    if (O && !downed) {
+      const near = foes.reduce((a, e) => (!a || dist(e) < dist(a) ? e : a), null);
+      if (O.type === 'regroup' && leader) { goal = leader.x - (leader.facing || 1) * (0.9 + order * 0.8); goalY = leader.y; stopAt = 0.5; }
+      else if (O.type === 'hold') {
+        const spot = O.x + (order - (bots.length - 1) / 2) * 1.3;
+        const melee = p.char === 'ram' || p.char === 'echo';
+        if (!(tgt && melee && Math.abs(tgt.x - O.x) < ORDERS.holdRange)) { goal = spot; goalY = O.y; stopAt = 0.5; }
+      } else if (O.type === 'cover' && leader) {
+        const threatX = near ? near.x : leader.x + (leader.facing || 1) * 3, side = sign(threatX - leader.x) || leader.facing || 1;
+        if (p.char === 'ram') { goal = leader.x + side * 1.4; stopAt = 0.4; }                                  // in front, shield up
+        else if (p.char === 'echo' && tgt && Math.abs(tgt.x - leader.x) < 4) { /* free to cut it down */ }
+        else { goal = leader.x - side * (1.2 + order * 0.7); stopAt = 0.6; }                                    // close, behind
+        goalY = leader.y;
+      }
+    }
+    // Patched up on the way: a Medkit or Plating within reach when it is hurt (the other power-ups are left for
+    // the players)
+    if (!tgt && !downed && !(O && O.type === 'hold') && p.hp < p.maxHp * 0.7) {
+      const pk = (world.pickups || []).find(k => (k.kind === 'medkit' || k.kind === 'plating') && !k.target && Math.abs(k.x - p.x) < 7 && Math.abs(k.y - p.y) < 2.5);
+      if (pk) { goal = pk.x; goalY = pk.y; stopAt = 0.2; }
+    }
     // spread out: don't stand where another bot already is
     for (const q of bots) if (q !== p && up(q) && bots.indexOf(q) < order && Math.abs(q.x - goal) < 0.8 && Math.abs(q.y - p.y) < 1.5) goal += (goal >= q.x ? 1 : -1) * 0.9;
     // ---- 1. Hazards: leave a mortar's landing zone ----
@@ -141,7 +221,13 @@ export class Bots {
 
     // ---- Platforming: jump walls, gaps and up to where the goal is; never walk off a ledge the goal isn't past ----
     const dir = mx || p.facing;
-    const wall = mx && !hasHeadroom(p.x + dir * 0.45, p.y + 0.3, p.w, Math.max(0.6, p.h - 0.4));
+    let wall = mx && !hasHeadroom(p.x + dir * 0.45, p.y + 0.3, p.w, Math.max(0.6, p.h - 0.4));
+    // A wall far taller than where the goal is, with the goal just past it (a level's end wall, a pillar to stand
+    // behind): there is nothing to climb to, so it waits on this side instead
+    if (wall && Math.abs(dx) < 6) {
+      let top = p.y; while (top < p.y + 30 && !hasHeadroom(p.x + dir * 0.6, top, p.w * 0.5, 1)) top += 1;
+      if (top > goalY + 3.5) { mx = 0; wall = false; }
+    }
     const floorAhead = groundBelow(p.x + dir * (p.w / 2 + 0.6), p.y + 0.2);
     const gap = mx && p.onGround && floorAhead < p.y - 1.2;
     const goalPastGap = Math.abs(dx) > 2.2;
@@ -162,7 +248,9 @@ export class Bots {
     // Stuck (no headway toward a goal over 3 m away for about 3 s, out of a fight): catch up with the team the
     // way a player left off screen does (no penalty)
     if (M.t % 60 === 0) {
-      M.stuck = !tgt && Math.abs(dx) > 3 && Math.abs(p.x - (M.lastX ?? p.x + 9)) < 0.6 ? (M.stuck || 0) + 1 : 0; M.lastX = p.x;
+      // (stuck below them counts too: a fall off a climb, with no way back up from here)
+      const below = goalY > p.y + 3, noHeadway = Math.abs(p.x - (M.lastX ?? p.x + 9)) < 0.6 && p.y < (M.lastY ?? -1e9) + 1;
+      M.stuck = !tgt && (Math.abs(dx) > 3 || below) && noHeadway ? (M.stuck || 0) + 1 : 0; M.lastX = p.x; M.lastY = p.y;
       if (M.stuck >= 3) { M.stuck = 0; world.recall(p, false); return out(); }
     }
 
@@ -215,7 +303,7 @@ export class Bots {
       }
       case 'ram': {
         const guarding = p.state === 'guard';
-        const cover = S.smart && this.coverNeeded(world, p, team);
+        const cover = (S.smart || (O && O.type === 'cover')) && this.coverNeeded(world, p, team);
         if (threat || cover || (guarding && M.guardT > 0)) {
           held.parry = true; aimFree = true; ax = sign(tx) || p.facing; ay = 0; M.hold = 0;
           if (threat || cover) M.guardT = 24; M.guardT--;
@@ -306,9 +394,11 @@ export class Bots {
     if (p.char === 'ram' && this.threat(world, p, M, S, rnd)) held.parry = true;
   }
 
-  // Fix: someone in Patch Beam range is down or hurt (or she is, with no one else to see to)
+  // Fix: someone in Patch Beam range is down or hurt (or she is, with no one else to see to); under Cover me
+  // she keeps the beam on the commander at the first scratch
   patch(world, p, team) {
-    const R = FIX.beam.range;
+    const R = FIX.beam.range, O = this.order;
+    if (O && O.type === 'cover' && up(O.by) && O.by !== p && O.by.hp < O.by.maxHp * 0.97 && Math.hypot(O.by.x - p.x, O.by.y - p.y) < R) return true;
     const need = team.some(q => (q.state === 'downed' || (up(q) && q.hp < q.maxHp * 0.75)) && Math.hypot(q.x - p.x, q.y - p.y) < R);
     return need || p.patch || (p.hp < p.maxHp * 0.5);
   }
