@@ -54,6 +54,9 @@ h3 { margin: 0 0 6px; font-family: var(--font-display); font-weight: 700; text-t
   background: rgba(255, 255, 255, 0.08); border: 1px solid var(--plate-edge); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
 .btn:hover { background: rgba(255, 255, 255, 0.16); }
 .btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
+/* Controller navigation of the pause menu: a clear ring on the focused control, and its settings row lit */
+.padnav .btn:focus, .padnav select:focus, .padnav input:focus { outline: 3px solid var(--warm); outline-offset: 2px; }
+.padnav .setting:focus-within { background: rgba(255, 190, 90, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 190, 90, 0.45); }
 .btn.small { font-size: 13px; padding: 5px 10px; }
 .btn.on { background: var(--warm); color: #1d1204; border-color: var(--warm); }
 .btn.ghost { background: transparent; }
@@ -890,6 +893,12 @@ var RAM = {
     2: { speed: 34, dmg: 8, poise: 80, kb: 12, r: 0.32, ttl: 44, pierce: 2, armorBreak: true },
     3: { speed: 36, dmg: 12, poise: 110, kb: 15, r: 0.4, ttl: 48, pierce: 3, armorBreak: true, blast: { r: 2.2, dmg: 6, poise: 60 } }
   },
+  // Breach Beam (Level 4: keep holding fire past level 3 until `at` ticks): like Nova's Level 4, a sustained
+  // beam, but RAM's is a broad battering column of hard light. It lasts `ticks`, follows the aim at `turn`
+  // rad/tick, hits everything in it every `pulse` ticks (breaking armor every `armorEvery`) and shoves it back
+  // `kb` m/s along the beam, erases enemy shots, and he braces behind it (`slow` on the ground, sinking at
+  // `hover` in the air). A dash or guard cuts it short; a hit that staggers him ends it.
+  beam: { at: 170, ticks: 110, pulse: 6, dmg: 3.2, poise: 30, width: 0.55, range: 40, turn: 0.035, slow: 0.15, hover: 0.6, armorEvery: 18, kb: 7 },
   // Ram Charge (dash): a shoulder charge behind the shield. Light enemies in front are scooped up and carried;
   // hitting a wall with them slams them into it (splat). A charged dash (hold dash while standing still) is
   // the Battering Ram: longer and faster, and from level `heavyFrom` it carries heavy enemies too and breaks
@@ -1081,6 +1090,10 @@ var DEFAULT_SETTINGS = {
   vbRefund: true,
   impactFrames: true,
   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
+  impactStyle: "scifi",
+  // the look: scifi, comic (the original), eclipse, shatter, thunder, sumi, warp (fx.js ImpactShader)
+  impactColor: "style",
+  // its key colour: the look's own ('style'), the player's colour ('player') or the character's ('character')
   camera: "persp",
   fov: 34,
   aimAssist: true,
@@ -1101,11 +1114,17 @@ var DEFAULT_SETTINGS = {
   haptics: true,
   // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
+  echoBelt: "fire",
+  // Echo's utility belt (Hunter kit snares): on a tap of fire, or on LB
   aiTeammates: 0,
   // computer-controlled players filling the team's empty slots (0-3; see bot.js)
+  aiSkill: "veteran",
+  // how sharp they are: rookie, veteran or elite (BOT.skill)
   settingsVersion: 9
 };
 var SETTINGS = { ...DEFAULT_SETTINGS };
+var IMPACT_STYLES = ["scifi", "comic", "eclipse", "shatter", "thunder", "sumi", "warp"];
+var IMPACT_ACCENT = { scifi: "#38c8ff", comic: "#14101a", eclipse: "#ffb347", shatter: "#bfe8ff", thunder: "#8f7bff", sumi: "#c8202c", warp: "#a070ff" };
 var KEY = "nova-striker-proto-settings";
 function loadSettings() {
   try {
@@ -1181,6 +1200,8 @@ var Input = class {
     this.devices = {};
     this.gamepadBlocked = false;
     this.menuEvents = [];
+    this.menuOpen = false;
+    this.repeat = {};
     this.anyKbm = false;
     window.addEventListener("keydown", (e) => {
       if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
@@ -1248,8 +1269,10 @@ var Input = class {
     }
     return out;
   }
-  // Pad menu buttons (Start/View/D-pad) become UI events.
+  // Pad menu buttons (Start/View/D-pad) become UI events. While a menu is open (menuOpen, set by main) the
+  // left stick moves through it too, and a direction held on the D-pad or stick repeats after a short pause.
   pollPadMenus() {
+    const t = performance.now();
     for (const p of this.pads()) {
       const id = "pad" + p.index;
       const prev = this.prevPads[id] || [];
@@ -1257,12 +1280,32 @@ var Input = class {
       const edge = (i) => now[i] && !prev[i];
       if (edge(9)) this.menuEvents.push({ dev: id, type: "pause" });
       if (edge(8)) this.menuEvents.push({ dev: id, type: "help" });
-      if (edge(14)) this.menuEvents.push({ dev: id, type: "swap", dir: -1 });
-      if (edge(15)) this.menuEvents.push({ dev: id, type: "swap", dir: 1 });
-      if (edge(12)) this.menuEvents.push({ dev: id, type: "up" });
-      if (edge(13)) this.menuEvents.push({ dev: id, type: "down" });
       if (edge(0)) this.menuEvents.push({ dev: id, type: "confirm" });
       if (edge(1)) this.menuEvents.push({ dev: id, type: "back" });
+      if (edge(4)) this.menuEvents.push({ dev: id, type: "prevTab" });
+      if (edge(5)) this.menuEvents.push({ dev: id, type: "nextTab" });
+      const sx = this.menuOpen ? p.axes[0] || 0 : 0, sy = this.menuOpen ? p.axes[1] || 0 : 0;
+      const dirs = [
+        ["up", now[12] || sy < -0.6, { type: "up" }],
+        ["down", now[13] || sy > 0.6, { type: "down" }],
+        ["left", now[14] || sx < -0.6, { type: "swap", dir: -1 }],
+        ["right", now[15] || sx > 0.6, { type: "swap", dir: 1 }]
+      ];
+      const R = this.repeat[id] || (this.repeat[id] = {});
+      for (const [k2, on, ev] of dirs) {
+        const r = R[k2];
+        if (!on) {
+          R[k2] = null;
+          continue;
+        }
+        if (!r) {
+          R[k2] = { next: t + 320 };
+          this.menuEvents.push({ dev: id, ...ev });
+        } else if (this.menuOpen && t >= r.next) {
+          r.next = t + 110;
+          this.menuEvents.push({ dev: id, ...ev, repeat: true });
+        }
+      }
       this.prevPads[id] = now;
     }
   }
@@ -3083,6 +3126,16 @@ function updateDowned(p, cmd, world2) {
   p.downedT--;
   if (p.downedT <= 0) world2.bleedOut(p);
 }
+function useSnare(p, world2, plant) {
+  if (p.snares <= 0 || !canFire(p)) return;
+  if (plant) world2.plantSnare(p);
+  else {
+    world2.throwSnare(p);
+    breakVeil(p, world2, "attack");
+  }
+  p.snares--;
+  if (p.snareRecharge <= 0) p.snareRecharge = HUNTER.snareRecharge;
+}
 function rifleFocus(t) {
   const R = HUNTER.rifle;
   return Math.max(0, Math.min(1, (t - R.raise) / R.focus));
@@ -3158,7 +3211,8 @@ function handleFire(p, cmd, world2) {
     return;
   }
   if (SETTINGS.echoKit === "hunter") {
-    const R = HUNTER.rifle;
+    const R = HUNTER.rifle, beltLB = SETTINGS.echoBelt === "lb";
+    if (beltLB && cmd.pressed.sub) useSnare(p, world2, p.onGround && cmd.my < -0.55);
     if (cmd.pressed.fire) p.plantPress = p.onGround && cmd.my < -0.55;
     if (cmd.held.fire && canFire(p)) {
       const t0 = p.rifleT;
@@ -3169,15 +3223,12 @@ function handleFire(p, cmd, world2) {
     if (!cmd.held.fire && p.rifleT > 0) {
       const t = p.rifleT;
       p.rifleT = 0;
-      if (t < R.raise) {
-        if (p.snares > 0 && canFire(p)) {
-          if (p.onGround && (p.plantPress || cmd.my < -0.55)) world2.plantSnare(p);
-          else {
-            world2.throwSnare(p);
-            breakVeil(p, world2, "attack");
-          }
-          p.snares--;
-          if (p.snareRecharge <= 0) p.snareRecharge = HUNTER.snareRecharge;
+      if (t < R.raise && !beltLB) useSnare(p, world2, p.onGround && (p.plantPress || cmd.my < -0.55));
+      else if (t < R.raise) {
+        if (p.rifleCd === 0 && canFire(p)) {
+          world2.fireSniper(p, 0);
+          p.rifleCd = p.rifleCdMax = R.cd;
+          breakVeil(p, world2, "attack");
         }
       } else if (p.rifleCd === 0 && canFire(p)) {
         world2.fireSniper(p, rifleFocus(t));
@@ -3331,14 +3382,15 @@ function gainUlt(p, amount, world2) {
   p.ult = Math.min(ULT.max, p.ult + amount * boostRate(p));
   if (was < ULT.max && p.ult >= ULT.max) world2.emit("ultReady", { p });
 }
+var beamSpec = (p) => p.char === "ram" ? RAM.beam : MARKSMAN.beam;
 function startBeam(p, world2) {
-  const B = MARKSMAN.beam;
+  const B = beamSpec(p), ram = p.char === "ram";
   p.beam = {
     t: B.ticks,
     dx: p.aimX,
     dy: p.aimY,
-    mult: focusMult(p) * spendOvercharge(p),
-    attach: p.attachment,
+    mult: ram ? 1 : focusMult(p) * spendOvercharge(p),
+    attach: ram ? "breach" : p.attachment,
     pulse: 0,
     armor: /* @__PURE__ */ new Map(),
     family: { focused: false, rocketed: true, perfect: false },
@@ -3346,10 +3398,10 @@ function startBeam(p, world2) {
   };
   p.chargeT = 0;
   setState(p, "beam");
-  world2.emit("beamStart", { p, attach: p.attachment, over: p.beam.mult > focusMult(p) });
+  world2.emit("beamStart", { p, attach: p.beam.attach, over: !ram && p.beam.mult > focusMult(p) });
 }
 function stateBeam(p, cmd, world2) {
-  const B = MARKSMAN.beam, b = p.beam;
+  const B = beamSpec(p), b = p.beam;
   if (!b) {
     setState(p, "normal");
     return;
@@ -3363,7 +3415,7 @@ function stateBeam(p, cmd, world2) {
   b.dy = Math.sin(a);
   if (Math.abs(b.dx) > 0.2) p.facing = sign(b.dx);
   if (p.onGround) {
-    p.vx = approach(p.vx, cmd.mx * CHARS.nova.run * B.slow, 40 * DT);
+    p.vx = approach(p.vx, cmd.mx * CHARS[p.char].run * B.slow, 40 * DT);
     p.vy = -0.5;
   } else {
     p.vx = approach(p.vx, 0, 20 * DT);
@@ -3395,7 +3447,7 @@ function stageOf(t, C, win, l4 = Infinity) {
 }
 function chargeStage(p) {
   if (marksman(p)) return stageOf(p.chargeT, MARKSMAN.charge, MARKSMAN.perfectWindow, MARKSMAN.beam.at);
-  if (p.char === "ram") return stageOf(p.chargeT, RAM.cannon.charge, 0);
+  if (p.char === "ram") return stageOf(p.chargeT, RAM.cannon.charge, 0, RAM.beam.at);
   if (p.char === "fix") return stageOf(p.chargeT, FIX.rivet.charge, 0);
   return p.chargeT <= 0 ? "" : p.chargeT < NOVA.charge1 ? "charging" : p.chargeT < NOVA.charge2 ? "L1" : "L2";
 }
@@ -3691,12 +3743,14 @@ function fireRam(p, cmd, world2) {
   if (cmd.held.fire && canFire(p)) {
     const t0 = p.chargeT;
     p.chargeT += boostRate(p);
-    crossed(t0, p.chargeT, C.charge, (level2) => world2.emit("chargeLevel", { p, level: level2 }));
+    crossed(t0, p.chargeT, [...C.charge, RAM.beam.at], (level2) => world2.emit("chargeLevel", { p, level: level2 }));
   }
   if (!cmd.held.fire && p.chargeT > 0) {
-    const level2 = levelOf(p.chargeT, C.charge);
+    const t = p.chargeT, level2 = levelOf(t, C.charge);
     p.chargeT = 0;
-    if (level2 && canFire(p)) world2.fireSlug(p, level2);
+    if (t >= RAM.beam.at) {
+      if (canFire(p)) startBeam(p, world2);
+    } else if (level2 && canFire(p)) world2.fireSlug(p, level2);
   }
 }
 function tickFix(p, world2) {
@@ -5145,7 +5199,7 @@ function hitEnemy(world2, e, hit, source) {
       e.armor--;
       armored = e.armor > 0;
       dmg *= 0.6;
-      world2.emit("armorBreak", { x: cx, y: cy, e, left: e.armor });
+      world2.emit("armorBreak", { x: cx, y: cy, e, left: e.armor, owner });
     } else {
       dmg *= 0.3;
       poise *= 0.4;
@@ -6182,7 +6236,7 @@ var World = class {
   // Every tick: trace the beam to the first wall (a Prism beam bounces once), erase enemy shots it touches,
   // and every `pulse` ticks hit every enemy in it. Attachments add their flavour.
   beamTick(p) {
-    const B = MARKSMAN.beam, b = p.beam, c = chest(p);
+    const B = beamSpec(p), b = p.beam, c = chest(p);
     const segs = [];
     let sx = c.x + b.dx * 0.6, sy = c.y + b.dy * 0.6, dx = b.dx, dy = b.dy;
     const bounces = b.attach === "prism" ? B.prism.bounces : 0;
@@ -6210,8 +6264,8 @@ var World = class {
         if (!segs.some((g) => segHitsBox(g, hb, B.width))) continue;
         const last2 = b.armor.get(e.id), ab = last2 === void 0 || b.pulse - last2 >= B.armorEvery;
         if (ab) b.armor.set(e.id, b.pulse);
-        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign3(b.dx) * 3, 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, "proj");
-        if (res === "hit" || res === "kill") awardFocus(this, { owner: p, family: b.family });
+        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign3(b.dx) * (B.kb || 3), 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, "proj");
+        if (p.char === "nova" && (res === "hit" || res === "kill")) awardFocus(this, { owner: p, family: b.family });
       }
     }
     const end = segs[segs.length - 1];
@@ -12283,7 +12337,7 @@ var BeamFX = class {
       s.renderOrder = 6;
       this.scene.add(s);
     }
-    B = { sheath: new Strip(this.scene, 4), core: new Strip(this.scene, 5), glow, core2: core, hit, pts: [], age: 0, end: -1, tint: new THREE8.Color(), ringT: 0 };
+    B = { edge: new Strip(this.scene, 3), sheath: new Strip(this.scene, 4), core: new Strip(this.scene, 5), glow, core2: core, hit, pts: [], age: 0, end: -1, tint: new THREE8.Color(), ringT: 0 };
     this.beams.set(p, B);
     return B;
   }
@@ -12292,7 +12346,9 @@ var BeamFX = class {
       const B = this.of(ev.p);
       B.age = 0;
       B.end = -1;
-      B.tint.set(ATTACH_LOOK[ev.attach] ? ATTACH_LOOK[ev.attach].tint : "#ffd889");
+      B.tint.set(ev.attach === "breach" ? CHARS.ram.energy : ATTACH_LOOK[ev.attach] ? ATTACH_LOOK[ev.attach].tint : "#ffd889");
+      B.ram = ev.p.char === "ram";
+      B.W = B.ram ? RAM.beam.width : MARKSMAN.beam.width;
       if (ev.over) B.tint.lerp(WHITE3, 0.35);
     } else if (ev.type === "beamEnd") {
       const B = this.beams.get(ev.p);
@@ -12324,10 +12380,10 @@ var BeamFX = class {
       if (B.end >= 0) B.end += dt;
       const closing = B.end >= 0 ? Math.max(0, 1 - B.end / 0.16) : 1;
       if (!B.pts.length || closing <= 0) {
-        B.sheath.mesh.visible = B.core.mesh.visible = B.glow.visible = B.core2.visible = B.hit.visible = false;
+        B.edge.mesh.visible = B.sheath.mesh.visible = B.core.mesh.visible = B.glow.visible = B.core2.visible = B.hit.visible = false;
         if (closing <= 0) B.pts.length = 0;
         if (!world2.players.includes(p) && closing <= 0) {
-          for (const o of [B.sheath.mesh, B.core.mesh, B.glow, B.core2, B.hit]) {
+          for (const o of [B.edge.mesh, B.sheath.mesh, B.core.mesh, B.glow, B.core2, B.hit]) {
             this.scene.remove(o);
             o.material.dispose();
             if (o.geometry && !o.isSprite) o.geometry.dispose();
@@ -12336,16 +12392,19 @@ var BeamFX = class {
         }
         continue;
       }
-      const open = Math.min(1, B.age / 0.07), W = MARKSMAN.beam.width, t = this.t, n = B.pts.length, tint = B.tint;
+      const open = Math.min(1, B.age / 0.07), W = B.W || MARKSMAN.beam.width, t = this.t, n = B.pts.length, tint = B.tint;
       const base = open * closing;
+      if (B.ram) B.edge.build(B.pts, cam, (i) => W * 1.3 * base * Math.min(1, 0.45 + i * 0.25) * (1 + 0.1 * Math.sin(t * 30 - i * 0.7)), (i) => [tint.r * 0.25, tint.g * 0.3, tint.b * 0.55, 0.75 * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]);
+      B.edge.mesh.visible = !!B.ram;
+      const sk = B.ram ? 1.05 : 1.5;
       B.sheath.build(
         B.pts,
         cam,
         (i) => W * 1 * base * Math.min(1, 0.45 + i * 0.25) * (1 + 0.16 * Math.sin(t * 38 - i * 0.9) + 0.06 * Math.sin(t * 91 + i)),
-        (i) => [tint.r * 1.5, tint.g * 1.5, tint.b * 1.5, 0.5 * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]
+        (i) => [tint.r * sk, tint.g * sk, tint.b * sk, (B.ram ? 0.8 : 0.5) * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]
       );
       const flick = 0.85 + Math.random() * 0.3;
-      B.core.build(B.pts, cam, (i) => W * 0.36 * base * flick * Math.min(1, 0.5 + i * 0.3), () => [2.6, 2.5, 2.3, 0.95]);
+      B.core.build(B.pts, cam, (i) => W * (B.ram ? 0.24 : 0.36) * base * flick * Math.min(1, 0.5 + i * 0.3), () => [2.6, 2.5, 2.3, 0.95]);
       const a = B.pts[0], e = B.pts[n - 1];
       B.glow.position.copy(a);
       B.glow.material.color.copy(tint);
@@ -13191,6 +13250,45 @@ var craterTex = (seed, glow) => canvasTex2(256, (g, s) => {
     g.fillRect(c + Math.cos(a) * d, c + Math.sin(a) * d, z, z);
   }
 });
+var crackStarTex = (seed) => canvasTex2(256, (g, s) => {
+  let r = seed;
+  const rnd = () => (r = r * 16807 % 2147483647) / 2147483647;
+  const c = s / 2;
+  g.lineCap = "round";
+  g.lineJoin = "round";
+  const walk = (x, y, a, n2, step, w, alpha, branch) => {
+    g.strokeStyle = `rgba(255,255,255,${alpha})`;
+    g.lineWidth = w;
+    g.beginPath();
+    g.moveTo(x, y);
+    for (let i = 0; i < n2; i++) {
+      a += (rnd() - 0.5) * 0.7;
+      x += Math.cos(a) * step;
+      y += Math.sin(a) * step;
+      g.lineTo(x, y);
+      if (branch && rnd() < 0.35) {
+        g.stroke();
+        walk(x, y, a + (rnd() < 0.5 ? -1 : 1) * (0.5 + rnd() * 0.6), 3 + (rnd() * 3 | 0), step * 0.7, w * 0.55, alpha * 0.8, false);
+        g.strokeStyle = `rgba(255,255,255,${alpha})`;
+        g.lineWidth = w;
+        g.beginPath();
+        g.moveTo(x, y);
+      }
+    }
+    g.stroke();
+  };
+  const n = 6 + (rnd() * 3 | 0);
+  for (let k2 = 0; k2 < n; k2++) walk(c, c, k2 / n * Math.PI * 2 + rnd() * 0.6, 6 + (rnd() * 4 | 0), s * 0.055, 4, 1, true);
+  for (let k2 = 0; k2 < 10; k2++) {
+    const a = rnd() * Math.PI * 2, d = s * (0.08 + rnd() * 0.12);
+    walk(c + Math.cos(a) * d, c + Math.sin(a) * d, a + Math.PI / 2, 2, s * 0.035, 1.5, 0.7, false);
+  }
+  const gg = g.createRadialGradient(c, c, 0, c, c, s * 0.12);
+  gg.addColorStop(0, "rgba(255,255,255,0.9)");
+  gg.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gg;
+  g.fillRect(0, 0, s, s);
+});
 var RamFX = class {
   constructor(fx) {
     this.fx = fx;
@@ -13215,6 +13313,25 @@ var RamFX = class {
     this.links = /* @__PURE__ */ new Map();
     this.heads = /* @__PURE__ */ new Map();
     this.ghostTick = /* @__PURE__ */ new Map();
+    this.crackTex = [11, 23, 37].map(crackStarTex);
+    this.shards = [];
+    for (let i = 0; i < 48; i++) {
+      const g = new THREE11.BufferGeometry(), v = [];
+      for (let k2 = 0; k2 < 3; k2++) {
+        const a = k2 / 3 * Math.PI * 2 + (Math.random() - 0.5) * 1.2, rr = 0.5 + Math.random() * 0.5;
+        v.push(Math.cos(a) * rr, Math.sin(a) * rr, 0);
+      }
+      g.setAttribute("position", new THREE11.Float32BufferAttribute(v, 3));
+      g.setAttribute("uv", new THREE11.Float32BufferAttribute([0, 0, 1, 0, 0.5, 1], 2));
+      const m = new THREE11.Mesh(g, new THREE11.MeshBasicMaterial({ color: new THREE11.Color(Math.random() < 0.3 ? "#e4f2ff" : "#8fc4ff"), transparent: true, opacity: 0, depthWrite: false, side: THREE11.DoubleSide, toneMapped: false }));
+      m.visible = false;
+      m.renderOrder = 6;
+      this.scene.add(m);
+      this.shards.push({ m, life: 0, max: 1, v: new THREE11.Vector3(), spin: new THREE11.Vector3(), size: 0.2 });
+    }
+    this.si2 = 0;
+    this.qs = new THREE11.Quaternion();
+    this.es = new THREE11.Euler();
     this.craterTex = [1, 2, 3].map((k2) => ({ base: craterTex(k2 * 7919, false), glow: craterTex(k2 * 7919, true) }));
     this.craters = [];
     for (let i = 0; i < CRATER.pool; i++) {
@@ -13258,7 +13375,7 @@ var RamFX = class {
     let P = this.panes.get(p);
     if (P) return P;
     const g = new THREE11.PlaneGeometry(1, 1);
-    P = { face: new THREE11.Mesh(g, this.mat.pane), crack: new THREE11.Mesh(g, this.mat.crack), rim: new THREE11.Mesh(g, this.mat.edge), flash: 0, k: 0 };
+    P = { face: new THREE11.Mesh(g, this.mat.pane), crack: new THREE11.Mesh(g, this.mat.crack), rim: new THREE11.Mesh(g, this.mat.edge), flash: 0, k: 0, cracks: [], frac: 1 };
     for (const m of [P.face, P.crack, P.rim]) {
       m.visible = false;
       m.renderOrder = 5;
@@ -13278,6 +13395,10 @@ var RamFX = class {
       case "guardBlock": {
         const P = this.paneOf(p);
         P.flash = Math.min(1, P.flash + 0.5 + ev.dmg * 0.03);
+        this.crackAt(p, P, ev.x, ev.y, ev.dmg, ev.frac);
+        if (P.frac > 2 / 3 && ev.frac <= 2 / 3 || P.frac > 1 / 3 && ev.frac <= 1 / 3) this.shatter(p, ev.x, ev.y, 7, 0.5);
+        P.frac = ev.frac;
+        if (p.onGround) this.sparks(p.x + p.facing * (p.w / 2 + 0.3), p.y + 0.06, -p.facing, 3 + Math.min(8, ev.dmg / 2 | 0), 0.9);
         F.burst(ev.x, ev.y, ev.heavy ? WHITE4 : PALE, ev.heavy ? 18 : 10, ev.heavy ? 9 : 6, 0.3, 0.28, { dir: Math.atan2(p.guardDir[1], p.guardDir[0]), spread: 1.6, grav: 6 });
         F.sprite(ev.x, ev.y, "star", WHITE4, ev.heavy ? 1.3 : 0.8, 0.12, 1.4);
         break;
@@ -13292,7 +13413,10 @@ var RamFX = class {
         break;
       }
       case "rampartBreak": {
-        const c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0];
+        const c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], P = this.paneOf(p);
+        this.shatter(p, null, null, 30, 1);
+        P.frac = 0;
+        for (const k2 of P.cracks) k2.at = -1;
         for (let i = 0; i < 28; i++) {
           const u = (Math.random() - 0.5) * 2.6, x = c.x + nx * 0.8 - ny * u, y = c.y + ny * 0.8 + nx * u;
           F.burst(x, y, Math.random() < 0.5 ? PALE : BLUE, 1, 7, 0.3, 0.5, { dir: Math.atan2(ny, nx) + (Math.random() - 0.5) * 2, spread: 0.5, grav: 12 });
@@ -13302,6 +13426,7 @@ var RamFX = class {
         break;
       }
       case "rampartReady": {
+        this.paneOf(p).frac = 1;
         const c = chest(p);
         F.sprite(c.x, c.y, "ring", BLUE, 1.2, 0.3, 2.4);
         F.burst(c.x, c.y, PALE, 12, 4, 0.25, 0.3);
@@ -13458,6 +13583,7 @@ var RamFX = class {
     this.t += dt;
     this.updateCraters(dt);
     this.updateSparks(dt);
+    this.updateShards(dt);
     const F = this.fx, cam = view2.camera.position, seenP = /* @__PURE__ */ new Set(), seenW = /* @__PURE__ */ new Set(), seenL = /* @__PURE__ */ new Set();
     for (const p of world2.players) {
       if (p.char !== "ram") continue;
@@ -13483,13 +13609,31 @@ var RamFX = class {
         this.mat.edge.opacity = (0.55 + 0.45 * P.flash) * P.k;
         this.mat.pane.map.offset.y = this.t * 0.25;
         P.face.visible = P.rim.visible = P.crack.visible = true;
+        for (const k2 of P.cracks) {
+          const on = p.integrity < k2.at;
+          k2.o += ((on ? 1 : 0) - k2.o) * (1 - Math.exp(-dt * (on ? 30 : 3)));
+          k2.m.visible = k2.o > 0.02;
+          if (!k2.m.visible) continue;
+          const u = Math.max(-len / 2, Math.min(len / 2, k2.u));
+          this.place(k2.m, cx - ny * u + nx * k2.w, cy + nx * u + ny * k2.w, -ny, nx, dz + 0.025);
+          k2.m.rotateZ(k2.rot);
+          k2.m.scale.setScalar(k2.size * (1 + 0.6 * (1 - frac)));
+          k2.m.material.opacity = k2.o * P.k * weak * (0.6 + 0.4 * (1 - frac)) * (1 + P.flash);
+        }
+        if (p.onGround && Math.abs(p.vx) > 0.4 && Math.random() < Math.min(1, Math.abs(p.vx) / 2.2)) {
+          const bot = ny * nx >= 0 ? -1 : 1, ex = cx - ny * bot * len / 2;
+          this.sparks(Math.abs(ny) > 0.5 ? ex : p.x + p.facing * (p.w / 2 + 0.3), p.y + 0.05, Math.sign(p.vx), 1 + (Math.abs(p.vx) > 1.5 ? 1 : 0), 0.75);
+        }
         if (p.kinetic > 10 && Math.random() < p.kinetic / 120) {
           const u = (Math.random() - 0.5) * len, w = toWorld(cx - ny * u, cy + nx * u, dz + 0.04, this.v);
           const pt = F.particle(w, Math.random() < 0.5 ? WHITE4 : BLUE, 0.16, 0.4);
           pt.v.set(0, 1.2, 0);
           pt.drag = 1;
         }
-      } else P.face.visible = P.rim.visible = P.crack.visible = false;
+      } else {
+        P.face.visible = P.rim.visible = P.crack.visible = false;
+        for (const k2 of P.cracks) k2.m.visible = false;
+      }
       const rushing = vis && p.state === "rush" && p.rush, ult = vis && p.state === "ult" && p.ultRun && p.ultRun.kind === "ram";
       let W = this.wedges.get(p);
       if (!W) {
@@ -13666,6 +13810,73 @@ var RamFX = class {
       H.g.visible = true;
     }
   }
+  // A hit on the Rampart cracks it where it landed: a new crack, or the one already there spreads
+  crackAt(p, P, x, y, dmg, frac) {
+    const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
+    const u = Math.max(-G.half * 0.9, Math.min(G.half * 0.9, (x - cx) * -ny + (y - cy) * nx));
+    const at = frac * G.integrity + 12;
+    let k2 = P.cracks.find((q) => q.at > p.integrity && Math.abs(q.u - u) < 0.35);
+    if (k2) {
+      k2.size = Math.min(1.3, k2.size + 0.08 + dmg * 0.01);
+      k2.at = Math.max(k2.at, at);
+      return;
+    }
+    k2 = P.cracks.find((q) => q.o < 0.02 && !(q.at > p.integrity));
+    if (!k2 && P.cracks.length < 8) {
+      const m = new THREE11.Mesh(new THREE11.PlaneGeometry(1, 1), new THREE11.MeshBasicMaterial({ color: new THREE11.Color(PALE).multiplyScalar(1.5), transparent: true, opacity: 0, blending: THREE11.AdditiveBlending, depthWrite: false, side: THREE11.DoubleSide, toneMapped: false }));
+      m.visible = false;
+      m.renderOrder = 6;
+      this.scene.add(m);
+      k2 = { m, o: 0 };
+      P.cracks.push(k2);
+    }
+    if (!k2) k2 = P.cracks.reduce((a, b) => a.at < b.at ? a : b);
+    k2.m.material.map = this.crackTex[Math.random() * this.crackTex.length | 0];
+    k2.m.material.needsUpdate = true;
+    Object.assign(k2, { u, w: (Math.random() - 0.5) * 0.35, size: 0.4 + Math.min(0.5, dmg * 0.025), rot: Math.random() * Math.PI * 2, at });
+  }
+  // Shards of the pane fly off: `n` of them, from (x, y) on it (a chip), or from all over it (null: it shatters)
+  shatter(p, x, y, n, power) {
+    const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
+    const P = this.paneOf(p), q = P.face.quaternion;
+    for (let i = 0; i < n; i++) {
+      const S = this.shards[this.si2];
+      this.si2 = (this.si2 + 1) % this.shards.length;
+      const u = x === null ? (Math.random() - 0.5) * G.half * 2 : (x - cx) * -ny + (y - cy) * nx + (Math.random() - 0.5) * 0.5;
+      const w = (Math.random() - 0.5) * 0.5, sx = cx - ny * u + nx * w, sy = cy + nx * u + ny * w;
+      toWorld(sx, sy, 0.35, S.m.position);
+      S.m.quaternion.copy(q);
+      const sp = (3 + Math.random() * 6) * power, a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 1.6;
+      planeDir(sx, Math.cos(a) * sp, Math.sin(a) * sp + 2 + Math.random() * 3, S.v);
+      S.v.z += (Math.random() - 0.2) * 3;
+      S.spin.set((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18);
+      S.size = (0.16 + Math.random() * 0.26) * (x === null ? 1.25 : 0.9);
+      S.m.scale.setScalar(S.size);
+      S.life = S.max = 0.55 + Math.random() * 0.5;
+      S.m.visible = true;
+    }
+    if (x === null) {
+      this.fx.sprite(cx, cy, "glow", BLUE, 2.6, 0.25, 1.6);
+      this.fx.sprite(cx, cy, "star", WHITE4, 2.2, 0.16, 1.5);
+    } else this.fx.sprite(x, y, "star", WHITE4, 1, 0.12, 1.4);
+  }
+  updateShards(dt) {
+    for (const S of this.shards) {
+      if (S.life <= 0) {
+        S.m.visible = false;
+        continue;
+      }
+      S.life -= dt;
+      S.v.y -= 14 * dt;
+      S.v.multiplyScalar(Math.pow(0.985, dt * 60));
+      S.m.position.addScaledVector(S.v, dt);
+      this.qs.setFromEuler(this.es.set(S.spin.x * dt, S.spin.y * dt, S.spin.z * dt));
+      S.m.quaternion.multiply(this.qs);
+      const k2 = Math.max(0, S.life / S.max);
+      S.m.material.opacity = 0.95 * Math.min(1, k2 * 1.8);
+      S.m.scale.setScalar(S.size * (0.6 + 0.4 * k2));
+    }
+  }
   // Sparks thrown back from a point scraping along the floor, `dir` the way he is moving (streaks, see updateSparks),
   // with a few glowing particles among them that show on dark backgrounds
   sparks(x, y, dir, n, k2 = 1) {
@@ -13774,7 +13985,7 @@ var RamFX = class {
     const C = this.craters[0];
     C.base.material.map = this.craterTex[0].base;
     C.glow.material.map = this.craterTex[0].glow;
-    out.push(C.base, C.glow, this.spkMesh);
+    out.push(C.base, C.glow, this.spkMesh, this.shards[0].m);
     for (const m of out) {
       m.position.copy(at);
       m.visible = true;
@@ -13792,6 +14003,10 @@ var RamFX = class {
       C.base.visible = C.glow.visible = false;
     }
     this.spkMesh.position.set(0, 0, 0);
+    for (const S of this.shards) {
+      S.life = 0;
+      S.m.visible = false;
+    }
   }
 };
 
@@ -14834,21 +15049,34 @@ var FX = class {
   slashMark(x, y, color, len, rot, life = 0.14) {
     this.sprite(x, y, "star", color, len * 0.55, life, 1.25, 0.45, 2.6, rot);
   }
-  // Floating words over a hit ("CRIT"): drawn once per word, normal blending so they read on bright skies
+  // Floating words over a hit ("CRIT"): drawn once per word, normal blending so they read on bright skies. Each
+  // word gets a canvas sized to it (measured, with room for the outline and the italic's lean) and its sprite
+  // keeps that shape, so a long phrase ("NO ONE TO LINK") is as tall as a short one and nothing is clipped.
   popText(x, y, text, color, life = 0.7) {
-    const key = text;
     this.textTex = this.textTex || {};
-    const tex = this.textTex[key] || (this.textTex[key] = canvasTex3(256, (g, s) => {
-      g.font = `italic 900 ${Math.round(s * 0.34)}px "Arial Black", Arial, sans-serif`;
+    let T = this.textTex[text];
+    if (!T) {
+      const H = 128, px = 84, font = `italic 900 ${px}px "Arial Black", Arial, sans-serif`;
+      const m = document.createElement("canvas").getContext("2d");
+      m.font = font;
+      const pad = H * 0.32, W = Math.min(2048, Math.ceil(m.measureText(text).width + pad * 2));
+      const c = document.createElement("canvas");
+      c.width = W;
+      c.height = H;
+      const g = c.getContext("2d");
+      g.font = font;
       g.textAlign = "center";
       g.textBaseline = "middle";
       g.lineJoin = "round";
-      g.lineWidth = s * 0.05;
+      g.lineWidth = H * 0.1;
       g.strokeStyle = "rgba(12,16,26,0.95)";
-      g.strokeText(text, s / 2, s / 2);
+      g.strokeText(text, W / 2, H * 0.53);
       g.fillStyle = "#ffffff";
-      g.fillText(text, s / 2, s / 2);
-    }));
+      g.fillText(text, W / 2, H * 0.53);
+      const tex = new THREE13.CanvasTexture(c);
+      tex.colorSpace = THREE13.SRGBColorSpace;
+      T = this.textTex[text] = { tex, aspect: W / H };
+    }
     let it = this.texts.find((q) => q.life <= 0);
     if (!it) {
       if (this.texts.length < 8) {
@@ -14859,12 +15087,13 @@ var FX = class {
         this.texts.push(it);
       } else it = this.texts.reduce((a, b) => a.life < b.life ? a : b);
     }
-    it.s.material.map = tex;
+    it.s.material.map = T.tex;
     it.s.material.color.set(color);
     it.s.material.needsUpdate = true;
     it.x = x;
     it.y = y;
     it.life = it.max = life;
+    it.aspect = T.aspect;
     it.s.visible = true;
   }
   updateTexts(dt) {
@@ -14876,8 +15105,8 @@ var FX = class {
       it.life -= dt;
       const k2 = 1 - Math.max(0, it.life) / it.max;
       toWorld(it.x, it.y + k2 * 0.6, 0.6, it.s.position);
-      const pop = k2 < 0.12 ? 0.6 + 4 * k2 : 1.08 - 0.08 * Math.min(1, (k2 - 0.12) * 4);
-      it.s.scale.set(1.6 * pop, 1.6 * pop, 1);
+      const pop = k2 < 0.12 ? 0.6 + 4 * k2 : 1.08 - 0.08 * Math.min(1, (k2 - 0.12) * 4), h2 = 0.8 * pop;
+      it.s.scale.set(h2 * (it.aspect || 1), h2, 1);
       it.s.material.opacity = Math.min(1, Math.max(0, it.life) / 0.2);
     }
   }
@@ -15364,8 +15593,13 @@ var FX = class {
       case "beamStart": {
         this.beam.onEvent(ev);
         const p = ev.p, rig = this.rigs.get(p);
-        this.charge.release({ level: 4, attach: ev.attach, perfect: true, ax: p.aimX, ay: p.aimY, beam: true }, p, rig);
-        this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, "#ffd27a", 1.4, 0.2);
+        const ram = p.char === "ram";
+        this.charge.release({ level: 4, attach: ev.attach, perfect: true, ax: p.aimX, ay: p.aimY, beam: true, cannon: ram }, p, rig);
+        this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, ram ? "#9fd0ff" : "#ffd27a", ram ? 2 : 1.4, 0.2);
+        if (ram) {
+          this.ram.sparks(p.x - p.facing * 0.3, p.y + 0.06, -p.facing, 14, 1.1);
+          this.dust(p.x, p.y, 0.8, [p.facing > 0 ? Math.PI : 0], { reach: 1 });
+        }
         break;
       }
       // Version 9: secondary weapons, the dodge, the Solar Uppercut, and the ultimates
@@ -16491,49 +16725,171 @@ var ImpactShader = {
     time: { value: 0 },
     ring: { value: -1 },
     glitch: { value: 0 },
-    dim: { value: 0 }
+    dim: { value: 0 },
+    style: { value: 0 },
+    accent: { value: new THREE13.Color("#38c8ff") },
+    tinted: { value: 0 },
+    phase: { value: 0 }
   },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float amount, invert, zoom, split, seed, time, ring, glitch, dim; uniform vec2 res, center; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float amount, invert, zoom, split, seed, time, ring, glitch, dim, style, tinted, phase; uniform vec2 res, center; uniform vec3 accent; varying vec2 vUv;
     float hash(float n) { return fract(sin(n) * 43758.5453); }
+    float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    vec2 hash22(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
+    float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y); }
     float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
     float hexEdge(vec2 p) {
       vec2 r = vec2(1.0, 1.732), h = r * 0.5, a = mod(p, r) - h, b = mod(p - h, r) - h, g = dot(a, a) < dot(b, b) ? a : b;
       g = abs(g); return smoothstep(0.43, 0.5, max(dot(g, normalize(r)), g.x));
     }
+    vec3 split3(vec2 uv, vec2 off) { return vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b); }
+    float edgeAt(vec2 uv) {
+      vec2 px = 1.5 / res;
+      float e = abs(luma(texture2D(tDiffuse, uv + px * vec2(-1.0, 1.0)).rgb) - luma(texture2D(tDiffuse, uv + px * vec2(1.0, -1.0)).rgb))
+              + abs(luma(texture2D(tDiffuse, uv + px).rgb) - luma(texture2D(tDiffuse, uv - px).rgb));
+      return clamp(e * 3.2, 0.0, 1.0);
+    }
     void main(){
       vec4 src = texture2D(tDiffuse, vUv);
       if (amount <= 0.0 && dim <= 0.0) { gl_FragColor = src; return; }
       vec2 asp = vec2(res.x / res.y, 1.0), d = vUv - center, dir = normalize(d * asp + vec2(1e-5));
-      float r = length(d * asp);
+      float r = length(d * asp), ang = atan(dir.y, dir.x), a = (ang + 3.14159) / 6.28318;
       if (amount <= 0.0) {
         float l0 = luma(src.rgb), keep = smoothstep(0.72, 1.05, max(max(src.r, src.g), src.b));
         vec3 cool = vec3(l0) * vec3(0.46, 0.62, 0.8) * 0.55;
         gl_FragColor = vec4(mix(src.rgb, mix(cool, src.rgb, keep), dim), 1.0); return;
       }
       float wv = ring - r, rm = ring > 0.0 ? exp(-wv * wv * 900.0) : 0.0;
-      vec2 uv = center + d * (1.0 - zoom) - dir / asp * rm * 0.03;
-      float band = floor(vUv.y * 30.0), g = step(0.84, hash(band * 1.31 + floor(time * 24.0) * 3.7 + seed)) * glitch;
-      uv.x += (hash(band * 7.13 + seed + floor(time * 24.0)) - 0.5) * 0.09 * g;
-      vec2 off = dir / asp * (split + g * 0.012);
-      vec3 c = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
-      float l = luma(c);
-      vec2 px = 1.5 / res;
-      float e = abs(luma(texture2D(tDiffuse, uv + px * vec2(-1.0, 1.0)).rgb) - luma(texture2D(tDiffuse, uv + px * vec2(1.0, -1.0)).rgb))
-              + abs(luma(texture2D(tDiffuse, uv + px).rgb) - luma(texture2D(tDiffuse, uv - px).rgb));
-      float edge = clamp(e * 3.2, 0.0, 1.0);
-      vec3 holo = mix(vec3(0.01, 0.035, 0.065), vec3(0.22, 0.8, 1.0), smoothstep(0.04, 0.95, l)) + vec3(0.55, 0.96, 1.0) * edge * 1.5;
-      float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
-      holo = mix(holo, c * 1.3, smoothstep(0.3, 0.6, sat) * smoothstep(0.5, 0.85, l));
-      holo *= 0.86 + 0.14 * sin(vUv.y * res.y * 1.35 - time * 40.0);
-      holo += vec3(0.3, 0.8, 1.0) * hexEdge(vUv * asp * 26.0) * 0.14 * (1.0 - smoothstep(0.15, 0.85, r));
-      float a = (atan(dir.y, dir.x) + 3.14159) / 6.28318, cell = floor(a * 96.0), w = hash(cell * 1.37 + seed), bnd = fract(a * 96.0);
-      holo += vec3(0.6, 0.95, 1.0) * step(0.6, w) * smoothstep(0.12, 0.0, abs(bnd - 0.5)) * smoothstep(0.1 + 0.2 * w, 0.42 + 0.3 * w, r) * 0.6;
-      holo += vec3(0.5, 0.92, 1.0) * rm * 0.75;
-      vec3 neg = (vec3(1.0) - c).bgr * vec3(0.5, 0.92, 1.15);
-      neg = mix(neg, vec3(0.9, 0.99, 1.0), smoothstep(0.24, 0.0, r));
-      gl_FragColor = vec4(mix(c, mix(holo, neg, invert), amount), 1.0);
+      vec3 acc = accent, outc, c, neg;
+      int st = int(style + 0.5);
+
+      if (st == 0) {   // ---- Sci-fi hologram ----
+        vec2 uv = center + d * (1.0 - zoom) - dir / asp * rm * 0.03;
+        float band = floor(vUv.y * 30.0), g = step(0.84, hash(band * 1.31 + floor(time * 24.0) * 3.7 + seed)) * glitch;
+        uv.x += (hash(band * 7.13 + seed + floor(time * 24.0)) - 0.5) * 0.09 * g;
+        c = split3(uv, dir / asp * (split + g * 0.012));
+        float l = luma(c), edge = edgeAt(uv);
+        vec3 mid = acc * vec3(0.6, 0.85, 1.0) + vec3(0.0, 0.05, 0.05), hot = mix(acc, vec3(1.0), 0.55);
+        vec3 holo = mix(acc * 0.04 + vec3(0.005, 0.015, 0.03), mid, smoothstep(0.04, 0.95, l)) + hot * edge * 1.5;
+        float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+        holo = mix(holo, c * 1.3, smoothstep(0.3, 0.6, sat) * smoothstep(0.5, 0.85, l) * (1.0 - tinted * 0.6));
+        holo *= 0.86 + 0.14 * sin(vUv.y * res.y * 1.35 - time * 40.0);
+        holo += hot * 0.6 * hexEdge(vUv * asp * 26.0) * 0.24 * (1.0 - smoothstep(0.15, 0.85, r));
+        float cell = floor(a * 96.0), w = hash(cell * 1.37 + seed), bnd = fract(a * 96.0);
+        holo += hot * step(0.6, w) * smoothstep(0.12, 0.0, abs(bnd - 0.5)) * smoothstep(0.1 + 0.2 * w, 0.42 + 0.3 * w, r) * 0.6;
+        holo += hot * rm * 0.75;
+        neg = (vec3(1.0) - c).bgr * mix(vec3(0.5, 0.92, 1.15), acc * 1.2 + 0.2, tinted);
+        neg = mix(neg, mix(vec3(0.9, 0.99, 1.0), hot, tinted), smoothstep(0.24, 0.0, r));
+        outc = mix(holo, neg, invert);
+      } else if (st == 1) {   // ---- Comic ink (Version 8) ----
+        vec2 uv = center + d * (1.0 - zoom);
+        c = split3(uv, dir / asp * split);
+        float l = luma(c);
+        vec2 px = vUv * res / 5.0; float dots = length(fract(px) - 0.5);
+        float ink = l < 0.28 ? 0.0 : (l < 0.55 ? step(0.32, dots) : 1.0);
+        vec3 paper = vec3(1.0, 0.97, 0.9), inkc = vec3(0.06, 0.05, 0.08);
+        vec3 dotc = mix(inkc, acc * 0.85, tinted);
+        vec3 comic = l < 0.28 ? inkc : (l < 0.55 ? mix(dotc, paper, step(0.32, dots)) : paper);
+        float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+        comic = mix(comic, c * 1.2, smoothstep(0.35, 0.6, sat) * step(0.5, l));
+        float n = 110.0, cell = floor(a * n), w = hash(cell * 1.37 + seed), band = fract(a * n);
+        float line = step(0.5, w) * step(abs(band - 0.5), 0.05 + 0.15 * hash(cell + seed * 3.1)) * smoothstep(0.16 + 0.22 * w, 0.42 + 0.3 * w, r);
+        comic = mix(comic, mix(inkc, acc * 0.7, tinted), line);
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0, 0.98, 0.92), mix(vec3(1.0), acc, 0.5), tinted), smoothstep(0.22, 0.0, r));
+        outc = mix(comic, neg, invert);
+      } else if (st == 2) {   // ---- Eclipse ----
+        vec2 uv = center + d * (1.0 - zoom * 1.4);
+        c = split3(uv, dir / asp * split * 0.6);
+        float l = luma(c), edge = edgeAt(uv);
+        float rays = pow(abs(sin(ang * 9.0 + seed)), 18.0) * 0.6 + pow(abs(sin(ang * 23.0 - seed * 2.0)), 40.0) * 0.5;
+        vec3 hot = mix(acc, vec3(1.0, 0.98, 0.9), 0.5);
+        vec3 corona = hot * (0.35 / (r * 3.0 + 0.15)) + acc * rays * smoothstep(0.9, 0.05, r) * 1.4 + acc * 0.35 * smoothstep(1.2, 0.0, r);
+        float sil = smoothstep(0.62, 0.38, l);           // everything but the brightest goes to silhouette
+        vec3 ecl = mix(corona, vec3(0.01, 0.005, 0.015), sil) + vec3(1.0, 0.97, 0.9) * edge * 1.3 * (0.6 + 0.4 * sil);
+        float sunR = 0.055 + 0.02 * (1.0 - phase);
+        ecl = mix(ecl, vec3(0.0), smoothstep(sunR, sunR - 0.006, r));                     // the black sun
+        ecl += mix(vec3(1.0), acc, 0.3) * exp(-pow((r - sunR) * 90.0, 2.0)) * 2.5;       // its burning rim
+        ecl += hot * rm * 0.9;
+        neg = mix(vec3(1.0) - vec3(l), vec3(1.0, 0.96, 0.85), smoothstep(0.35, 0.0, r));
+        outc = mix(ecl, neg, invert);
+      } else if (st == 3) {   // ---- Shatter ----
+        vec2 p = (vUv - center) * asp * 7.0;
+        vec2 ip = floor(p), fp = fract(p); float md = 8.0, md2 = 8.0; vec2 id = vec2(0.0), mo = vec2(0.0);
+        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+          vec2 g = vec2(float(i), float(j)), o = hash22(ip + g + seed), rr = g + o - fp; float dd = dot(rr, rr);
+          if (dd < md) { md2 = md; md = dd; id = ip + g; mo = rr; } else if (dd < md2) md2 = dd;
+        }
+        float crack = 1.0 - smoothstep(0.0, 0.06, sqrt(md2) - sqrt(md));
+        vec2 sc = (id + 0.5) / 7.0 / asp, sdir = normalize(sc * asp + vec2(1e-4));
+        float h = hash2(id + seed * 1.7), push = (0.012 + 0.03 * h) * (1.0 - phase * 0.7) * smoothstep(0.0, 0.25, length(sc * asp));
+        vec2 uv = center + d * (1.0 - zoom) + sdir / asp * push + (hash22(id) - 0.5) * 0.01;
+        c = split3(uv, sdir / asp * (split + 0.004 * h));
+        float l = luma(c);
+        vec3 glass = c * (0.75 + 0.5 * h) + mix(vec3(0.85, 0.95, 1.0), acc, 0.6) * step(0.82, h) * smoothstep(0.4, 1.0, sin(dot(vUv, vec2(30.0, 18.0)) + h * 9.0)) * 0.35;
+        glass = mix(glass * vec3(0.85, 0.92, 1.05), glass, 0.5) + mix(vec3(1.0), acc, 0.5) * crack * (1.4 - r);
+        glass += mix(vec3(1.0), acc, 0.4) * rm * 0.6;
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0), acc, 0.4), smoothstep(0.25, 0.0, r));
+        outc = mix(glass, neg, invert);
+      } else if (st == 4) {   // ---- Thunderclap ----
+        float flick = 0.65 + 0.35 * step(0.45, hash(floor(time * 28.0) + seed));
+        vec2 uv = center + d * (1.0 - zoom) + vec2(hash(floor(time * 30.0)) - 0.5, hash(floor(time * 30.0) + 7.0) - 0.5) * 0.006 * glitch;
+        c = split3(uv, dir / asp * split * 1.4);
+        float l = luma(c), edge = edgeAt(uv);
+        vec3 elec = mix(vec3(0.02, 0.0, 0.06), acc * 0.55, smoothstep(0.2, 0.9, 1.0 - l)) + mix(acc, vec3(1.0), 0.6) * edge * 1.2;
+        float bolt = 0.0;
+        for (int i = 0; i < 7; i++) {
+          float fi = float(i), a0 = hash(fi * 3.7 + seed) * 6.28318;
+          float wob = (noise(vec2(r * 14.0, fi * 5.0 + seed)) - 0.5) * 0.7 + (noise(vec2(r * 45.0, fi * 9.0 + seed)) - 0.5) * 0.25;
+          float da = abs(mod(ang - a0 - wob + 3.14159, 6.28318) - 3.14159) * r;
+          float len = 0.35 + 0.6 * hash(fi + seed * 2.0);
+          bolt += (0.0025 / (da + 0.0025)) * smoothstep(len, len * 0.6, r) * step(0.02, r);
+        }
+        bolt = min(bolt, 3.0);
+        elec += mix(acc, vec3(1.0), 0.65) * bolt * flick + acc * 0.4 * smoothstep(0.5, 0.0, r) * flick;
+        elec += mix(vec3(1.0), acc, 0.4) * rm;
+        neg = mix(vec3(1.0) - c, vec3(0.92, 0.94, 1.0), smoothstep(0.3, 0.0, r));
+        outc = mix(elec * flick + elec * (1.0 - flick) * 0.5, neg, invert);
+      } else if (st == 5) {   // ---- Sumi ink ----
+        vec2 uv = center + d * (1.0 - zoom * 0.8);
+        uv += (vec2(noise(vUv * 40.0 + seed), noise(vUv * 40.0 - seed)) - 0.5) * 0.004;   // the ink bleeds a little
+        c = split3(uv, vec2(0.0));
+        float l = luma(c), edge = edgeAt(uv);
+        float grain = noise(vUv * vec2(600.0, 90.0)) * 0.06 + noise(vUv * 180.0) * 0.05;
+        vec3 paper = vec3(0.95, 0.92, 0.84) - grain;
+        float wash = smoothstep(0.62, 0.12, l + (noise(vUv * 12.0 + seed) - 0.5) * 0.18);
+        vec3 inkc = vec3(0.05, 0.045, 0.06);
+        vec3 sumi = mix(paper, mix(vec3(0.42, 0.4, 0.4), inkc, smoothstep(0.35, 0.9, wash)), wash);
+        sumi = mix(sumi, inkc, smoothstep(0.25, 0.7, edge));
+        float cell = floor(a * 46.0), w = hash(cell * 2.1 + seed), bnd = fract(a * 46.0);
+        float dry = step(0.35, noise(vec2(r * 60.0, cell * 3.0)));
+        float stroke = step(0.62, w) * step(abs(bnd - 0.5), 0.08 + 0.3 * hash(cell + seed)) * smoothstep(0.2 + 0.2 * w, 0.32 + 0.2 * w, r) * smoothstep(1.1, 0.7, r) * dry;
+        sumi = mix(sumi, inkc, stroke);
+        float er = 0.17 + 0.05 * phase, th = 0.012 + 0.018 * (0.5 + 0.5 * sin(ang * 1.3 + seed)) * smoothstep(-2.6, 2.4, ang);
+        float enso = smoothstep(th, th * 0.4, abs(r - er)) * step(0.4, noise(vec2(ang * 12.0, r * 80.0)) + 0.35);
+        sumi = mix(sumi, mix(vec3(0.78, 0.08, 0.1), acc, tinted), enso * 0.9);
+        neg = mix(vec3(1.0) - vec3(l), paper, smoothstep(0.3, 0.0, r));
+        outc = mix(sumi, neg, invert);
+      } else {   // ---- Gravity well ----
+        float pull = (1.0 - phase) * 2.6 * exp(-r * 3.0);
+        float sa = ang + pull, sr = r * (1.0 - 0.25 * exp(-r * 6.0) * (1.0 - phase));
+        vec2 uv = center + vec2(cos(sa), sin(sa)) * sr / asp * (1.0 - zoom);
+        c = split3(uv, dir / asp * split * 1.8);
+        float l = luma(c);
+        vec3 space = c * vec3(0.55, 0.5, 0.75) * smoothstep(0.0, 0.35, r) + acc * 0.08;
+        vec2 sg = floor(vUv * res / 3.0); float star = step(0.996, hash2(sg + seed));
+        float streak = pow(abs(sin(sa * 40.0 + seed)), 60.0) * smoothstep(0.15, 0.7, r) * 0.6;
+        space += vec3(0.9, 0.9, 1.0) * star * smoothstep(0.1, 0.5, r) + mix(acc, vec3(1.0), 0.5) * streak;
+        float hr = 0.06 + 0.03 * phase;
+        space = mix(space, vec3(0.0), smoothstep(hr, hr - 0.01, r));                               // the black hole
+        space += mix(acc, vec3(1.0, 0.95, 0.85), 0.45) * exp(-pow((r - hr * 1.55) * 55.0, 2.0)) * 2.4; // its lensing ring
+        space += acc * exp(-pow((r - hr * 1.55) * 16.0, 2.0)) * 0.6;
+        space += mix(acc, vec3(1.0), 0.5) * rm * 0.8;
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0), acc, 0.35), smoothstep(0.28, 0.0, r));
+        outc = mix(space, neg, invert);
+      }
+      gl_FragColor = vec4(mix(c, outc, amount), 1.0);
     }`
 };
 
@@ -17087,6 +17443,7 @@ var View = class {
     if (ev.type === "rocketJump") this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === "poundLand") this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));
     if (ev.type === "kill" && ev.e.type === "brute") this.trauma = Math.min(1, this.trauma + 0.6);
+    this.impactBy = ev.p || (ev.owner && ev.owner.kind === "player" ? ev.owner : null) || ev.by || ev.members && ev.members[0] || null;
     if (ev.type === "impact" || ev.type === "armorBreak" && ev.left === 0 || ev.type === "parry" && ev.perfect && ev.heavy) this.startImpact(ev.x, ev.y, ev.type === "impact" ? 1 : 0.8);
     else if (ev.type === "kill" && (ev.e.type === "brute" || ev.e.boss)) this.startImpact(ev.x, ev.y, 1);
     else if (ev.type === "poundLand" && ev.level >= 3) this.startImpact(ev.x, ev.y + 0.6, 1);
@@ -17094,7 +17451,7 @@ var View = class {
     else if (ev.type === "bossPhase" || ev.type === "bossDown") this.startImpact(ev.x, ev.y, 1.2);
     else if (ev.type === "ultNova") this.startImpact(ev.x, ev.y, 1.4, true);
     else if (ev.type === "ultFinisher") this.startImpact(ev.x, ev.y, 1.2, true);
-    else if (ev.type === "teamFinisher") this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5 };
+    else if (ev.type === "teamFinisher") this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5, by: this.impactBy };
     else if (ev.type === "perfectDodge") this.startImpact(ev.x, ev.y, 0.6);
     else if (ev.type === "ramSplat" && ev.n >= 2) this.startImpact(ev.x, ev.y, 0.9);
     else if (ev.type === "kineticRelease" && ev.k >= 0.8) this.startImpact(ev.x, ev.y, 0.9);
@@ -17105,15 +17462,31 @@ var View = class {
     if (ev.type === "ramSplat" || ev.type === "leapLand" || ev.type === "quake") this.punch = Math.min(this.punch, -0.3);
     if (ev.type === "ramSlam" || ev.type === "podLand") this.punch = Math.min(this.punch, -0.6);
   }
-  // Impact frame (Q-C test; sci-fi look since Version 9), phased: a cyan photonegative flash, then a hologram
-  // grade with glowing edges, scanlines and a hex grid, light streaks, a shockwave ring and glitch tears
-  // spreading from the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds
-  // the simulation (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an
-  // ultimate is called.
+  // Impact frame (Q-C test): a flash, then the chosen look (Settings: Impact frame style; see ImpactShader for
+  // the seven) spreading from the hit, a zoom punch and colour split, easing back out. Its key colour is the
+  // look's own, or (Settings: Impact frame colour) the player colour or character colour of whoever set it off
+  // (the event's player, or the player nearest the impact). In play, a short hit-pause holds the simulation
+  // (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an ultimate is called.
   startImpact(x, y, strength = 1, force = false) {
     if (!SETTINGS.impactFrames || this.impactCd > 0 && !force) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
     this.impact = { t: 0, dur: 0.26 + 0.12 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    const style = IMPACT_STYLES.includes(SETTINGS.impactStyle) ? SETTINGS.impactStyle : "scifi", U = this.ink.uniforms;
+    let by = this.impactBy;
+    if (!by && this.world) {
+      let bd = Infinity;
+      for (const q of this.world.players) {
+        const dd = Math.hypot(q.x - x, q.y - y);
+        if (dd < bd) {
+          bd = dd;
+          by = q;
+        }
+      }
+    }
+    const mode = SETTINGS.impactColor, col = by && mode === "player" ? PLAYER_COLORS[by.slot] : by && mode === "character" ? CHARS[by.char].energy : null;
+    U.style.value = IMPACT_STYLES.indexOf(style);
+    U.accent.value.set(col || IMPACT_ACCENT[style]);
+    U.tinted.value = col ? 1 : 0;
     this.impactCd = 0.9;
     this.hitPause = 0.05 + 0.05 * strength;
     this.trauma = Math.min(1, this.trauma + 0.25 * strength);
@@ -17142,6 +17515,7 @@ var View = class {
     U.split.value = 8e-3 * I.k * (1 - k2);
     U.ring.value = 0.05 + k2 * 1.25;
     U.glitch.value = Math.max(0, 1 - k2 * 2.4) * Math.min(1, I.k);
+    U.phase.value = k2;
     this.ink.enabled = true;
     if (I.t >= I.dur) this.impact = null;
     return true;
@@ -17149,8 +17523,10 @@ var View = class {
   render(world2, alpha, dt) {
     this.time += dt;
     const PI = this.pendingImpact;
+    this.world = world2;
     if (PI && (PI.t -= dt) <= 0) {
       this.pendingImpact = null;
+      this.impactBy = PI.by;
       this.startImpact(PI.x, PI.y, PI.k, true);
       this.punch = Math.min(this.punch, -0.6);
       this.trauma = 1;
@@ -17196,17 +17572,22 @@ var BOT = {
   // m: where it stands behind the player it follows (more for each further bot)
   reviveRange: 22,
   // m: a downed teammate this close is gone to first
-  react: 0.55,
-  // chance of answering a given wind-up or shot at all
-  delay: 8,
-  // ticks before it does
-  range: { nova: 6.5, echo: 1.3, ram: 1.5, fix: 5.5 }
+  range: { nova: 6.5, echo: 1.3, ram: 1.5, fix: 5.5 },
   // m it likes to fight at
+  // Settings: AI skill. react = chance of answering a given wind-up or shot; delay = ticks before it does;
+  // retarget = ticks between choosing targets; smart = uses the advanced plays (beams, walls, snares, kiting,
+  // peeling for teammates, leaving mortar zones)
+  skill: {
+    rookie: { react: 0.3, delay: 14, retarget: 20, smart: false },
+    veteran: { react: 0.6, delay: 8, retarget: 12, smart: true },
+    elite: { react: 0.9, delay: 4, retarget: 6, smart: true }
+  }
 };
 var isBot = (p) => typeof p.device === "string" && p.device.startsWith("cpu");
 var sign4 = (v) => v > 0 ? 1 : v < 0 ? -1 : 0;
 var alive = (e) => !e.dead && e.hp > 0;
 var up = (q) => q.state !== "downed" && q.state !== "dead";
+var RANGED_FOES = /* @__PURE__ */ new Set(["sniper", "mortar", "turret", "drone"]);
 var Bots = class {
   constructor() {
     this.mem = /* @__PURE__ */ new Map();
@@ -17246,10 +17627,11 @@ var Bots = class {
   command(world2, p) {
     let M = this.mem.get(p);
     if (!M) {
-      M = { prev: {}, jumpT: 0, fireT: 0, meleeT: 0, guardT: 0, seen: /* @__PURE__ */ new Set(), react: /* @__PURE__ */ new Map(), seed: (p.slot + 1) * 7919, t: 0, target: null, retarget: 0, gadgetT: 240 };
+      M = { prev: {}, jumpT: 0, fireT: 0, hold: 0, guardT: 0, react: /* @__PURE__ */ new Map(), seed: (p.slot + 1) * 7919, t: 0, target: null, retarget: 0, gadgetT: 240, snareT: 0, modeT: 0 };
       this.mem.set(p, M);
     }
     M.t++;
+    const S = BOT.skill[SETTINGS.aiSkill] || BOT.skill.veteran;
     const rnd = () => (M.seed = M.seed * 16807 % 2147483647) / 2147483647;
     const held = {};
     let mx = 0, my = 0, aimFree = false, ax = 0, ay = 0;
@@ -17263,56 +17645,67 @@ var Bots = class {
       M.prev = { ...held };
       return { mx, my, aimFree, ax, ay, held, pressed, released };
     };
-    if (p.state === "downed" || p.state === "dead" || p.state === "ult") return out();
+    if (p.state === "downed" || p.state === "dead" || p.state === "ult") {
+      M.hold = 0;
+      return out();
+    }
     const team = world2.players.filter((q) => q !== p);
     const leader = team.find((q) => !isBot(q) && up(q)) || team.find(up) || null;
-    const order = world2.players.filter(isBot).indexOf(p);
+    const bots2 = world2.players.filter(isBot), order = bots2.indexOf(p);
     const cx = p.x, cy = p.y + p.h / 2;
     const dist = (e) => Math.hypot(e.x - cx, e.y + e.h / 2 - cy);
+    const foes = world2.enemies.filter((e) => alive(e) && e.state !== "plowed" && dist(e) < BOT.sight + 4);
     if (world2.ultCast && !world2.ultCast.members.includes(p) && p.ult >= ULT.max) {
       held.ult = M.t % 4 < 2;
       return out();
     }
     if (--M.retarget <= 0 || !M.target || !alive(M.target)) {
-      M.retarget = 10;
-      let best = null, bd = BOT.sight;
-      for (const e of world2.enemies) {
-        if (!alive(e) || e.state === "plowed") continue;
-        const d2 = dist(e);
-        if (d2 < bd) {
-          bd = d2;
+      M.retarget = S.retarget;
+      let best = null, bs = Infinity;
+      for (const e of foes) {
+        const s = this.score(world2, p, e, dist(e), leader, team, M, S);
+        if (s < bs) {
+          bs = s;
           best = e;
         }
       }
       M.target = best;
     }
-    let tgt = M.target && alive(M.target) ? M.target : null;
+    let tgt = M.target && alive(M.target) && dist(M.target) < BOT.sight + 2 ? M.target : null;
     const farFromLeader = leader && Math.abs(leader.x - p.x) > BOT.leash;
     if (farFromLeader && tgt && Math.abs(tgt.x - leader.x) > BOT.leash) tgt = null;
     const downed = team.filter((q) => q.state === "downed" && Math.abs(q.x - p.x) < BOT.reviveRange).sort((a, b) => Math.abs(a.x - p.x) - Math.abs(b.x - p.x))[0];
-    let goal = p.x, stopAt = 0.5;
+    let goal = p.x, stopAt = 0.5, goalY = p.y;
     if (downed && !(p.char === "fix" && Math.abs(downed.x - p.x) < FIX.beam.range - 1)) {
       goal = downed.x;
+      goalY = downed.y;
       stopAt = 0.6;
     } else if (tgt && !farFromLeader) {
-      const R = BOT.range[p.char], side = sign4(p.x - tgt.x) || -tgt.facing || 1;
-      goal = tgt.x + side * (R + tgt.w / 2);
-      stopAt = p.char === "nova" || p.char === "fix" ? 1.2 : 0.35;
+      [goal, stopAt] = this.post(world2, p, tgt, foes, leader, team, S, dist);
+      goalY = tgt.y;
     } else if (leader) {
       goal = leader.x - (leader.facing || 1) * BOT.follow * (1 + order * 0.7);
+      goalY = leader.y;
       stopAt = 0.8;
+    }
+    for (const q of bots2) if (q !== p && up(q) && bots2.indexOf(q) < order && Math.abs(q.x - goal) < 0.8 && Math.abs(q.y - p.y) < 1.5) goal += (goal >= q.x ? 1 : -1) * 0.9;
+    const shell = S.smart ? this.mortarZone(world2, p) : null;
+    if (shell !== null) {
+      goal = p.x + (p.x >= shell ? 1 : -1) * 3;
+      stopAt = 0.2;
     }
     const dx = goal - p.x;
     if (Math.abs(dx) > stopAt) mx = sign4(dx);
-    const dir = mx || p.facing, goalY = downed && goal === downed.x ? downed.y : leader && !tgt ? leader.y : tgt ? tgt.y : p.y;
+    const dir = mx || p.facing;
     const wall = mx && !hasHeadroom(p.x + dir * 0.45, p.y + 0.3, p.w, Math.max(0.6, p.h - 0.4));
     const floorAhead = groundBelow(p.x + dir * (p.w / 2 + 0.6), p.y + 0.2);
     const gap = mx && p.onGround && floorAhead < p.y - 1.2;
     const goalPastGap = Math.abs(dx) > 2.2;
     if (gap && !goalPastGap && goalY >= p.y - 0.5) mx = 0;
     const wantUp = goalY > p.y + 1.1 && Math.abs(dx) < 5;
+    const wave = p.onGround && world2.shockwaves.some((w) => w.team !== "p" && Math.abs(w.y - p.y) < 0.6 && sign4(p.x - w.x) === sign4(w.dir) && Math.abs(p.x - w.x) < 2.4) && this.answer(world2, M, "wave" + Math.floor(world2.tick / 30), S, rnd, true);
     const climb = !p.onGround && p.wallDir !== 0 && p.wallDir === dir && (wall || goalY > p.y + 0.5);
-    if (M.jumpT <= 0 && p.onGround && (wall || gap && goalPastGap && goalY >= p.y - 0.5 || wantUp)) {
+    if (M.jumpT <= 0 && p.onGround && (wave || wall || gap && goalPastGap && goalY >= p.y - 0.5 || wantUp)) {
       M.jumpT = 14;
       M.jumpNew = true;
     } else if (M.jumpT <= 0 && !p.onGround && (climb ? p.vy < 3 : p.vy < 1 && p.jumpsUsed < 1 && (wall || goalY > p.y + 0.8 && Math.abs(dx) < 4 || floorAhead < p.y - 3 && goalPastGap))) {
@@ -17338,7 +17731,8 @@ var Bots = class {
     }
     if (!tgt) {
       M.fireT = 0;
-      this.support(world2, p, M, held, leader, rnd);
+      M.hold = 0;
+      this.support(world2, p, M, held, team, S, rnd);
       return out();
     }
     const d = dist(tgt), tx = tgt.x - p.x, ty = tgt.y + tgt.h / 2 - cy, len = Math.hypot(tx, ty) || 1;
@@ -17346,80 +17740,170 @@ var Bots = class {
     ax = tx / len;
     ay = ty / len;
     if (!mx && Math.abs(tx) > 0.2 && sign4(tx) !== p.facing) mx = sign4(tx) * 0.3;
-    if (!p.onGround) {
-      ay = Math.max(ay, -0.3);
-    }
-    const threat = this.threat(world2, p, M, rnd);
+    if (!p.onGround) ay = Math.max(ay, -0.3);
+    const seen = !segmentBlocked(cx, cy, tgt.x, tgt.y + tgt.h / 2);
+    const threat = this.threat(world2, p, M, S, rnd);
     const close = Math.abs(tx) < 2 + tgt.w / 2 && Math.abs(ty) < 1.6;
+    const crowd = foes.filter((e) => dist(e) < 6).length;
+    const inLine = this.inLine(foes, cx, cy, ax, ay);
+    const nearest = foes.reduce((m, e) => Math.min(m, dist(e)), Infinity);
+    const armoured = tgt.armor > 0 || tgt.boss;
     switch (p.char) {
       case "nova": {
+        if (S.smart && p.attachment && MARKSMAN.attachments.includes(p.attachment) && p.modeCd === 0 && --M.modeT <= 0) {
+          const want = armoured ? "lance" : crowd >= 3 ? "arc" : tgt.flier ? "volley" : p.attachment;
+          if (want !== p.attachment) {
+            held.mode = true;
+            M.modeT = 20;
+          }
+        }
         if (threat) {
           held.parry = true;
           mx = -sign4(tx) || -p.facing;
-        } else if (close) {
+          M.hold = 0;
+        } else if (close && !(M.beam && M.hold > 0 && nearest > 1.6)) {
           aimFree = false;
           held.melee = M.t % 9 < 3;
-        } else {
-          held.fire = this.fireCycle(M, 46);
-        }
+          M.hold = 0;
+        } else if (seen) {
+          const beam = this.beamPlan(M, S, inLine, tgt, nearest, 3) && p.attachment;
+          held.fire = this.charge(M, p, beam ? MARKSMAN.beam.at + 2 : armoured ? MARKSMAN.charge[2] + 2 : crowd >= 2 ? MARKSMAN.charge[1] + 2 : MARKSMAN.charge[0] + 2);
+          if (beam) mx = 0;
+        } else M.hold = 0;
         break;
       }
       case "echo": {
-        if (threat) held.parry = M.t % 3 === 0;
-        else if (close) {
+        if (threat) {
+          held.parry = M.t % 3 === 0;
+          M.hold = 0;
+        } else if (close) {
           aimFree = false;
           held.melee = M.t % 8 < 3;
-        } else if (d > 3 && d < 6.5 && p.onGround && Math.abs(ty) < 1 && M.t % 70 === 0) {
+          M.hold = 0;
+        } else if (d > 3 && d < 6.5 && p.onGround && Math.abs(ty) < 1 && M.t % 50 === 0) {
           held.dash = true;
           mx = sign4(tx);
-        } else if (d >= 6.5) held.fire = this.fireCycle(M, 20);
+        } else if (d >= 6.5 && seen) held.fire = this.charge(M, p, HUNTER.rifle.raise + (armoured ? HUNTER.rifle.focus : 20));
+        if (S.smart && SETTINGS.echoKit === "hunter" && p.snares > 0 && --M.snareT <= 0) {
+          const rusher = foes.find((e) => (e.type === "charger" || e.type === "brute" || e.type === "shield") && dist(e) < 7 && dist(e) > 1.5 && sign4(e.x - p.x) === p.facing);
+          if (rusher) {
+            M.snareT = 150;
+            M.hold = 0;
+            if (SETTINGS.echoBelt === "lb") held.sub = true;
+            else {
+              held.fire = !M.prev.fire;
+            }
+          }
+        }
         break;
       }
       case "ram": {
         const guarding = p.state === "guard";
-        if (threat || guarding && M.guardT > 0) {
+        const cover = S.smart && this.coverNeeded(world2, p, team);
+        if (threat || cover || guarding && M.guardT > 0) {
           held.parry = true;
           aimFree = true;
           ax = sign4(tx) || p.facing;
           ay = 0;
-          if (threat) M.guardT = 30;
+          M.hold = 0;
+          if (threat || cover) M.guardT = 24;
           M.guardT--;
-          if (p.kinetic >= 45) held.fire = M.t % 6 < 2;
-        } else if (close) {
+          if (p.kinetic >= 45 && d < 5) held.fire = M.t % 6 < 2;
+        } else if (close && !(M.beam && M.hold > 0 && nearest > 1.6)) {
           aimFree = false;
           held.melee = M.t % 12 < 3;
-        } else if (d > 3 && d < 8 && p.onGround && Math.abs(ty) < 0.8 && M.t % 90 === 0 && !p.rush) {
+          M.hold = 0;
+        } else if (M.beam && M.hold > 0) {
+          const b = this.beamPlan(M, S, inLine, tgt, nearest, 1.6);
+          held.fire = this.charge(M, p, b ? RAM.beam.at + 2 : 1);
+          mx = 0;
+        } else if (d > 3 && d < 8 && p.onGround && Math.abs(ty) < 0.8 && M.t % 70 === 0 && !p.rush && crowd >= 1 && !armoured) {
           held.dash = true;
           mx = sign4(tx);
-        } else if (d < 10) held.fire = this.fireCycle(M, 26);
-        const crowd = world2.enemies.filter((e) => alive(e) && dist(e) < 6).length;
+          M.hold = 0;
+        } else if (seen && d < 12) {
+          const beam = this.beamPlan(M, S, inLine, tgt, nearest, 2.5);
+          held.fire = this.charge(M, p, beam ? RAM.beam.at + 2 : armoured ? RAM.cannon.charge[1] + 2 : RAM.cannon.charge[0] + 2);
+          if (beam) mx = 0;
+        } else M.hold = 0;
         const hurt = team.find((q) => up(q) && q.hp < q.maxHp * 0.45 && Math.abs(q.x - p.x) < RAM.link.range);
+        const barrage = world2.projectiles.filter((pr) => pr.team === "e" && !pr.dead && Math.abs(pr.x - p.x) < 10).length + foes.filter((e) => RANGED_FOES.has(e.type)).length;
         if (crowd >= 3 && p.provokeCd === 0 && M.t % 30 === 0) held.sub = true;
         else if (hurt && p.linkCd === 0 && !p.link && M.t % 30 === 15) held.mode = true;
+        else if (S.smart && barrage >= 4 && p.wallCd === 0 && p.onGround && M.t % 30 === 7) held.sig = true;
         break;
       }
       case "fix": {
         if (this.patch(world2, p, team)) {
           held.parry = true;
           aimFree = false;
+          M.hold = 0;
         } else if (close) {
           aimFree = false;
           held.melee = M.t % 9 < 3;
-        } else held.fire = this.fireCycle(M, 18);
-        if (p.scrap >= 70 && --M.gadgetT <= 0 && !world2.gadgets.some((g) => g.owner === p && !g.dead && g.kind !== "pad")) {
-          held.sig = true;
-          M.gadgetT = 600;
-        }
+          M.hold = 0;
+        } else if (seen) held.fire = this.charge(M, p, armoured ? FIX.rivet.charge[1] + 2 : 1);
+        else M.hold = 0;
+        this.gadget(world2, p, M, team, crowd, held);
         break;
       }
     }
-    if (p.ult >= ULT.max && !world2.ultCast && d < 7 && M.t % 20 === 0) held.ult = true;
+    if (p.ult >= ULT.max && !world2.ultCast && d < 7 && (crowd >= 2 || tgt.boss || armoured) && M.t % 20 === 0) held.ult = true;
     return out();
   }
-  // Out of a fight: Fix keeps the team patched up; RAM holds his guard up if shots are coming
-  support(world2, p, M, held, leader, rnd) {
-    if (p.char === "fix" && this.patch(world2, p, world2.players.filter((q) => q !== p))) held.parry = true;
-    if (p.char === "ram" && this.threat(world2, p, M, rnd)) held.parry = true;
+  // How much a bot wants to fight `e` (lower is better)
+  score(world2, p, e, d, leader, team, M, S) {
+    let s = d;
+    const ranged = p.char === "nova" || p.char === "fix", vy = Math.abs(e.y + e.h / 2 - (p.y + p.h / 2));
+    if (e === M.target) s -= 1;
+    if (leader && leader.lockT === e) s -= 3.5;
+    if (S.smart && e.target && e.target !== p && team.includes(e.target) && (e.state === "windup" || e.state === "aim" || e.state === "lock")) s -= 3;
+    if (e.hp <= 3) s -= 1.5;
+    if (ranged && (e.flier || RANGED_FOES.has(e.type))) s -= 2;
+    if (!ranged && (e.flier || vy > 2.6)) s += 4;
+    if (e.armor > 0 && (p.char === "echo" || p.char === "fix")) s += 2;
+    if (ranged && segmentBlocked(p.x, p.y + p.h / 2, e.x, e.y + e.h / 2)) s += 3;
+    return s;
+  }
+  // Where to stand against `tgt`, by role: [x, how close counts as there]
+  post(world2, p, tgt, foes, leader, team, S, dist) {
+    const R = BOT.range[p.char], side = sign4(p.x - tgt.x) || -tgt.facing || 1, ref = leader || p;
+    switch (p.char) {
+      case "ram": {
+        const front = foes.reduce((a, e) => !a || Math.abs(e.x - ref.x) < Math.abs(a.x - ref.x) ? e : a, null) || tgt;
+        const s = sign4(ref.x - front.x) || side;
+        return [front.x + s * (R + front.w / 2), 0.35];
+      }
+      case "echo": {
+        if (S.smart && leader) {
+          const s = sign4(tgt.x - leader.x) || side, fx = tgt.x + s * (R + tgt.w / 2);
+          if (Math.abs(groundBelow(fx, tgt.y + 0.5) - tgt.y) < 0.6) return [fx, 0.35];
+        }
+        return [tgt.x + side * (R + tgt.w / 2), 0.35];
+      }
+      case "nova": {
+        const close = foes.find((e) => dist(e) < 3);
+        if (S.smart && close) return [p.x + (sign4(p.x - close.x) || -close.facing || 1) * 3, 0.3];
+        const s = leader ? sign4(leader.x - tgt.x) || side : side;
+        return [tgt.x + s * (R + tgt.w / 2), 1.2];
+      }
+      default: {
+        const hurt = [p, ...team].filter(up).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+        const anchor = hurt && hurt !== p && hurt.hp < hurt.maxHp * 0.85 ? hurt : ref;
+        const s = sign4(anchor.x - tgt.x) || side;
+        let x = anchor.x + s * 2.5;
+        if (Math.abs(x - tgt.x) < 4) x = tgt.x + s * 4.5;
+        return [x, 1];
+      }
+    }
+  }
+  // Out of a fight: Fix keeps the team patched up (and builds a Pylon if they are hurt); RAM guards shots
+  support(world2, p, M, held, team, S, rnd) {
+    if (p.char === "fix") {
+      if (this.patch(world2, p, team)) held.parry = true;
+      this.gadget(world2, p, M, team, 0, held);
+    }
+    if (p.char === "ram" && this.threat(world2, p, M, S, rnd)) held.parry = true;
   }
   // Fix: someone in Patch Beam range is down or hurt (or she is, with no one else to see to)
   patch(world2, p, team) {
@@ -17427,14 +17911,100 @@ var Bots = class {
     const need = team.some((q) => (q.state === "downed" || up(q) && q.hp < q.maxHp * 0.75) && Math.hypot(q.x - p.x, q.y - p.y) < R);
     return need || p.patch || p.hp < p.maxHp * 0.5;
   }
-  // Charged shots: hold for `hold` ticks, let go, a short pause, again
-  fireCycle(M, hold) {
-    M.fireT = (M.fireT + 1) % (hold + 6);
-    return M.fireT < hold;
+  // Fix: pick the gadget the fight needs, then build it when there is Scrap to spare (one at a time)
+  gadget(world2, p, M, team, crowd, held) {
+    const hurt = team.filter((q) => up(q) && q.hp < q.maxHp * 0.6).length;
+    const want = hurt >= 1 ? "pylon" : crowd >= 1 ? "sentry" : null;
+    if (!want) return;
+    if (p.gadgetSel !== want) {
+      if (p.modeCd === 0 && M.t % 12 === 0) held.mode = true;
+      return;
+    }
+    const cost = FIX.gadget[want].cost;
+    if (p.scrap >= Math.max(55, cost + 10) && --M.gadgetT <= 0 && !world2.gadgets.some((g) => g.owner === p && !g.dead && g.kind !== "pad")) {
+      held.sig = true;
+      M.gadgetT = 480;
+    }
   }
-  // An enemy winding up an attack on us, or an enemy shot that will reach us within a few ticks. Each one is
-  // answered (or not) once, decided by chance, and only after BOT.delay ticks.
-  threat(world2, p, M, rnd) {
+  // Holding fire to a charge level: keep holding until the charge reaches `to` ticks, then let go (a short
+  // breath between shots)
+  charge(M, p, to) {
+    if (M.hold < 0) {
+      M.hold++;
+      return false;
+    }
+    if (M.hold === 0 && p.chargeT === 0 && (p.rifleT || 0) === 0) {
+      M.hold = 1;
+      return true;
+    }
+    M.hold++;
+    const now = Math.max(p.chargeT || 0, p.rifleT || 0);
+    if (now >= to || M.hold > to + 40) {
+      M.hold = -6;
+      return false;
+    }
+    return true;
+  }
+  // A Level 4 beam: begun when enemies line up (or for a boss) with none too close, then kept to (braced)
+  // until it fires, unless something gets right on top of it
+  beamPlan(M, S, inLine, tgt, nearest, room) {
+    if (M.beam && M.hold > 0) {
+      if (nearest < 1.6) M.beam = false;
+      return M.beam;
+    }
+    M.beam = S.smart && (inLine >= 3 || !!tgt.boss) && nearest > room;
+    return M.beam;
+  }
+  // How many enemies sit along the aim line (within a beam's width of it, ahead)
+  inLine(foes, cx, cy, ax, ay) {
+    let n = 0;
+    for (const e of foes) {
+      const rx = e.x - cx, ry = e.y + e.h / 2 - cy, along = rx * ax + ry * ay;
+      if (along > 0 && along < 30 && Math.abs(rx * ay - ry * ax) < 0.9 + e.h / 3) n++;
+    }
+    return n;
+  }
+  // RAM: enemy shots heading at a teammate standing behind him
+  coverNeeded(world2, p, team) {
+    for (const pr of world2.projectiles) {
+      if (pr.team !== "e" || pr.dead || pr.kind === "mortar") continue;
+      for (const q of team) {
+        if (!up(q) || Math.abs(q.x - p.x) > 4) continue;
+        const behind = sign4(q.x - p.x) === -sign4(pr.vx) || Math.abs(q.x - p.x) < 0.6;
+        const rx = q.x - pr.x, ry = q.y + q.h / 2 - pr.y, dd = Math.hypot(rx, ry);
+        if (behind && dd < 7 && rx * pr.vx + ry * pr.vy > 0 && sign4(pr.x - p.x) === sign4(pr.x - q.x)) return true;
+      }
+    }
+    return false;
+  }
+  // A mortar shell coming down within reach of us: where it lands (x), or null
+  mortarZone(world2, p) {
+    for (const pr of world2.projectiles) {
+      if (pr.team !== "e" || pr.dead || pr.kind !== "mortar") continue;
+      let x = pr.x, y = pr.y, vx = pr.vx, vy = pr.vy;
+      const g = pr.gravity || 0, dt = 1 / 60;
+      for (let i = 0; i < 120; i++) {
+        vy -= g * dt;
+        x += vx * dt;
+        y += vy * dt;
+        if (vy < 0 && y <= groundBelow(x, y + 0.5) + 0.1) break;
+      }
+      const r = pr.blast && pr.blast.r || 2;
+      if (Math.abs(x - p.x) < r + 0.6 && Math.abs(y - p.y) < 2) return x;
+    }
+    return null;
+  }
+  // Answer a given threat or not: decided once per threat by chance (skill), and only after the skill's delay
+  answer(world2, M, key, S, rnd, now = false) {
+    let r = M.react.get(key);
+    if (!r) {
+      r = { at: world2.tick, yes: rnd() < S.react };
+      M.react.set(key, r);
+    }
+    return r.yes && (now || world2.tick - r.at >= S.delay);
+  }
+  // An enemy winding up an attack on us, or an enemy shot that will reach us within a few ticks
+  threat(world2, p, M, S, rnd) {
     const cx = p.x, cy = p.y + p.h / 2;
     let seen = null;
     for (const e of world2.enemies) {
@@ -17454,14 +18024,9 @@ var Bots = class {
         break;
       }
     }
-    for (const [k2, r2] of M.react) if (world2.tick - r2.at > 90) M.react.delete(k2);
+    for (const [k2, r] of M.react) if (world2.tick - r.at > 90) M.react.delete(k2);
     if (!seen) return false;
-    let r = M.react.get(seen);
-    if (!r) {
-      r = { at: world2.tick, yes: rnd() < BOT.react };
-      M.react.set(seen, r);
-    }
-    return r.yes && world2.tick - r.at >= BOT.delay;
+    return this.answer(world2, M, seen, S, rnd);
   }
 };
 
@@ -17538,11 +18103,14 @@ var SETTING_DEFS = [
   { key: "novaKit", label: "Nova's kit", opts: [["marksman", "Marksman: attachments, secondary weapons, dodge, skates"], ["sentinel", "Sentinel: Pass 1 kit"]] },
   { key: "echoHead", label: "Echo's head (look only)", opts: [["helmet", "Full helmet, amber visor"], ["mask", "Survival mask"], ["bare", "Bare face"]] },
   { key: "echoKit", label: "Echo's kit", opts: [["hunter", "Hunter: blades, glaive, snares, reel"], ["pursuit", "Pursuit: Pass 1 kit"]] },
+  { key: "echoBelt", label: "Echo's utility belt (snares), Hunter kit", opts: [["fire", "Tap fire (crouch + tap plants)"], ["lb", "LB / T (crouch + LB plants); tap fire is a quick shot"]] },
   { key: "echoRanged", label: "Echo's ranged option, Pursuit kit only (Q-A test)", opts: [["A", "A: Tracer shot only"], ["B", "B: Bolts + Tracer"], ["C", "C: No ranged attack"]] },
   { key: "vbStop", label: "Velocity Break stop", opts: [["hard", "Hard stop"], ["keep30", "Keep 30% momentum"]] },
   { key: "vbRefund", label: "Velocity Break refunds air dash on hit", bool: true },
   { key: "dashIframes", label: "Dash invulnerability (A/B test)", bool: true },
   { key: "impactFrames", label: "Impact frames on big moments (Q-C test)", bool: true },
+  { key: "impactStyle", label: "Impact frame style", opts: [["scifi", "Sci-fi hologram"], ["comic", "Comic ink (original)"], ["eclipse", "Eclipse"], ["shatter", "Shatter"], ["thunder", "Thunderclap"], ["sumi", "Sumi ink"], ["warp", "Gravity well"]] },
+  { key: "impactColor", label: "Impact frame colour", opts: [["style", "The style's own"], ["player", "Colour of the player who set it off"], ["character", "That player's character colour"]] },
   { key: "camera", label: "Camera projection", opts: [["persp", "Perspective"], ["ortho", "Orthographic"]] },
   { key: "fov", label: "Camera field of view", range: [24, 50, 1] },
   { key: "aimAssist", label: "Aim assist (gamepad 8-way aim)", bool: true },
@@ -17553,6 +18121,7 @@ var SETTING_DEFS = [
   { key: "hapticStrength", label: "Rumble strength", range: [0, 1, 0.05] },
   { key: "p1Aim", label: "Keyboard player aims with", opts: [["mouse", "Mouse"], ["keys", "Movement keys (8-way)"]] },
   { key: "aiTeammates", label: "AI teammates (fill empty slots; a player joining takes one over)", opts: [["0", "Off"], ["1", "1"], ["2", "2"], ["3", "3"]] },
+  { key: "aiSkill", label: "AI teammate skill", opts: [["rookie", "Rookie: slow to react, basic plays"], ["veteran", "Veteran: reads the fight, uses the whole kit"], ["elite", "Elite: sharp reactions, every advanced play"]] },
   { key: "difficulty", label: "Difficulty", opts: [["easy", "Easy"], ["normal", "Normal"], ["hard", "Hard"]] },
   { key: "barks", label: "Character lines (CP-09 test)", bool: true },
   { key: "shake", label: "Screen shake", bool: true },
@@ -17617,6 +18186,7 @@ var UI = class {
             <li>RT fire \xB7 LT parry / dodge / guard / beam \xB7 LB character action</li>
             <li>LT + RT ultimate \xB7 D-pad swap character \xB7 Start pause</li></ul></div>
         </div>
+        <p class="fine">New in Version 11: smarter AI teammates with a skill setting, a controller-friendly pause menu, RAM's Level 4 <b>Breach Beam</b> (keep holding fire) and a shield that cracks and shatters, seven impact frame styles that can take your player colour, and Echo's snares on LB as an option. All in <kbd>Esc</kbd>/Start.</p>
         <p class="fine">New in Version 10: two new characters. <b>RAM</b>, the tank: hold LT to raise his tower shield (it blocks, covers everyone behind him and stores Kinetic; fire while guarding releases it), a dash that plows enemies into walls, a hard-light wall, a guardian link and a war cry. <b>Fix</b>, the support: hold LT for a beam that heals, revives from range and tunes teammates up (faster charging and bars), gadgets on Y, power-ups tossed with X. Players join as Nova, Echo, RAM and Fix; swap with the D-pad or <kbd>1</kbd>\u2013<kbd>4</kbd>.</p>
         <p class="fine">Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd>/View shows every control; <kbd>Esc</kbd>/Start opens settings, zones and the boss fights.</p>
         <p class="fine notice" hidden></p>
@@ -17657,6 +18227,7 @@ var UI = class {
     mk("Boss: Stormcaller", () => this.H.boss("stormcaller"));
     mk("Controls", () => this.toggleHelp(true));
     card.appendChild(row);
+    card.appendChild(h("p", "fine padhint", "<b>Controller:</b> D-pad or left stick to move \xB7 left/right changes a list or slider \xB7 A to select \xB7 B to resume \xB7 LB top \xB7 RB settings"));
     this.playerList = h("div", "players");
     card.appendChild(this.playerList);
     const grid = h("div", "settings");
@@ -17703,6 +18274,7 @@ var UI = class {
     card.appendChild(h("p", "fine", "Character lines are placeholder writing for the CP-09 test, not canon. Settings are remembered in this browser only."));
     this.root.appendChild(p);
     this.pause = p;
+    p.addEventListener("pointermove", () => p.classList.remove("padnav"));
   }
   setPaused(on, world2) {
     this.paused = on;
@@ -17738,27 +18310,81 @@ var UI = class {
       this.playerList.appendChild(row);
     }
   }
+  // Controller navigation of the pause menu. The D-pad or left stick moves to the nearest control in that
+  // direction (across the button rows and the settings grid, not just down a list); on a list or a slider,
+  // left/right changes its value instead. A presses a button or ticks a box (and cycles a list), B goes back
+  // to the game, LB jumps to the top and RB to the settings. Held directions repeat (input.js).
   menuNav(ev) {
-    if (!this.paused || !this.focusables) return;
-    const f = this.focusables;
-    if (ev.type === "up" || ev.type === "down") {
-      this.focusIdx = (this.focusIdx + (ev.type === "down" ? 1 : -1) + f.length) % f.length;
-      f[this.focusIdx].focus();
+    if (!this.paused) return;
+    const f = [...this.pause.querySelectorAll("button, select, input")].filter((e) => !e.disabled && e.offsetParent !== null);
+    if (!f.length) return;
+    this.pause.classList.add("padnav");
+    let el = f.includes(document.activeElement) ? document.activeElement : null;
+    const go = (to) => {
+      if (!to) return;
+      to.focus({ preventScroll: true });
+      to.scrollIntoView({ block: "nearest" });
+      this.focusIdx = f.indexOf(to);
+    };
+    if (!el && ["up", "down", "swap", "confirm"].includes(ev.type)) {
+      go(f[Math.max(0, Math.min(this.focusIdx || 0, f.length - 1))]);
+      return;
+    }
+    const fire = (e, type) => e.dispatchEvent(new Event(type, { bubbles: true }));
+    if (ev.type === "swap" && el && el.tagName === "SELECT") {
+      const i = Math.max(0, Math.min(el.options.length - 1, el.selectedIndex + ev.dir));
+      if (i !== el.selectedIndex) {
+        el.selectedIndex = i;
+        fire(el, "change");
+      }
+      return;
+    }
+    if (ev.type === "swap" && el && el.type === "range") {
+      const v = Math.max(Number(el.min), Math.min(Number(el.max), Number(el.value) + Number(el.step || 1) * ev.dir));
+      el.value = String(v);
+      fire(el, "input");
+      fire(el, "change");
+      return;
+    }
+    if (ev.type === "up" || ev.type === "down" || ev.type === "swap") {
+      const [dx, dy] = ev.type === "up" ? [0, -1] : ev.type === "down" ? [0, 1] : [ev.dir, 0];
+      const a = el.getBoundingClientRect(), ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+      let best = null, bs = Infinity;
+      for (const c of f) {
+        if (c === el) continue;
+        const b = c.getBoundingClientRect(), bx = b.left + b.width / 2, by = b.top + b.height / 2;
+        const along = (bx - ax) * dx + (by - ay) * dy, across = Math.abs((bx - ax) * dy) + Math.abs((by - ay) * dx);
+        if (along <= 4) continue;
+        const s = along + across * (dy ? 0.6 : 2.5);
+        if (s < bs) {
+          bs = s;
+          best = c;
+        }
+      }
+      go(best);
     } else if (ev.type === "confirm") {
-      const el = f[this.focusIdx];
-      if (el.tagName === "BUTTON") el.click();
-      else if (el.tagName === "SELECT") {
+      if (el.tagName === "BUTTON") {
+        const at = f.indexOf(el);
+        el.click();
+        if (this.paused && !el.isConnected) {
+          const g = [...this.pause.querySelectorAll("button, select, input")].filter((e) => !e.disabled && e.offsetParent !== null);
+          if (g[at]) g[at].focus({ preventScroll: true });
+        }
+      } else if (el.tagName === "SELECT") {
         el.selectedIndex = (el.selectedIndex + 1) % el.options.length;
-        el.dispatchEvent(new Event("change"));
+        fire(el, "change");
       } else if (el.type === "checkbox") {
         el.checked = !el.checked;
-        el.dispatchEvent(new Event("change"));
+        fire(el, "change");
       } else if (el.type === "range") {
         const v = Number(el.value) + Number(el.step) * 2;
         el.value = String(v > Number(el.max) ? el.min : v);
-        el.dispatchEvent(new Event("input"));
+        fire(el, "input");
+        fire(el, "change");
       }
-    } else if (ev.type === "back") this.H.resume();
+    } else if (ev.type === "prevTab") go(f[0]);
+    else if (ev.type === "nextTab") go(this.pause.querySelector(".settings select, .settings input") || f[f.length - 1]);
+    else if (ev.type === "back") this.H.resume();
   }
   // ---- Help ----
   buildHelp() {
@@ -17802,7 +18428,7 @@ var UI = class {
       <tr><td>Guard: hold to raise the Rampart, a tower shield. It blocks strikes, shots and blasts from in front (shockwaves along the floor still go under it) and covers everyone behind him. The damage comes off its Integrity (the blue bar), which grows back once he lowers it; broken, he reels and must wait for it. Raise it just before a hit for a Perfect Guard: no cost, a shot goes back the way it came, a striker reels. Aim up to hold it overhead. He walks slowly behind it and can jump with it up</td><td>Hold LT</td><td>Hold Q or L</td></tr>
       <tr><td>Kinetic Release: every point the shield blocks is stored as Kinetic; fire while guarding lets it out as a cone of force, stronger the more is stored</td><td>RT while guarding</td><td>Left click or K while guarding</td></tr>
       <tr><td>Ram Charge (his dash): a shoulder charge behind the shield that scoops up light enemies and slams them into the next wall. Hold it while standing still for the Battering Ram: three levels, further and faster, and from level 2 it carries heavy enemies too and breaks armor. Nothing knocks him about while he charges</td><td>B \xB7 hold B</td><td>Shift \xB7 hold Shift</td></tr>
-      <tr><td>Breach Cannon: tap for a heavy slug; hold to charge a Breach Shot that punches through enemies (level 3 bursts at the end)</td><td>RT \xB7 hold RT</td><td>Left click or K \xB7 hold</td></tr>
+      <tr><td>Breach Cannon: tap for a heavy slug; hold to charge a Breach Shot that punches through enemies (level 3 bursts at the end); keep holding to Level 4 for the Breach Beam, a sustained column of hard light that shoves everything in its line back</td><td>RT \xB7 hold RT</td><td>Left click or K \xB7 hold</td></tr>
       <tr><td>Melee: shield bash, edge strike, Piston Punch; a shield swat in the air; hold for the Seismic Slam (shockwaves run both ways along the floor). From a guard, melee is a quick shove. His ground pound lands wider and harder</td><td>X \xB7 hold X</td><td>Right click or J \xB7 hold</td></tr>
       <tr><td>Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). He is big and slow, with lower jumps and much more health</td><td colspan="2">Always</td></tr>
       <tr><td>Bulwark Wall: a hard-light wall in front of him for 8 s. Enemy shots stop at it and enemies can't get through until they break it; your team's shots pass through it boosted</td><td>Y</td><td>E, I, or middle click</td></tr>
@@ -20213,6 +20839,7 @@ function frame(now) {
     fpsT = 0;
     fpsN = 0;
   }
+  input.menuOpen = paused || ui.helpOpen;
   input.pollPadMenus();
   handleMenuEvents();
   tryJoin();

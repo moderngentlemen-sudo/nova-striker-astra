@@ -8,7 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER } from './level.js';
-import { SETTINGS, PLAYER_COLORS, CHARS } from './config.js';
+import { SETTINGS, PLAYER_COLORS, CHARS, IMPACT_STYLES, IMPACT_ACCENT } from './config.js';
 import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
@@ -370,7 +370,8 @@ export class View {
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
     if (ev.type === 'kill' && ev.e.type === 'brute') this.trauma = Math.min(1, this.trauma + 0.6);
-    // The big moments get an impact frame
+    // The big moments get an impact frame, in the colour of whoever set it off (if the setting asks for that)
+    this.impactBy = ev.p || (ev.owner && ev.owner.kind === 'player' ? ev.owner : null) || ev.by || (ev.members && ev.members[0]) || null;
     if (ev.type === 'impact' || (ev.type === 'armorBreak' && ev.left === 0) || (ev.type === 'parry' && ev.perfect && ev.heavy)) this.startImpact(ev.x, ev.y, ev.type === 'impact' ? 1 : 0.8);
     else if (ev.type === 'kill' && (ev.e.type === 'brute' || ev.e.boss)) this.startImpact(ev.x, ev.y, 1);
     else if (ev.type === 'poundLand' && ev.level >= 3) this.startImpact(ev.x, ev.y + 0.6, 1);
@@ -378,7 +379,7 @@ export class View {
     else if (ev.type === 'bossPhase' || ev.type === 'bossDown') this.startImpact(ev.x, ev.y, 1.2);
     else if (ev.type === 'ultNova') this.startImpact(ev.x, ev.y, 1.4, true);
     else if (ev.type === 'ultFinisher') this.startImpact(ev.x, ev.y, 1.2, true);
-    else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5 };   // when the eclipse shatters
+    else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5, by: this.impactBy };   // when the eclipse shatters
     else if (ev.type === 'perfectDodge') this.startImpact(ev.x, ev.y, 0.6);
     else if (ev.type === 'ramSplat' && ev.n >= 2) this.startImpact(ev.x, ev.y, 0.9);
     else if (ev.type === 'kineticRelease' && ev.k >= 0.8) this.startImpact(ev.x, ev.y, 0.9);
@@ -390,15 +391,20 @@ export class View {
     if (ev.type === 'ramSlam' || ev.type === 'podLand') this.punch = Math.min(this.punch, -0.6);
   }
 
-  // Impact frame (Q-C test; sci-fi look since Version 9), phased: a cyan photonegative flash, then a hologram
-  // grade with glowing edges, scanlines and a hex grid, light streaks, a shockwave ring and glitch tears
-  // spreading from the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds
-  // the simulation (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an
-  // ultimate is called.
+  // Impact frame (Q-C test): a flash, then the chosen look (Settings: Impact frame style; see ImpactShader for
+  // the seven) spreading from the hit, a zoom punch and colour split, easing back out. Its key colour is the
+  // look's own, or (Settings: Impact frame colour) the player colour or character colour of whoever set it off
+  // (the event's player, or the player nearest the impact). In play, a short hit-pause holds the simulation
+  // (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an ultimate is called.
   startImpact(x, y, strength = 1, force = false) {
     if (!SETTINGS.impactFrames || (this.impactCd > 0 && !force)) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
     this.impact = { t: 0, dur: 0.26 + 0.12 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    const style = IMPACT_STYLES.includes(SETTINGS.impactStyle) ? SETTINGS.impactStyle : 'scifi', U = this.ink.uniforms;
+    let by = this.impactBy;
+    if (!by && this.world) { let bd = Infinity; for (const q of this.world.players) { const dd = Math.hypot(q.x - x, q.y - y); if (dd < bd) { bd = dd; by = q; } } }
+    const mode = SETTINGS.impactColor, col = by && mode === 'player' ? PLAYER_COLORS[by.slot] : by && mode === 'character' ? CHARS[by.char].energy : null;
+    U.style.value = IMPACT_STYLES.indexOf(style); U.accent.value.set(col || IMPACT_ACCENT[style]); U.tinted.value = col ? 1 : 0;
     this.impactCd = 0.9; this.hitPause = 0.05 + 0.05 * strength;
     this.trauma = Math.min(1, this.trauma + 0.25 * strength); this.bloomKick = Math.min(1.4, this.bloomKick + 0.4 * strength);
   }
@@ -417,7 +423,7 @@ export class View {
     U.invert.value = k < 0.1 ? 1 : Math.max(0, 1 - (k - 0.1) / 0.06);
     U.amount.value = k < 0.78 ? 1 : Math.max(0, 1 - (k - 0.78) / 0.22);
     U.zoom.value = 0.07 * I.k * (1 - k) * (1 - k); U.split.value = 0.008 * I.k * (1 - k);
-    U.ring.value = 0.05 + k * 1.25; U.glitch.value = Math.max(0, 1 - k * 2.4) * Math.min(1, I.k);
+    U.ring.value = 0.05 + k * 1.25; U.glitch.value = Math.max(0, 1 - k * 2.4) * Math.min(1, I.k); U.phase.value = k;
     this.ink.enabled = true;
     if (I.t >= I.dur) this.impact = null;
     return true;
@@ -426,7 +432,8 @@ export class View {
   render(world, alpha, dt) {
     this.time += dt;
     const PI = this.pendingImpact;
-    if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
+    this.world = world;
+    if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.impactBy = PI.by; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
     this.syncEntities(world, alpha, dt);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });

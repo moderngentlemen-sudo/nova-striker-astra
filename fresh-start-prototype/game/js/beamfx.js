@@ -1,9 +1,9 @@
-// Nova's Level 4 beam: a white-hot core inside a surging sheath in the attachment's colour, following the
+// The Level 4 beams (Nova's, and RAM's broader Breach Beam in his blue): a white-hot core inside a surging sheath in the attachment's colour, following the
 // sim's beam path (a Prism beam bounces once). It snaps open, flickers and pulses along its length, pushes
 // rings down its path, streams sparks, flares at the bracer and throws sparks and smoke where it hits a wall;
 // when it ends it narrows to nothing. Presentation only: reads the sim, never changes it.
 import * as THREE from 'three';
-import { ATTACH_LOOK, MARKSMAN } from './config.js';
+import { ATTACH_LOOK, MARKSMAN, RAM, CHARS } from './config.js';
 import { toWorld, planeDir } from './space.js';
 
 const MAXP = 72;
@@ -52,13 +52,14 @@ export class BeamFX {
     const core = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.fx.tex.glow, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     const hit = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.fx.tex.star, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     for (const s of [glow, core, hit]) { s.visible = false; s.renderOrder = 6; this.scene.add(s); }
-    B = { sheath: new Strip(this.scene, 4), core: new Strip(this.scene, 5), glow, core2: core, hit, pts: [], age: 0, end: -1, tint: new THREE.Color(), ringT: 0 };
+    B = { edge: new Strip(this.scene, 3), sheath: new Strip(this.scene, 4), core: new Strip(this.scene, 5), glow, core2: core, hit, pts: [], age: 0, end: -1, tint: new THREE.Color(), ringT: 0 };
     this.beams.set(p, B); return B;
   }
 
   onEvent(ev) {
     if (ev.type === 'beamStart') {
-      const B = this.of(ev.p); B.age = 0; B.end = -1; B.tint.set(ATTACH_LOOK[ev.attach] ? ATTACH_LOOK[ev.attach].tint : '#ffd889');
+      const B = this.of(ev.p); B.age = 0; B.end = -1; B.tint.set(ev.attach === 'breach' ? CHARS.ram.energy : ATTACH_LOOK[ev.attach] ? ATTACH_LOOK[ev.attach].tint : '#ffd889');
+      B.ram = ev.p.char === 'ram'; B.W = B.ram ? RAM.beam.width : MARKSMAN.beam.width;   // RAM's Breach Beam is a broader column
       if (ev.over) B.tint.lerp(WHITE, 0.35);
     } else if (ev.type === 'beamEnd') {
       const B = this.beams.get(ev.p); if (B) B.end = 0;
@@ -84,19 +85,23 @@ export class BeamFX {
       if (B.end >= 0) B.end += dt;
       const closing = B.end >= 0 ? Math.max(0, 1 - B.end / 0.16) : 1;
       if (!B.pts.length || closing <= 0) {
-        B.sheath.mesh.visible = B.core.mesh.visible = B.glow.visible = B.core2.visible = B.hit.visible = false;
+        B.edge.mesh.visible = B.sheath.mesh.visible = B.core.mesh.visible = B.glow.visible = B.core2.visible = B.hit.visible = false;
         if (closing <= 0) B.pts.length = 0;
-        if (!world.players.includes(p) && closing <= 0) { for (const o of [B.sheath.mesh, B.core.mesh, B.glow, B.core2, B.hit]) { this.scene.remove(o); o.material.dispose(); if (o.geometry && !o.isSprite) o.geometry.dispose(); } this.beams.delete(p); }
+        if (!world.players.includes(p) && closing <= 0) { for (const o of [B.edge.mesh, B.sheath.mesh, B.core.mesh, B.glow, B.core2, B.hit]) { this.scene.remove(o); o.material.dispose(); if (o.geometry && !o.isSprite) o.geometry.dispose(); } this.beams.delete(p); }
         continue;
       }
-      const open = Math.min(1, B.age / 0.07), W = MARKSMAN.beam.width, t = this.t, n = B.pts.length, tint = B.tint;
+      const open = Math.min(1, B.age / 0.07), W = B.W || MARKSMAN.beam.width, t = this.t, n = B.pts.length, tint = B.tint;
       const base = open * closing;
       // The sheath surges along its length; the core flickers
       // Widths are half-widths: the sheath spans the beam's real hit width, the core a third of it
+      // RAM's: a deep-blue outer edge under it, so the column reads against bright skies and floors too
+      if (B.ram) B.edge.build(B.pts, cam, i => W * 1.3 * base * Math.min(1, 0.45 + i * 0.25) * (1 + 0.1 * Math.sin(t * 30 - i * 0.7)), i => [tint.r * 0.25, tint.g * 0.3, tint.b * 0.55, 0.75 * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]);
+      B.edge.mesh.visible = !!B.ram;
+      const sk = B.ram ? 1.05 : 1.5;
       B.sheath.build(B.pts, cam, i => W * 1.0 * base * Math.min(1, 0.45 + i * 0.25) * (1 + 0.16 * Math.sin(t * 38 - i * 0.9) + 0.06 * Math.sin(t * 91 + i)),
-        i => [tint.r * 1.5, tint.g * 1.5, tint.b * 1.5, 0.5 * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]);
+        i => [tint.r * sk, tint.g * sk, tint.b * sk, (B.ram ? 0.8 : 0.5) * Math.min(1, 0.4 + i * 0.3) * (i === n - 1 ? 0.3 : 1)]);
       const flick = 0.85 + Math.random() * 0.3;
-      B.core.build(B.pts, cam, i => W * 0.36 * base * flick * Math.min(1, 0.5 + i * 0.3), () => [2.6, 2.5, 2.3, 0.95]);
+      B.core.build(B.pts, cam, i => W * (B.ram ? 0.24 : 0.36) * base * flick * Math.min(1, 0.5 + i * 0.3), () => [2.6, 2.5, 2.3, 0.95]);
       // Bracer flare and the impact point
       const a = B.pts[0], e = B.pts[n - 1];
       B.glow.position.copy(a); B.glow.material.color.copy(tint); B.glow.scale.setScalar((1.0 + Math.sin(t * 40) * 0.12) * base); B.glow.material.opacity = 0.7; B.glow.visible = true;

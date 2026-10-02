@@ -32,6 +32,8 @@ export class Input {
     this.devices = {};             // deviceId -> { prevHeld, freeAimGrace }
     this.gamepadBlocked = false;
     this.menuEvents = [];          // pause/help/debug/swap toggles for the UI
+    this.menuOpen = false;         // a menu is up: the stick navigates it, and held directions repeat
+    this.repeat = {};              // per pad: when each held direction fires again
     this.anyKbm = false;           // any keyboard/mouse input since last join poll
 
     window.addEventListener('keydown', e => {
@@ -97,8 +99,10 @@ export class Input {
     return out;
   }
 
-  // Pad menu buttons (Start/View/D-pad) become UI events.
+  // Pad menu buttons (Start/View/D-pad) become UI events. While a menu is open (menuOpen, set by main) the
+  // left stick moves through it too, and a direction held on the D-pad or stick repeats after a short pause.
   pollPadMenus() {
+    const t = performance.now();
     for (const p of this.pads()) {
       const id = 'pad' + p.index;
       const prev = this.prevPads[id] || [];
@@ -106,12 +110,22 @@ export class Input {
       const edge = i => now[i] && !prev[i];
       if (edge(9)) this.menuEvents.push({ dev: id, type: 'pause' });
       if (edge(8)) this.menuEvents.push({ dev: id, type: 'help' });
-      if (edge(14)) this.menuEvents.push({ dev: id, type: 'swap', dir: -1 });
-      if (edge(15)) this.menuEvents.push({ dev: id, type: 'swap', dir: 1 });
-      if (edge(12)) this.menuEvents.push({ dev: id, type: 'up' });
-      if (edge(13)) this.menuEvents.push({ dev: id, type: 'down' });
       if (edge(0)) this.menuEvents.push({ dev: id, type: 'confirm' });
       if (edge(1)) this.menuEvents.push({ dev: id, type: 'back' });
+      if (edge(4)) this.menuEvents.push({ dev: id, type: 'prevTab' });
+      if (edge(5)) this.menuEvents.push({ dev: id, type: 'nextTab' });
+      const sx = this.menuOpen ? p.axes[0] || 0 : 0, sy = this.menuOpen ? p.axes[1] || 0 : 0;
+      const dirs = [
+        ['up', now[12] || sy < -0.6, { type: 'up' }], ['down', now[13] || sy > 0.6, { type: 'down' }],
+        ['left', now[14] || sx < -0.6, { type: 'swap', dir: -1 }], ['right', now[15] || sx > 0.6, { type: 'swap', dir: 1 }],
+      ];
+      const R = this.repeat[id] || (this.repeat[id] = {});
+      for (const [k, on, ev] of dirs) {
+        const r = R[k];
+        if (!on) { R[k] = null; continue; }
+        if (!r) { R[k] = { next: t + 320 }; this.menuEvents.push({ dev: id, ...ev }); }
+        else if (this.menuOpen && t >= r.next) { r.next = t + 110; this.menuEvents.push({ dev: id, ...ev, repeat: true }); }
+      }
       this.prevPads[id] = now;
     }
   }

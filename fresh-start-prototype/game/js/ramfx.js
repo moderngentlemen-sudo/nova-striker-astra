@@ -1,5 +1,7 @@
-// RAM's effects. The Rampart's hard-light pane where the sim's shield stands (it flares when it blocks, flickers
-// and cracks as its Integrity runs low, and shatters when it breaks); the Bulwark Wall; the Ram Charge's
+// RAM's effects. The Rampart's hard-light pane where the sim's shield stands (like Nova's Aegis: it flares when it
+// blocks, cracks where each hit lands, the cracks spreading as its Integrity runs low and healing as it comes
+// back, chips off shards as it weakens and shatters into them when it breaks; pushed along the floor it grinds
+// out sparks); the Bulwark Wall; the Ram Charge's
 // hard-light wedge, streaks and dust; the Guardian Link's tether; the Kinetic Release's cone of force; the
 // Hydraulic Uplift's jets; Provoke's roar; Siege Breaker's colossal ram's head; the sparks his charge throws
 // up; and the craters his big impacts leave in floors and walls. Presentation only: reads the sim, never
@@ -71,6 +73,26 @@ const craterTex = (seed, glow) => canvasTex(256, (g, s) => {
   for (let i = 0; i < 26; i++) { const a = rnd() * Math.PI * 2, d = R * (1.1 + rnd() * 0.6), z = 1.5 + rnd() * 3; g.fillRect(c + Math.cos(a) * d, c + Math.sin(a) * d, z, z); }
 });
 
+// A crack in hard light: main fractures out from the point of impact, branches off them, and a pale bruise
+// at the heart. White on transparent (tinted and faded per crack).
+const crackStarTex = seed => canvasTex(256, (g, s) => {
+  let r = seed; const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
+  const c = s / 2; g.lineCap = 'round'; g.lineJoin = 'round';
+  const walk = (x, y, a, n, step, w, alpha, branch) => {
+    g.strokeStyle = `rgba(255,255,255,${alpha})`; g.lineWidth = w; g.beginPath(); g.moveTo(x, y);
+    for (let i = 0; i < n; i++) {
+      a += (rnd() - 0.5) * 0.7; x += Math.cos(a) * step; y += Math.sin(a) * step; g.lineTo(x, y);
+      if (branch && rnd() < 0.35) { g.stroke(); walk(x, y, a + (rnd() < 0.5 ? -1 : 1) * (0.5 + rnd() * 0.6), 3 + (rnd() * 3 | 0), step * 0.7, w * 0.55, alpha * 0.8, false); g.strokeStyle = `rgba(255,255,255,${alpha})`; g.lineWidth = w; g.beginPath(); g.moveTo(x, y); }
+    }
+    g.stroke();
+  };
+  const n = 6 + (rnd() * 3 | 0);
+  for (let k = 0; k < n; k++) walk(c, c, (k / n) * Math.PI * 2 + rnd() * 0.6, 6 + (rnd() * 4 | 0), s * 0.055, 4, 1, true);
+  for (let k = 0; k < 10; k++) { const a = rnd() * Math.PI * 2, d = s * (0.08 + rnd() * 0.12); walk(c + Math.cos(a) * d, c + Math.sin(a) * d, a + Math.PI / 2, 2, s * 0.035, 1.5, 0.7, false); }   // crazing
+  const gg = g.createRadialGradient(c, c, 0, c, c, s * 0.12); gg.addColorStop(0, 'rgba(255,255,255,0.9)'); gg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gg; g.fillRect(0, 0, s, s);
+});
+
 export class RamFX {
   constructor(fx) {
     this.fx = fx; this.scene = fx.scene; this.t = 0;
@@ -82,6 +104,19 @@ export class RamFX {
       wedge: new THREE.MeshBasicMaterial({ color: new THREE.Color(BLUE).multiplyScalar(1.3), transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
       edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(PALE).multiplyScalar(1.6), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }) };
     this.panes = new Map(); this.walls = new Map(); this.wedges = new Map(); this.links = new Map(); this.heads = new Map(); this.ghostTick = new Map();
+    // The Rampart cracking and shattering (like Nova's Aegis): cracks where hits land, shards of the pane
+    this.crackTex = [11, 23, 37].map(crackStarTex);
+    this.shards = [];
+    for (let i = 0; i < 48; i++) {
+      const g = new THREE.BufferGeometry(), v = [];
+      for (let k = 0; k < 3; k++) { const a = (k / 3) * Math.PI * 2 + (Math.random() - 0.5) * 1.2, rr = 0.5 + Math.random() * 0.5; v.push(Math.cos(a) * rr, Math.sin(a) * rr, 0); }
+      g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0.5, 1], 2));
+      // (ordinary blending, pale blue glass (some catching the light white), so the shards read on bright backgrounds too)
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: new THREE.Color(Math.random() < 0.3 ? '#e4f2ff' : '#8fc4ff'), transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+      m.visible = false; m.renderOrder = 6; this.scene.add(m);
+      this.shards.push({ m, life: 0, max: 1, v: new THREE.Vector3(), spin: new THREE.Vector3(), size: 0.2 });
+    }
+    this.si2 = 0; this.qs = new THREE.Quaternion(); this.es = new THREE.Euler();
     // Craters: a small pool of decals (the oldest is reused), three looks picked at random
     this.craterTex = [1, 2, 3].map(k => ({ base: craterTex(k * 7919, false), glow: craterTex(k * 7919, true) }));
     this.craters = [];
@@ -114,7 +149,7 @@ export class RamFX {
   paneOf(p) {
     let P = this.panes.get(p); if (P) return P;
     const g = new THREE.PlaneGeometry(1, 1);
-    P = { face: new THREE.Mesh(g, this.mat.pane), crack: new THREE.Mesh(g, this.mat.crack), rim: new THREE.Mesh(g, this.mat.edge), flash: 0, k: 0 };
+    P = { face: new THREE.Mesh(g, this.mat.pane), crack: new THREE.Mesh(g, this.mat.crack), rim: new THREE.Mesh(g, this.mat.edge), flash: 0, k: 0, cracks: [], frac: 1 };
     for (const m of [P.face, P.crack, P.rim]) { m.visible = false; m.renderOrder = 5; this.scene.add(m); }
     this.panes.set(p, P); return P;
   }
@@ -125,6 +160,12 @@ export class RamFX {
       case 'guardOn': { const c = chest(p); F.sprite(c.x + p.guardDir[0] * 0.8, c.y + p.guardDir[1] * 0.8, 'ring', BLUE, 1.0, 0.18, 2.2); break; }
       case 'guardBlock': {
         const P = this.paneOf(p); P.flash = Math.min(1, P.flash + 0.5 + ev.dmg * 0.03);
+        this.crackAt(p, P, ev.x, ev.y, ev.dmg, ev.frac);
+        // Clusters chip off as its strength drops past two thirds and one third
+        if ((P.frac > 2 / 3 && ev.frac <= 2 / 3) || (P.frac > 1 / 3 && ev.frac <= 1 / 3)) this.shatter(p, ev.x, ev.y, 7, 0.5);
+        P.frac = ev.frac;
+        // A blow that shoves him back drags the shield along the floor
+        if (p.onGround) this.sparks(p.x + p.facing * (p.w / 2 + 0.3), p.y + 0.06, -p.facing, 3 + Math.min(8, ev.dmg / 2 | 0), 0.9);
         F.burst(ev.x, ev.y, ev.heavy ? WHITE : PALE, ev.heavy ? 18 : 10, ev.heavy ? 9 : 6, 0.3, 0.28, { dir: Math.atan2(p.guardDir[1], p.guardDir[0]), spread: 1.6, grav: 6 });
         F.sprite(ev.x, ev.y, 'star', WHITE, ev.heavy ? 1.3 : 0.8, 0.12, 1.4);
         break;
@@ -136,8 +177,10 @@ export class RamFX {
         break;
       }
       case 'rampartBreak': {
-        // The pane shatters into shards of hard light
-        const c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0];
+        // The pane shatters into shards of hard light: every remaining piece of it bursts outward
+        const c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], P = this.paneOf(p);
+        this.shatter(p, null, null, 30, 1); P.frac = 0;
+        for (const k of P.cracks) k.at = -1;
         for (let i = 0; i < 28; i++) {
           const u = (Math.random() - 0.5) * 2.6, x = c.x + nx * 0.8 - ny * u, y = c.y + ny * 0.8 + nx * u;
           F.burst(x, y, Math.random() < 0.5 ? PALE : BLUE, 1, 7, 0.3, 0.5, { dir: Math.atan2(ny, nx) + (Math.random() - 0.5) * 2, spread: 0.5, grav: 12 });
@@ -145,7 +188,7 @@ export class RamFX {
         F.sprite(c.x + nx * 0.8, c.y + ny * 0.8, 'ring', WHITE, 1.6, 0.35, 3); F.popText(c.x, c.y + 1.2, 'BROKEN', '#ff8aa8', 0.8);
         break;
       }
-      case 'rampartReady': { const c = chest(p); F.sprite(c.x, c.y, 'ring', BLUE, 1.2, 0.3, 2.4); F.burst(c.x, c.y, PALE, 12, 4, 0.25, 0.3); break; }
+      case 'rampartReady': { this.paneOf(p).frac = 1; const c = chest(p); F.sprite(c.x, c.y, 'ring', BLUE, 1.2, 0.3, 2.4); F.burst(c.x, c.y, PALE, 12, 4, 0.25, 0.3); break; }
       case 'kineticRelease': {
         // The cone of force: a shock ring along the guard, sparks fanning out through the cone, a flash
         const k = ev.k, a0 = Math.atan2(ev.ny, ev.nx), at = toWorld(ev.x, ev.y, 0.3, new THREE.Vector3());
@@ -242,7 +285,7 @@ export class RamFX {
 
   update(dt, world, view) {
     this.t += dt;
-    this.updateCraters(dt); this.updateSparks(dt);
+    this.updateCraters(dt); this.updateSparks(dt); this.updateShards(dt);
     const F = this.fx, cam = view.camera.position, seenP = new Set(), seenW = new Set(), seenL = new Set();
     for (const p of world.players) {
       if (p.char !== 'ram') continue;
@@ -267,12 +310,28 @@ export class RamFX {
         this.mat.edge.opacity = (0.55 + 0.45 * P.flash) * P.k;
         this.mat.pane.map.offset.y = this.t * 0.25;
         P.face.visible = P.rim.visible = P.crack.visible = true;
+        // The cracks where hits landed, riding on the pane (they heal as its Integrity comes back)
+        for (const k of P.cracks) {
+          const on = p.integrity < k.at;
+          k.o += ((on ? 1 : 0) - k.o) * (1 - Math.exp(-dt * (on ? 30 : 3)));
+          k.m.visible = k.o > 0.02;
+          if (!k.m.visible) continue;
+          const u = Math.max(-len / 2, Math.min(len / 2, k.u));
+          this.place(k.m, cx - ny * u + nx * k.w, cy + nx * u + ny * k.w, -ny, nx, dz + 0.025);
+          k.m.rotateZ(k.rot); k.m.scale.setScalar(k.size * (1 + 0.6 * (1 - frac)));
+          k.m.material.opacity = k.o * P.k * weak * (0.6 + 0.4 * (1 - frac)) * (1 + P.flash);
+        }
+        // Pushed along the floor behind the shield, its lower edge grinds out sparks
+        if (p.onGround && Math.abs(p.vx) > 0.4 && Math.random() < Math.min(1, Math.abs(p.vx) / 2.2)) {
+          const bot = ny * nx >= 0 ? -1 : 1, ex = cx - ny * bot * len / 2;
+          this.sparks(Math.abs(ny) > 0.5 ? ex : p.x + p.facing * (p.w / 2 + 0.3), p.y + 0.05, Math.sign(p.vx), 1 + (Math.abs(p.vx) > 1.5 ? 1 : 0), 0.75);
+        }
         // Stored Kinetic: motes drift up the pane
         if (p.kinetic > 10 && Math.random() < p.kinetic / 120) {
           const u = (Math.random() - 0.5) * len, w = toWorld(cx - ny * u, cy + nx * u, dz + 0.04, this.v);
           const pt = F.particle(w, Math.random() < 0.5 ? WHITE : BLUE, 0.16, 0.4); pt.v.set(0, 1.2, 0); pt.drag = 1;
         }
-      } else P.face.visible = P.rim.visible = P.crack.visible = false;
+      } else { P.face.visible = P.rim.visible = P.crack.visible = false; for (const k of P.cracks) k.m.visible = false; }
       // ---- The Ram Charge: a hard-light wedge in front, streaks and dust; afterimages ----
       const rushing = vis && p.state === 'rush' && p.rush, ult = vis && p.state === 'ult' && p.ultRun && p.ultRun.kind === 'ram';
       let W = this.wedges.get(p);
@@ -382,6 +441,50 @@ export class RamFX {
     }
   }
 
+  // A hit on the Rampart cracks it where it landed: a new crack, or the one already there spreads
+  crackAt(p, P, x, y, dmg, frac) {
+    const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
+    const u = Math.max(-G.half * 0.9, Math.min(G.half * 0.9, (x - cx) * -ny + (y - cy) * nx));
+    const at = frac * G.integrity + 12;   // it shows until the Integrity grows back past this
+    let k = P.cracks.find(q => q.at > p.integrity && Math.abs(q.u - u) < 0.35);
+    if (k) { k.size = Math.min(1.3, k.size + 0.08 + dmg * 0.01); k.at = Math.max(k.at, at); return; }
+    k = P.cracks.find(q => q.o < 0.02 && !(q.at > p.integrity));
+    if (!k && P.cracks.length < 8) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: new THREE.Color(PALE).multiplyScalar(1.5), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+      m.visible = false; m.renderOrder = 6; this.scene.add(m); k = { m, o: 0 }; P.cracks.push(k);
+    }
+    if (!k) k = P.cracks.reduce((a, b) => (a.at < b.at ? a : b));
+    k.m.material.map = this.crackTex[(Math.random() * this.crackTex.length) | 0]; k.m.material.needsUpdate = true;
+    Object.assign(k, { u, w: (Math.random() - 0.5) * 0.35, size: 0.4 + Math.min(0.5, dmg * 0.025), rot: Math.random() * Math.PI * 2, at });
+  }
+  // Shards of the pane fly off: `n` of them, from (x, y) on it (a chip), or from all over it (null: it shatters)
+  shatter(p, x, y, n, power) {
+    const G = RAM.guard, c = chest(p), [nx, ny] = p.guardDir || [p.facing, 0], cx = c.x + nx * G.reach, cy = c.y + ny * G.reach;
+    const P = this.paneOf(p), q = P.face.quaternion;
+    for (let i = 0; i < n; i++) {
+      const S = this.shards[this.si2]; this.si2 = (this.si2 + 1) % this.shards.length;
+      const u = x === null ? (Math.random() - 0.5) * G.half * 2 : (x - cx) * -ny + (y - cy) * nx + (Math.random() - 0.5) * 0.5;
+      const w = (Math.random() - 0.5) * 0.5, sx = cx - ny * u + nx * w, sy = cy + nx * u + ny * w;
+      toWorld(sx, sy, 0.35, S.m.position); S.m.quaternion.copy(q);
+      const sp = (3 + Math.random() * 6) * power, a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 1.6;
+      planeDir(sx, Math.cos(a) * sp, Math.sin(a) * sp + 2 + Math.random() * 3, S.v); S.v.z += (Math.random() - 0.2) * 3;
+      S.spin.set((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18);
+      S.size = (0.16 + Math.random() * 0.26) * (x === null ? 1.25 : 0.9); S.m.scale.setScalar(S.size);
+      S.life = S.max = 0.55 + Math.random() * 0.5; S.m.visible = true;
+    }
+    if (x === null) { this.fx.sprite(cx, cy, 'glow', BLUE, 2.6, 0.25, 1.6); this.fx.sprite(cx, cy, 'star', WHITE, 2.2, 0.16, 1.5); }
+    else this.fx.sprite(x, y, 'star', WHITE, 1.0, 0.12, 1.4);
+  }
+  updateShards(dt) {
+    for (const S of this.shards) {
+      if (S.life <= 0) { S.m.visible = false; continue; }
+      S.life -= dt; S.v.y -= 14 * dt; S.v.multiplyScalar(Math.pow(0.985, dt * 60));
+      S.m.position.addScaledVector(S.v, dt);
+      this.qs.setFromEuler(this.es.set(S.spin.x * dt, S.spin.y * dt, S.spin.z * dt)); S.m.quaternion.multiply(this.qs);
+      const k = Math.max(0, S.life / S.max);
+      S.m.material.opacity = 0.95 * Math.min(1, k * 1.8); S.m.scale.setScalar(S.size * (0.6 + 0.4 * k));
+    }
+  }
   // Sparks thrown back from a point scraping along the floor, `dir` the way he is moving (streaks, see updateSparks),
   // with a few glowing particles among them that show on dark backgrounds
   sparks(x, y, dir, n, k = 1) {
@@ -457,7 +560,7 @@ export class RamFX {
   warmShow(at) {
     const P = this.paneOf('warm'), out = [P.face, P.crack, P.rim];
     const C = this.craters[0]; C.base.material.map = this.craterTex[0].base; C.glow.material.map = this.craterTex[0].glow;
-    out.push(C.base, C.glow, this.spkMesh);
+    out.push(C.base, C.glow, this.spkMesh, this.shards[0].m);
     for (const m of out) { m.position.copy(at); m.visible = true; }
     return out;
   }
@@ -465,5 +568,6 @@ export class RamFX {
     const P = this.panes.get('warm'); if (P) { P.face.visible = P.crack.visible = P.rim.visible = false; this.panes.delete('warm'); }
     for (const C of this.craters) { C.life = 0; C.base.visible = C.glow.visible = false; }
     this.spkMesh.position.set(0, 0, 0);   // (its instances are placed in world space)
+    for (const S of this.shards) { S.life = 0; S.m.visible = false; }
   }
 }

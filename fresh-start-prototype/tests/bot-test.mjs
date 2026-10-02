@@ -2,9 +2,9 @@
 // Movement Gym, fighting in the Concourse Lock arena, reviving a downed player, and a long run with no errors.
 import { World } from '../game/js/world.js';
 import { createEnemy } from '../game/js/enemies.js';
-import { SETTINGS, ROSTER } from '../game/js/config.js';
+import { SETTINGS, ROSTER, RAM, MARKSMAN } from '../game/js/config.js';
 import { Bots, isBot } from '../game/js/bot.js';
-SETTINGS.novaKit = 'marksman'; SETTINGS.echoKit = 'hunter'; SETTINGS.lockMode = 'auto'; SETTINGS.difficulty = 'normal';
+SETTINGS.novaKit = 'marksman'; SETTINGS.echoKit = 'hunter'; SETTINGS.lockMode = 'auto'; SETTINGS.difficulty = 'normal'; SETTINGS.aiSkill = 'elite';
 
 const BT = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock', 'sub', 'ult'];
 const assert = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
@@ -42,12 +42,12 @@ function game(zone, n = 3, char = 'nova') {
   const lone = new World(); new Bots().sync(lone, 3);
   assert(lone.players.length === 0, 'No AI teammates before a person has joined');
 }
-{ // Following: the player runs and jumps through the Movement Gym; the bots keep up on their own
+{ // Following: the player runs and jumps through the Movement Gym (stopping before the arena); the bots keep up
   const { w, me, run } = game('gym', 3);
   let worst = 0;
-  run(i => ({ mx: 1, held: { jump: (i % 40) < 14 } }), 1500, i => { if (i > 300 && i % 30 === 0) for (const p of w.players) if (isBot(p)) worst = Math.max(worst, Math.abs(p.x - me.x)); });
+  run(i => (me.x < 52 ? { mx: 1, held: { jump: (i % 40) < 14 } } : {}), 1500, i => { if (i > 300 && i % 30 === 0 && me.x < 52) for (const p of w.players) if (isBot(p)) worst = Math.max(worst, Math.abs(p.x - me.x)); });
   const bots = w.players.filter(isBot);
-  assert(me.x > 30 && bots.every(p => Math.abs(p.x - me.x) < 8) && worst < 20,
+  assert(me.x > 50 && bots.every(p => Math.abs(p.x - me.x) < 8) && worst < 18,
     `Through the gym to x ${me.x.toFixed(0)}: the bots end ${bots.map(p => `${p.char} ${(p.x - me.x).toFixed(1)} m`).join(', ')} from the player (worst gap on the way ${worst.toFixed(1)} m)`);
 }
 for (const char of ROSTER) { // Fighting: each character, as a bot, kills enemies next to an idle player
@@ -84,4 +84,54 @@ for (const char of ROSTER) { // Fighting: each character, as a bot, kills enemie
     }
   }
   assert(errs === 0 && nan === 0 && kills > 10, `8000 ticks of bots fighting in the arena and the Skyline Relay: ${errs} errors, ${nan} non-finite, ${kills} kills by bots`);
+}
+
+// ---- The smarter plays (elite skill) ----
+function duo(char, mine = 'nova', x = 20, bx = 18.5) {
+  const w = new World(); w.teleport('gym');
+  const me = w.addPlayer('kbm', mine), bot = w.addPlayer('cpu1', char), bots = new Bots(), pad = person();
+  me.x = x; me.y = 0; bot.x = bx; bot.y = 0; me.mercy = bot.mercy = 99999;
+  const step = (n = 1, o = {}) => { for (let i = 0; i < n; i++) { const cmds = { [me.slot]: pad(o) }; bots.commands(w, cmds); w.step(cmds); w.events.length = 0; } };
+  return { w, me, bot, bots, step };
+}
+{ // Focus fire: the bot takes the player's lock-on target over a nearer enemy
+  const { w, me, bot, bots, step } = duo('echo');
+  const near = createEnemy('swarmer', 21.5, 0, { cd: 9999 }), far = createEnemy('swarmer', 25, 0, { cd: 9999 });
+  near.hp = far.hp = 60; w.enemies.push(near, far); w.setLock(me, far, 'test');
+  step(30);
+  assert(bots.mem.get(bot).target === far, `Focus fire: the bot goes for the player's locked target (${bots.mem.get(bot).target === far ? 'the far one' : 'the near one'})`);
+}
+{ // RAM covers a teammate: shots aimed at the player behind him meet his raised shield
+  const { w, me, bot, step } = duo('ram', 'fix', 18, 19.6);
+  const sn = createEnemy('sniper', 30, 0, { cd: 9999 }); sn.hp = 999; w.enemies.push(sn);
+  let guarded = 0;
+  for (let i = 0; i < 6; i++) {
+    w.spawnProjectile({ team: 'e', owner: sn, x: 27, y: 1.2, vx: -14, vy: 0, ttl: 120, r: 0.2, dmg: 8, kind: 'std' });
+    for (let t = 0; t < 30; t++) { step(1); if (bot.state === 'guard') guarded++; }
+  }
+  assert(guarded > 20 && me.hp > me.maxHp - 16, `RAM raises his shield for the teammate behind him (${guarded} ticks guarding; their health ${me.hp}/${me.maxHp})`);
+}
+{ // Mortar: a bot leaves the landing zone of a shell coming down on it
+  const { w, me, bot, step } = duo('nova', 'echo', 14, 20);
+  const m = createEnemy('mortar', 30, 0, { cd: 9999 }); m.hp = 999; w.enemies.push(m);
+  const T = 1.2, g = 30, vx = (20 - 29.5) / T, vy = (0.2 - 1.35 + 0.5 * g * T * T) / T;
+  w.spawnProjectile({ team: 'e', owner: m, x: 29.5, y: 1.35, vx, vy, gravity: g, r: 0.3, dmg: 0, heavy: true, kind: 'mortar', ttl: 300, blast: { r: 2.2, dmg: 18, poise: 60 } });
+  step(60);
+  assert(Math.abs(bot.x - 20) > 2.4, `A bot clears a mortar shell's landing zone (${Math.abs(bot.x - 20).toFixed(1)} m from where it lands)`);
+}
+{ // Shockwave: a bot hops an enemy shockwave running along the floor at it
+  const { w, me, bot, step } = duo('echo', 'nova', 14, 20);
+  const br = createEnemy('brute', 25, 0, { cd: 9999 }); br.hp = 999; w.enemies.push(br);
+  w.spawnShockwave(br, -1, 20);
+  const hp0 = bot.hp; step(60);
+  assert(bot.hp === hp0, `A bot jumps an enemy shockwave (health ${bot.hp}/${hp0})`);
+}
+{ // Beams: RAM and Nova charge to Level 4 and fire their beams down a line of enemies
+  for (const char of ['ram', 'nova']) {
+    const { w, bot, step } = duo(char, char === 'ram' ? 'fix' : 'echo', 8, 14);
+    for (const x of [22, 24, 26, 28]) w.enemies.push(createEnemy('post', x, 0, { cd: 9999 }));   // (training posts: they stand still)
+    let beamed = false;
+    for (let t = 0; t < 600 && !beamed; t++) { step(1); if (bot.state === 'beam') beamed = true; }
+    assert(beamed, `${char} as a bot fires a Level 4 beam down a line of 4 training posts`);
+  }
 }

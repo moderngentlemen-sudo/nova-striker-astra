@@ -1,4 +1,4 @@
-# Nova Striker: fresh-start prototype (Version 10)
+# Nova Striker: fresh-start prototype (Version 11)
 
 **Scope.** This folder is an isolated, hypothetical fresh-start track. It does not replace, cancel, reset or
 change the existing Nova Striker project or any current work, and it is not a decision to restart the
@@ -47,7 +47,7 @@ browser tab for controllers and rumble, because embedded viewers may block gamep
 | Parry (Echo) · dodge (Nova) · guard (RAM) · Patch Beam (Fix) | Q or L | LT |
 | Suit ability (RAM: Bulwark Wall · Fix: build a gadget) | E, I or middle click | Y |
 | Switch mode (Nova's attachment, Echo's scarf) · Guardian Link (RAM) · pick a gadget (Fix) | R, U or mouse back | RB |
-| Nova's secondary weapon · Provoke (RAM) · pick a power-up (Fix) | T or Y | LB |
+| Nova's secondary weapon · Provoke (RAM) · pick a power-up (Fix) · Echo's snares (Settings: Echo's utility belt on LB) | T or Y | LB |
 | Lock-on (automatic by default: tap to switch, hold to let go) | F, O or mouse forward | R3 |
 | Ultimate (full bar) | V or N | LT + RT together |
 | Swap character · pause · help | 1–4 or Tab · Esc or P · H | D-pad left/right · Start · View |
@@ -55,6 +55,40 @@ browser tab for controllers and rumble, because embedded viewers may block gamep
 Extra gamepads join by pressing any button, up to four players; each new player gets the first character
 nobody is using. H or View shows the full controls in game; B, A, Start or View closes them, and the D-pad
 scrolls.
+
+## What changed in Version 11
+
+- **Smarter AI teammates**, and **Settings: AI teammate skill** (Rookie, Veteran, Elite: how often and how
+  fast they answer attacks, and whether they use the advanced plays). They now focus fire on your lock-on
+  target, peel off enemies winding up on a teammate, finish weak enemies, and pick targets their role suits
+  (Nova and Fix take fliers, snipers and mortars). They stand by role: RAM between the team and the enemy with
+  his shield up for anyone behind him; Echo on the far side of its target; Nova at range, backing off
+  anything that closes in; Fix behind the team near whoever is hurt. They spread out, don't shoot into walls,
+  hop enemy shockwaves and leave mortar landing zones. They use more of each kit: Nova picks her attachment for
+  the target and fires her Level 4 beam down a line of enemies; RAM fires the Breach Beam, puts up the Bulwark
+  Wall against a barrage and lets his Kinetic go; Echo snares chargers and heavies; Fix chooses a Patch Pylon
+  or a Sentry for the fight.
+- **The pause menu works with a controller:** the D-pad or left stick moves to the nearest control in that
+  direction, left/right changes a list or slider, A selects, B resumes, LB jumps to the top and RB to the
+  settings, and held directions repeat. The focused control has a clear ring.
+- **RAM's Breach Beam:** keep holding fire past level 3 and the Breach Cannon charges to Level 4, then lets go a
+  broad, sustained beam of hard light (like Nova's Level 4) that hits everything in a line, shoves it back,
+  erases enemy shots and breaks armour. He braces behind it; a dash or guard cuts it short.
+- **RAM's shield cracks and shatters** like Nova's Aegis: each blocked hit cracks it where it lands, the cracks
+  spread as Integrity drops and heal as it comes back, shards chip off at two thirds and one third, and when it
+  breaks the pane bursts into flying shards. Pushed along the floor (walking behind it, or shoved back by a
+  hit) it grinds out sparks.
+- **Impact frame styles** (Settings: Impact frame style): Sci-fi hologram (the Version 9 look), Comic ink (the
+  original Version 8 look), and five new ones: **Eclipse** (black silhouettes against a blazing corona around
+  a black sun), **Shatter** (the frame breaks into sliding glass shards), **Thunderclap** (an electric
+  negative split by forked lightning, strobing), **Sumi ink** (ink wash on rice paper, flung brush strokes and
+  a red ensō) and **Gravity well** (space swirls into a black hole with a blazing lensing ring). **Impact frame
+  colour** can make any of them take the colour of the player who set it off (or that player's character
+  colour). Impact frames still turn on and off with their own toggle.
+- **Echo's utility belt on LB** (Settings: Echo's utility belt): LB throws a snare, crouch + LB plants one, and
+  a tap of fire becomes a quick unscoped rifle shot. By default the snares stay on a tap of fire.
+- **Fix:** floating words over the action ("BROKEN", "NO ONE TO LINK", "NEED SCRAP" and the rest) were clipped
+  at the sides; each word now gets a texture sized to it.
 
 ## What changed in Version 10
 
@@ -171,7 +205,7 @@ All tuning lives in `config.js`.
 ## Tests
 
 `node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-232 checks, including two random-input soaks (the newer one runs all four characters, swapping them
+242 checks, including two random-input soaks (the newer one runs all four characters, swapping them
 mid-fight). The browser screenshot, smoke and performance runs were done separately and are not included.
 
 ## Known limits

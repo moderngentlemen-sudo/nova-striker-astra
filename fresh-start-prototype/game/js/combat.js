@@ -97,7 +97,7 @@ export function hitEnemy(world, e, hit, source) {
   if (armored) {
     if (hit.armorBreak || ambush) {
       e.armor--; armored = e.armor > 0; dmg *= 0.6;
-      world.emit('armorBreak', { x: cx, y: cy, e, left: e.armor });
+      world.emit('armorBreak', { x: cx, y: cy, e, left: e.armor, owner });
     } else { dmg *= 0.3; poise *= 0.4; world.emit('armorHit', { x: cx, y: cy, e }); }
   }
   if (e.tagged > 0) poise *= 1.25;

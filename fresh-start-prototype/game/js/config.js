@@ -426,6 +426,12 @@ export const RAM = {
     1: { speed: 32, dmg: 5, poise: 50, kb: 10, r: 0.26, ttl: 40, pierce: 1 },
     2: { speed: 34, dmg: 8, poise: 80, kb: 12, r: 0.32, ttl: 44, pierce: 2, armorBreak: true },
     3: { speed: 36, dmg: 12, poise: 110, kb: 15, r: 0.4, ttl: 48, pierce: 3, armorBreak: true, blast: { r: 2.2, dmg: 6, poise: 60 } } },
+  // Breach Beam (Level 4: keep holding fire past level 3 until `at` ticks): like Nova's Level 4, a sustained
+  // beam, but RAM's is a broad battering column of hard light. It lasts `ticks`, follows the aim at `turn`
+  // rad/tick, hits everything in it every `pulse` ticks (breaking armor every `armorEvery`) and shoves it back
+  // `kb` m/s along the beam, erases enemy shots, and he braces behind it (`slow` on the ground, sinking at
+  // `hover` in the air). A dash or guard cuts it short; a hit that staggers him ends it.
+  beam: { at: 170, ticks: 110, pulse: 6, dmg: 3.2, poise: 30, width: 0.55, range: 40, turn: 0.035, slow: 0.15, hover: 0.6, armorEvery: 18, kb: 7 },
   // Ram Charge (dash): a shoulder charge behind the shield. Light enemies in front are scooped up and carried;
   // hitting a wall with them slams them into it (splat). A charged dash (hold dash while standing still) is
   // the Battering Ram: longer and faster, and from level `heavyFrom` it carries heavy enemies too and breaks
@@ -561,6 +567,8 @@ export const DEFAULT_SETTINGS = {
   vbStop: 'hard',       // 'hard' stop or 'keep30' momentum
   vbRefund: true,
   impactFrames: true,   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
+  impactStyle: 'scifi', // the look: scifi, comic (the original), eclipse, shatter, thunder, sumi, warp (fx.js ImpactShader)
+  impactColor: 'style', // its key colour: the look's own ('style'), the player's colour ('player') or the character's ('character')
   camera: 'persp',
   fov: 34,
   aimAssist: true,
@@ -577,11 +585,19 @@ export const DEFAULT_SETTINGS = {
   dashCharge: true,     // hold dash while standing still to charge it (off: dash is always instant)
   haptics: true,        // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
+  echoBelt: 'fire',     // Echo's utility belt (Hunter kit snares): on a tap of fire, or on LB
   aiTeammates: 0,       // computer-controlled players filling the team's empty slots (0-3; see bot.js)
+  aiSkill: 'veteran',   // how sharp they are: rookie, veteran or elite (BOT.skill)
   settingsVersion: 9,
 };
 
 export const SETTINGS = { ...DEFAULT_SETTINGS };
+
+// Impact frame looks (Settings: Impact frame style; drawn by fx.js ImpactShader, in this order) and each one's own
+// key colour (used unless Settings: Impact frame colour picks the player's)
+export const IMPACT_STYLES = ['scifi', 'comic', 'eclipse', 'shatter', 'thunder', 'sumi', 'warp'];
+export const IMPACT_ACCENT = { scifi: '#38c8ff', comic: '#14101a', eclipse: '#ffb347', shatter: '#bfe8ff', thunder: '#8f7bff', sumi: '#c8202c', warp: '#a070ff' };
+
 
 const KEY = 'nova-striker-proto-settings';
 export function loadSettings() {

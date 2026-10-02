@@ -2,7 +2,7 @@
 // rendering, audio and UI. Nothing in here touches the DOM or Three.js.
 import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL } from './config.js';
 import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid } from './level.js';
-import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate } from './player.js';
+import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate, beamSpec } from './player.js';
 import { createEnemy, updateEnemy, ENEMY_TYPES } from './enemies.js';
 import { spawnBoss, BOSS } from './bosses.js';
 import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus, hurtbox } from './combat.js';
@@ -225,7 +225,7 @@ export class World {
   // Every tick: trace the beam to the first wall (a Prism beam bounces once), erase enemy shots it touches,
   // and every `pulse` ticks hit every enemy in it. Attachments add their flavour.
   beamTick(p) {
-    const B = MARKSMAN.beam, b = p.beam, c = chest(p);
+    const B = beamSpec(p), b = p.beam, c = chest(p);
     const segs = []; let sx = c.x + b.dx * 0.6, sy = c.y + b.dy * 0.6, dx = b.dx, dy = b.dy;
     const bounces = b.attach === 'prism' ? B.prism.bounces : 0;
     for (let i = 0; i <= bounces; i++) {
@@ -245,8 +245,8 @@ export class World {
         if (!segs.some(g => segHitsBox(g, hb, B.width))) continue;
         const last = b.armor.get(e.id), ab = last === undefined || b.pulse - last >= B.armorEvery;
         if (ab) b.armor.set(e.id, b.pulse);
-        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign(b.dx) * 3, 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, 'proj');
-        if (res === 'hit' || res === 'kill') awardFocus(this, { owner: p, family: b.family });
+        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign(b.dx) * (B.kb || 3), 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, 'proj');
+        if (p.char === 'nova' && (res === 'hit' || res === 'kill')) awardFocus(this, { owner: p, family: b.family });
       }
     }
     const end = segs[segs.length - 1];

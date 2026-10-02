@@ -256,29 +256,38 @@ export class FX {
   }
   // A slash mark: a long thin glint across a hit, at an angle
   slashMark(x, y, color, len, rot, life = 0.14) { this.sprite(x, y, 'star', color, len * 0.55, life, 1.25, 0.45, 2.6, rot); }
-  // Floating words over a hit ("CRIT"): drawn once per word, normal blending so they read on bright skies
+  // Floating words over a hit ("CRIT"): drawn once per word, normal blending so they read on bright skies. Each
+  // word gets a canvas sized to it (measured, with room for the outline and the italic's lean) and its sprite
+  // keeps that shape, so a long phrase ("NO ONE TO LINK") is as tall as a short one and nothing is clipped.
   popText(x, y, text, color, life = 0.7) {
-    const key = text; this.textTex = this.textTex || {};
-    const tex = this.textTex[key] || (this.textTex[key] = canvasTex(256, (g, s) => {
-      g.font = `italic 900 ${Math.round(s * 0.34)}px "Arial Black", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.lineJoin = 'round'; g.lineWidth = s * 0.05; g.strokeStyle = 'rgba(12,16,26,0.95)'; g.strokeText(text, s / 2, s / 2);
-      g.fillStyle = '#ffffff'; g.fillText(text, s / 2, s / 2);
-    }));
+    this.textTex = this.textTex || {};
+    let T = this.textTex[text];
+    if (!T) {
+      const H = 128, px = 84, font = `italic 900 ${px}px "Arial Black", Arial, sans-serif`;
+      const m = document.createElement('canvas').getContext('2d'); m.font = font;
+      const pad = H * 0.32, W = Math.min(2048, Math.ceil(m.measureText(text).width + pad * 2));
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const g = c.getContext('2d'); g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineJoin = 'round'; g.lineWidth = H * 0.1; g.strokeStyle = 'rgba(12,16,26,0.95)'; g.strokeText(text, W / 2, H * 0.53);
+      g.fillStyle = '#ffffff'; g.fillText(text, W / 2, H * 0.53);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+      T = this.textTex[text] = { tex, aspect: W / H };
+    }
     let it = this.texts.find(q => q.life <= 0);
     if (!it) {
       if (this.texts.length < 8) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false, depthTest: false })); sp.renderOrder = 11; this.scene.add(sp); it = { s: sp, life: 0 }; this.texts.push(it); }
       else it = this.texts.reduce((a, b) => (a.life < b.life ? a : b));
     }
-    it.s.material.map = tex; it.s.material.color.set(color); it.s.material.needsUpdate = true;
-    it.x = x; it.y = y; it.life = it.max = life; it.s.visible = true;
+    it.s.material.map = T.tex; it.s.material.color.set(color); it.s.material.needsUpdate = true;
+    it.x = x; it.y = y; it.life = it.max = life; it.aspect = T.aspect; it.s.visible = true;
   }
   updateTexts(dt) {
     for (const it of this.texts) {
       if (it.life <= 0) { it.s.visible = false; continue; }
       it.life -= dt; const k = 1 - Math.max(0, it.life) / it.max;
       toWorld(it.x, it.y + k * 0.6, 0.6, it.s.position);
-      const pop = k < 0.12 ? 0.6 + 4 * k : 1.08 - 0.08 * Math.min(1, (k - 0.12) * 4);
-      it.s.scale.set(1.6 * pop, 1.6 * pop, 1); it.s.material.opacity = Math.min(1, Math.max(0, it.life) / 0.2);
+      const pop = k < 0.12 ? 0.6 + 4 * k : 1.08 - 0.08 * Math.min(1, (k - 0.12) * 4), h = 0.8 * pop;
+      it.s.scale.set(h * (it.aspect || 1), h, 1); it.s.material.opacity = Math.min(1, Math.max(0, it.life) / 0.2);
     }
   }
   // Particles at a world-space point, drifting upward (embers)
@@ -564,8 +573,10 @@ export class FX {
       case 'beamStart': {
         this.beam.onEvent(ev);
         const p = ev.p, rig = this.rigs.get(p);
-        this.charge.release({ level: 4, attach: ev.attach, perfect: true, ax: p.aimX, ay: p.aimY, beam: true }, p, rig);
-        this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, '#ffd27a', 1.4, 0.2);
+        const ram = p.char === 'ram';
+        this.charge.release({ level: 4, attach: ev.attach, perfect: true, ax: p.aimX, ay: p.aimY, beam: true, cannon: ram }, p, rig);
+        this.fireball(p.x + p.aimX * 0.8, p.y + p.h * 0.62 + p.aimY * 0.8, ram ? '#9fd0ff' : '#ffd27a', ram ? 2.0 : 1.4, 0.2);
+        if (ram) { this.ram.sparks(p.x - p.facing * 0.3, p.y + 0.06, -p.facing, 14, 1.1); this.dust(p.x, p.y, 0.8, [p.facing > 0 ? Math.PI : 0], { reach: 1 }); }   // braced: it shoves him into the floor
         break;
       }
       // Version 9: secondary weapons, the dodge, the Solar Uppercut, and the ultimates
@@ -1326,56 +1337,187 @@ function trailColor(pr) {
   return KIND_TINT[pr.kind] || NOVA_GOLD;
 }
 
-// Impact frame (Q-C test), sci-fi look since Version 9, phased: `invert` is the opening flash, a cyan
-// photonegative white-hot at the impact; then the frame turns to a hologram: deep teal shadows, cyan mids,
-// glowing cyan edges (the brightest, most saturated light keeps its colour), scanlines and a faint hex grid,
-// light streaks radiating from the impact, a shockwave `ring` bending the image as it spreads, `glitch`
-// slices tearing sideways, a `zoom` toward the impact and a radial colour `split`; `amount` blends it all
-// back out. `dim` (with amount 0) drains colour and light from everything but what glows, for an
-// ultimate's call.
+// Impact frames (Q-C test). One pass, seven looks (`style`, Settings: Impact frame style), all phased the same
+// way: `invert` is the opening flash, `amount` blends the look in and back out, `zoom` pulls toward the impact,
+// `split` separates the colours along the radius, `ring` is a shockwave spreading from the hit, `glitch` and
+// `seed` drive each look's noise. `accent` is the look's key colour: its own, or the colour of the player who
+// set it off (Settings: Impact frame colour). `dim` (with amount 0) drains colour and light from everything but
+// what glows, for an ultimate's call.
+//   0 Sci-fi (since Version 9): a cyan photonegative, then a hologram grade with glowing edges, scanlines, a hex
+//     grid, light streaks, the shockwave bending the image and glitch tears
+//   1 Comic (the original, Version 8): a negative flash, then comic ink (halftone mids, solid shadows, paper
+//     lights, saturated brights kept) with ink speed lines focused on the impact
+//   2 Eclipse: the world goes to black silhouettes against a blazing corona of light around a black sun at the
+//     impact, rays through it and white-hot rims on every edge
+//   3 Shatter: the frame breaks like glass into shards that slide apart from the impact, glinting, with bright
+//     cracks between them
+//   4 Thunderclap: an electric negative split by forked lightning from the impact, strobing
+//   5 Sumi ink: brush and ink on rice paper: an ink wash for the shadows, dry-brush strokes flung from the
+//     impact and a red ensō (brush circle) drawn around it
+//   6 Gravity well: space buckles: the frame swirls into the impact, a black hole opens there with a blazing
+//     lensing ring, and starlight streaks in toward it
 export const ImpactShader = {
   uniforms: { tDiffuse: { value: null }, amount: { value: 0 }, res: { value: new THREE.Vector2(1280, 720) }, center: { value: new THREE.Vector2(0.5, 0.5) },
-    invert: { value: 0 }, zoom: { value: 0 }, split: { value: 0 }, seed: { value: 0 }, time: { value: 0 }, ring: { value: -1 }, glitch: { value: 0 }, dim: { value: 0 } },
+    invert: { value: 0 }, zoom: { value: 0 }, split: { value: 0 }, seed: { value: 0 }, time: { value: 0 }, ring: { value: -1 }, glitch: { value: 0 }, dim: { value: 0 },
+    style: { value: 0 }, accent: { value: new THREE.Color('#38c8ff') }, tinted: { value: 0 }, phase: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float amount, invert, zoom, split, seed, time, ring, glitch, dim; uniform vec2 res, center; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float amount, invert, zoom, split, seed, time, ring, glitch, dim, style, tinted, phase; uniform vec2 res, center; uniform vec3 accent; varying vec2 vUv;
     float hash(float n) { return fract(sin(n) * 43758.5453); }
+    float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    vec2 hash22(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
+    float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y); }
     float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
     float hexEdge(vec2 p) {
       vec2 r = vec2(1.0, 1.732), h = r * 0.5, a = mod(p, r) - h, b = mod(p - h, r) - h, g = dot(a, a) < dot(b, b) ? a : b;
       g = abs(g); return smoothstep(0.43, 0.5, max(dot(g, normalize(r)), g.x));
     }
+    vec3 split3(vec2 uv, vec2 off) { return vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b); }
+    float edgeAt(vec2 uv) {
+      vec2 px = 1.5 / res;
+      float e = abs(luma(texture2D(tDiffuse, uv + px * vec2(-1.0, 1.0)).rgb) - luma(texture2D(tDiffuse, uv + px * vec2(1.0, -1.0)).rgb))
+              + abs(luma(texture2D(tDiffuse, uv + px).rgb) - luma(texture2D(tDiffuse, uv - px).rgb));
+      return clamp(e * 3.2, 0.0, 1.0);
+    }
     void main(){
       vec4 src = texture2D(tDiffuse, vUv);
       if (amount <= 0.0 && dim <= 0.0) { gl_FragColor = src; return; }
       vec2 asp = vec2(res.x / res.y, 1.0), d = vUv - center, dir = normalize(d * asp + vec2(1e-5));
-      float r = length(d * asp);
+      float r = length(d * asp), ang = atan(dir.y, dir.x), a = (ang + 3.14159) / 6.28318;
       if (amount <= 0.0) {
         float l0 = luma(src.rgb), keep = smoothstep(0.72, 1.05, max(max(src.r, src.g), src.b));
         vec3 cool = vec3(l0) * vec3(0.46, 0.62, 0.8) * 0.55;
         gl_FragColor = vec4(mix(src.rgb, mix(cool, src.rgb, keep), dim), 1.0); return;
       }
       float wv = ring - r, rm = ring > 0.0 ? exp(-wv * wv * 900.0) : 0.0;
-      vec2 uv = center + d * (1.0 - zoom) - dir / asp * rm * 0.03;
-      float band = floor(vUv.y * 30.0), g = step(0.84, hash(band * 1.31 + floor(time * 24.0) * 3.7 + seed)) * glitch;
-      uv.x += (hash(band * 7.13 + seed + floor(time * 24.0)) - 0.5) * 0.09 * g;
-      vec2 off = dir / asp * (split + g * 0.012);
-      vec3 c = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
-      float l = luma(c);
-      vec2 px = 1.5 / res;
-      float e = abs(luma(texture2D(tDiffuse, uv + px * vec2(-1.0, 1.0)).rgb) - luma(texture2D(tDiffuse, uv + px * vec2(1.0, -1.0)).rgb))
-              + abs(luma(texture2D(tDiffuse, uv + px).rgb) - luma(texture2D(tDiffuse, uv - px).rgb));
-      float edge = clamp(e * 3.2, 0.0, 1.0);
-      vec3 holo = mix(vec3(0.01, 0.035, 0.065), vec3(0.22, 0.8, 1.0), smoothstep(0.04, 0.95, l)) + vec3(0.55, 0.96, 1.0) * edge * 1.5;
-      float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
-      holo = mix(holo, c * 1.3, smoothstep(0.3, 0.6, sat) * smoothstep(0.5, 0.85, l));
-      holo *= 0.86 + 0.14 * sin(vUv.y * res.y * 1.35 - time * 40.0);
-      holo += vec3(0.3, 0.8, 1.0) * hexEdge(vUv * asp * 26.0) * 0.14 * (1.0 - smoothstep(0.15, 0.85, r));
-      float a = (atan(dir.y, dir.x) + 3.14159) / 6.28318, cell = floor(a * 96.0), w = hash(cell * 1.37 + seed), bnd = fract(a * 96.0);
-      holo += vec3(0.6, 0.95, 1.0) * step(0.6, w) * smoothstep(0.12, 0.0, abs(bnd - 0.5)) * smoothstep(0.1 + 0.2 * w, 0.42 + 0.3 * w, r) * 0.6;
-      holo += vec3(0.5, 0.92, 1.0) * rm * 0.75;
-      vec3 neg = (vec3(1.0) - c).bgr * vec3(0.5, 0.92, 1.15);
-      neg = mix(neg, vec3(0.9, 0.99, 1.0), smoothstep(0.24, 0.0, r));
-      gl_FragColor = vec4(mix(c, mix(holo, neg, invert), amount), 1.0);
+      vec3 acc = accent, outc, c, neg;
+      int st = int(style + 0.5);
+
+      if (st == 0) {   // ---- Sci-fi hologram ----
+        vec2 uv = center + d * (1.0 - zoom) - dir / asp * rm * 0.03;
+        float band = floor(vUv.y * 30.0), g = step(0.84, hash(band * 1.31 + floor(time * 24.0) * 3.7 + seed)) * glitch;
+        uv.x += (hash(band * 7.13 + seed + floor(time * 24.0)) - 0.5) * 0.09 * g;
+        c = split3(uv, dir / asp * (split + g * 0.012));
+        float l = luma(c), edge = edgeAt(uv);
+        vec3 mid = acc * vec3(0.6, 0.85, 1.0) + vec3(0.0, 0.05, 0.05), hot = mix(acc, vec3(1.0), 0.55);
+        vec3 holo = mix(acc * 0.04 + vec3(0.005, 0.015, 0.03), mid, smoothstep(0.04, 0.95, l)) + hot * edge * 1.5;
+        float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+        holo = mix(holo, c * 1.3, smoothstep(0.3, 0.6, sat) * smoothstep(0.5, 0.85, l) * (1.0 - tinted * 0.6));
+        holo *= 0.86 + 0.14 * sin(vUv.y * res.y * 1.35 - time * 40.0);
+        holo += hot * 0.6 * hexEdge(vUv * asp * 26.0) * 0.24 * (1.0 - smoothstep(0.15, 0.85, r));
+        float cell = floor(a * 96.0), w = hash(cell * 1.37 + seed), bnd = fract(a * 96.0);
+        holo += hot * step(0.6, w) * smoothstep(0.12, 0.0, abs(bnd - 0.5)) * smoothstep(0.1 + 0.2 * w, 0.42 + 0.3 * w, r) * 0.6;
+        holo += hot * rm * 0.75;
+        neg = (vec3(1.0) - c).bgr * mix(vec3(0.5, 0.92, 1.15), acc * 1.2 + 0.2, tinted);
+        neg = mix(neg, mix(vec3(0.9, 0.99, 1.0), hot, tinted), smoothstep(0.24, 0.0, r));
+        outc = mix(holo, neg, invert);
+      } else if (st == 1) {   // ---- Comic ink (Version 8) ----
+        vec2 uv = center + d * (1.0 - zoom);
+        c = split3(uv, dir / asp * split);
+        float l = luma(c);
+        vec2 px = vUv * res / 5.0; float dots = length(fract(px) - 0.5);
+        float ink = l < 0.28 ? 0.0 : (l < 0.55 ? step(0.32, dots) : 1.0);
+        vec3 paper = vec3(1.0, 0.97, 0.9), inkc = vec3(0.06, 0.05, 0.08);
+        vec3 dotc = mix(inkc, acc * 0.85, tinted);
+        vec3 comic = l < 0.28 ? inkc : (l < 0.55 ? mix(dotc, paper, step(0.32, dots)) : paper);
+        float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+        comic = mix(comic, c * 1.2, smoothstep(0.35, 0.6, sat) * step(0.5, l));
+        float n = 110.0, cell = floor(a * n), w = hash(cell * 1.37 + seed), band = fract(a * n);
+        float line = step(0.5, w) * step(abs(band - 0.5), 0.05 + 0.15 * hash(cell + seed * 3.1)) * smoothstep(0.16 + 0.22 * w, 0.42 + 0.3 * w, r);
+        comic = mix(comic, mix(inkc, acc * 0.7, tinted), line);
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0, 0.98, 0.92), mix(vec3(1.0), acc, 0.5), tinted), smoothstep(0.22, 0.0, r));
+        outc = mix(comic, neg, invert);
+      } else if (st == 2) {   // ---- Eclipse ----
+        vec2 uv = center + d * (1.0 - zoom * 1.4);
+        c = split3(uv, dir / asp * split * 0.6);
+        float l = luma(c), edge = edgeAt(uv);
+        float rays = pow(abs(sin(ang * 9.0 + seed)), 18.0) * 0.6 + pow(abs(sin(ang * 23.0 - seed * 2.0)), 40.0) * 0.5;
+        vec3 hot = mix(acc, vec3(1.0, 0.98, 0.9), 0.5);
+        vec3 corona = hot * (0.35 / (r * 3.0 + 0.15)) + acc * rays * smoothstep(0.9, 0.05, r) * 1.4 + acc * 0.35 * smoothstep(1.2, 0.0, r);
+        float sil = smoothstep(0.62, 0.38, l);           // everything but the brightest goes to silhouette
+        vec3 ecl = mix(corona, vec3(0.01, 0.005, 0.015), sil) + vec3(1.0, 0.97, 0.9) * edge * 1.3 * (0.6 + 0.4 * sil);
+        float sunR = 0.055 + 0.02 * (1.0 - phase);
+        ecl = mix(ecl, vec3(0.0), smoothstep(sunR, sunR - 0.006, r));                     // the black sun
+        ecl += mix(vec3(1.0), acc, 0.3) * exp(-pow((r - sunR) * 90.0, 2.0)) * 2.5;       // its burning rim
+        ecl += hot * rm * 0.9;
+        neg = mix(vec3(1.0) - vec3(l), vec3(1.0, 0.96, 0.85), smoothstep(0.35, 0.0, r));
+        outc = mix(ecl, neg, invert);
+      } else if (st == 3) {   // ---- Shatter ----
+        vec2 p = (vUv - center) * asp * 7.0;
+        vec2 ip = floor(p), fp = fract(p); float md = 8.0, md2 = 8.0; vec2 id = vec2(0.0), mo = vec2(0.0);
+        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+          vec2 g = vec2(float(i), float(j)), o = hash22(ip + g + seed), rr = g + o - fp; float dd = dot(rr, rr);
+          if (dd < md) { md2 = md; md = dd; id = ip + g; mo = rr; } else if (dd < md2) md2 = dd;
+        }
+        float crack = 1.0 - smoothstep(0.0, 0.06, sqrt(md2) - sqrt(md));
+        vec2 sc = (id + 0.5) / 7.0 / asp, sdir = normalize(sc * asp + vec2(1e-4));
+        float h = hash2(id + seed * 1.7), push = (0.012 + 0.03 * h) * (1.0 - phase * 0.7) * smoothstep(0.0, 0.25, length(sc * asp));
+        vec2 uv = center + d * (1.0 - zoom) + sdir / asp * push + (hash22(id) - 0.5) * 0.01;
+        c = split3(uv, sdir / asp * (split + 0.004 * h));
+        float l = luma(c);
+        vec3 glass = c * (0.75 + 0.5 * h) + mix(vec3(0.85, 0.95, 1.0), acc, 0.6) * step(0.82, h) * smoothstep(0.4, 1.0, sin(dot(vUv, vec2(30.0, 18.0)) + h * 9.0)) * 0.35;
+        glass = mix(glass * vec3(0.85, 0.92, 1.05), glass, 0.5) + mix(vec3(1.0), acc, 0.5) * crack * (1.4 - r);
+        glass += mix(vec3(1.0), acc, 0.4) * rm * 0.6;
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0), acc, 0.4), smoothstep(0.25, 0.0, r));
+        outc = mix(glass, neg, invert);
+      } else if (st == 4) {   // ---- Thunderclap ----
+        float flick = 0.65 + 0.35 * step(0.45, hash(floor(time * 28.0) + seed));
+        vec2 uv = center + d * (1.0 - zoom) + vec2(hash(floor(time * 30.0)) - 0.5, hash(floor(time * 30.0) + 7.0) - 0.5) * 0.006 * glitch;
+        c = split3(uv, dir / asp * split * 1.4);
+        float l = luma(c), edge = edgeAt(uv);
+        vec3 elec = mix(vec3(0.02, 0.0, 0.06), acc * 0.55, smoothstep(0.2, 0.9, 1.0 - l)) + mix(acc, vec3(1.0), 0.6) * edge * 1.2;
+        float bolt = 0.0;
+        for (int i = 0; i < 7; i++) {
+          float fi = float(i), a0 = hash(fi * 3.7 + seed) * 6.28318;
+          float wob = (noise(vec2(r * 14.0, fi * 5.0 + seed)) - 0.5) * 0.7 + (noise(vec2(r * 45.0, fi * 9.0 + seed)) - 0.5) * 0.25;
+          float da = abs(mod(ang - a0 - wob + 3.14159, 6.28318) - 3.14159) * r;
+          float len = 0.35 + 0.6 * hash(fi + seed * 2.0);
+          bolt += (0.0025 / (da + 0.0025)) * smoothstep(len, len * 0.6, r) * step(0.02, r);
+        }
+        bolt = min(bolt, 3.0);
+        elec += mix(acc, vec3(1.0), 0.65) * bolt * flick + acc * 0.4 * smoothstep(0.5, 0.0, r) * flick;
+        elec += mix(vec3(1.0), acc, 0.4) * rm;
+        neg = mix(vec3(1.0) - c, vec3(0.92, 0.94, 1.0), smoothstep(0.3, 0.0, r));
+        outc = mix(elec * flick + elec * (1.0 - flick) * 0.5, neg, invert);
+      } else if (st == 5) {   // ---- Sumi ink ----
+        vec2 uv = center + d * (1.0 - zoom * 0.8);
+        uv += (vec2(noise(vUv * 40.0 + seed), noise(vUv * 40.0 - seed)) - 0.5) * 0.004;   // the ink bleeds a little
+        c = split3(uv, vec2(0.0));
+        float l = luma(c), edge = edgeAt(uv);
+        float grain = noise(vUv * vec2(600.0, 90.0)) * 0.06 + noise(vUv * 180.0) * 0.05;
+        vec3 paper = vec3(0.95, 0.92, 0.84) - grain;
+        float wash = smoothstep(0.62, 0.12, l + (noise(vUv * 12.0 + seed) - 0.5) * 0.18);
+        vec3 inkc = vec3(0.05, 0.045, 0.06);
+        vec3 sumi = mix(paper, mix(vec3(0.42, 0.4, 0.4), inkc, smoothstep(0.35, 0.9, wash)), wash);
+        sumi = mix(sumi, inkc, smoothstep(0.25, 0.7, edge));
+        float cell = floor(a * 46.0), w = hash(cell * 2.1 + seed), bnd = fract(a * 46.0);
+        float dry = step(0.35, noise(vec2(r * 60.0, cell * 3.0)));
+        float stroke = step(0.62, w) * step(abs(bnd - 0.5), 0.08 + 0.3 * hash(cell + seed)) * smoothstep(0.2 + 0.2 * w, 0.32 + 0.2 * w, r) * smoothstep(1.1, 0.7, r) * dry;
+        sumi = mix(sumi, inkc, stroke);
+        float er = 0.17 + 0.05 * phase, th = 0.012 + 0.018 * (0.5 + 0.5 * sin(ang * 1.3 + seed)) * smoothstep(-2.6, 2.4, ang);
+        float enso = smoothstep(th, th * 0.4, abs(r - er)) * step(0.4, noise(vec2(ang * 12.0, r * 80.0)) + 0.35);
+        sumi = mix(sumi, mix(vec3(0.78, 0.08, 0.1), acc, tinted), enso * 0.9);
+        neg = mix(vec3(1.0) - vec3(l), paper, smoothstep(0.3, 0.0, r));
+        outc = mix(sumi, neg, invert);
+      } else {   // ---- Gravity well ----
+        float pull = (1.0 - phase) * 2.6 * exp(-r * 3.0);
+        float sa = ang + pull, sr = r * (1.0 - 0.25 * exp(-r * 6.0) * (1.0 - phase));
+        vec2 uv = center + vec2(cos(sa), sin(sa)) * sr / asp * (1.0 - zoom);
+        c = split3(uv, dir / asp * split * 1.8);
+        float l = luma(c);
+        vec3 space = c * vec3(0.55, 0.5, 0.75) * smoothstep(0.0, 0.35, r) + acc * 0.08;
+        vec2 sg = floor(vUv * res / 3.0); float star = step(0.996, hash2(sg + seed));
+        float streak = pow(abs(sin(sa * 40.0 + seed)), 60.0) * smoothstep(0.15, 0.7, r) * 0.6;
+        space += vec3(0.9, 0.9, 1.0) * star * smoothstep(0.1, 0.5, r) + mix(acc, vec3(1.0), 0.5) * streak;
+        float hr = 0.06 + 0.03 * phase;
+        space = mix(space, vec3(0.0), smoothstep(hr, hr - 0.01, r));                               // the black hole
+        space += mix(acc, vec3(1.0, 0.95, 0.85), 0.45) * exp(-pow((r - hr * 1.55) * 55.0, 2.0)) * 2.4; // its lensing ring
+        space += acc * exp(-pow((r - hr * 1.55) * 16.0, 2.0)) * 0.6;
+        space += mix(acc, vec3(1.0), 0.5) * rm * 0.8;
+        neg = mix(vec3(1.0) - c, mix(vec3(1.0), acc, 0.35), smoothstep(0.28, 0.0, r));
+        outc = mix(space, neg, invert);
+      }
+      gl_FragColor = vec4(mix(c, outc, amount), 1.0);
     }`,
 };

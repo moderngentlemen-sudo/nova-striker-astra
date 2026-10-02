@@ -99,6 +99,7 @@ let acc = 0, last = performance.now(), fps = 60, fpsT = 0, fpsN = 0;
 function frame(now) {
   const dt = Math.min(0.1, Math.max(0, (now - last) / 1000)); last = now;
   fpsT += dt; fpsN++; if (fpsT >= 0.5) { fps = fpsN / fpsT; fpsT = 0; fpsN = 0; }
+  input.menuOpen = paused || ui.helpOpen;
   input.pollPadMenus();
   handleMenuEvents();
   tryJoin();
