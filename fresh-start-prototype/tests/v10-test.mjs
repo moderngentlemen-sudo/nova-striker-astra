@@ -129,6 +129,28 @@ const GUARD = { held: { parry: true }, aim: [1, 0] };
   const carried = br2.state === 'plowed' && count(t.log, 'plowCatch') === 1 && t.p.rush && t.p.rush.level === 2;
   assert(bonk && carried, `Ordinary charge bonks off the Brute; a level 2 Battering Ram carries it (${br2.state})`);
 }
+{ // RAM, the tank, has the most health on the team
+  const most = ROSTER.filter(c => c !== 'ram').every(c => CHARS.ram.hp > CHARS[c].hp);
+  assert(most, `RAM has the most health (${CHARS.ram.hp}; ${ROSTER.filter(c => c !== 'ram').map(c => `${c} ${CHARS[c].hp}`).join(', ')})`);
+}
+{ // Knockback: RAM's close-range hits throw a light enemy much further than the same hit from anyone else; a
+  // finisher sends it flying. Bosses and armor still don't budge.
+  const thrown = ramKnock => {
+    const { w, p, run } = setup(100, ['ram']);
+    const sw = enemy(w, 'swarmer', 101.5, 0); sw.hp = 60; sw.cd = 9999;
+    const x0 = sw.x; let flew = false, far = 0;
+    w.spawnHitbox({ owner: p, team: 'p', x0: 100.5, x1: 102.5, y0: 0, y1: 2, dmg: 1, poise: 1, kb: [MOVES.ram_b3.kb[0], MOVES.ram_b3.kb[1]], instance: w.newInstance(), ramKnock });
+    run({}, 60, () => { if (sw.state === 'launched') flew = true; far = Math.max(far, sw.x - x0); });   // (before it walks back)
+    return { d: far, flew };
+  };
+  const plain = thrown(false), ram = thrown(true);
+  const { w, p, run } = setup(100, ['ram']);
+  const br = enemy(w, 'brute', 101.8, 0); br.cd = 9999; const bx = br.x;
+  w.spawnHitbox({ owner: p, team: 'p', x0: 100.5, x1: 103, y0: 0, y1: 2.5, dmg: 1, poise: 1, kb: [14, 4], instance: w.newInstance(), ramKnock: true });
+  run({}, 30);
+  assert(ram.flew && ram.d > plain.d * 2 && ram.d > 4 && Math.abs(br.x - bx) < 0.5,
+    `RAM's Piston Punch throws a Swarmer ${ram.d.toFixed(1)} m (flying) against ${plain.d.toFixed(1)} m without his knockback; an armored Brute holds (${(br.x - bx).toFixed(2)} m)`);
+}
 { // Stalwart: ordinary hits don't knock RAM about (he keeps doing what he was doing); heavy ones do
   const { w, p, run } = setup(100, ['ram']);
   const sw = still(enemy(w, 'swarmer', 101.3, 0)); sw.facing = -1;
@@ -289,7 +311,7 @@ const GUARD = { held: { parry: true }, aim: [1, 0] };
 { // With no one to toss to, it drops at her feet, and she can pick it up herself
   const { w, p, run, log } = setup(100, ['fix']);
   p.scrap = 100; tap(run, 'melee'); run({}, 45);
-  const dropped = w.pickups.length === 1 && w.pickups[0].rest;
+  const mine = w.pickups.filter(k => !k.level), dropped = mine.length === 1 && mine[0].rest;   // (not the level's own power-ups)
   run({ mx: 1 }, 6); run({ mx: -1 }, 20);
   assert(dropped && count(log, 'powerUp', e => e.p === p) === 1 && p.overclockT > 0, `Alone, the power-up drops at her feet and she picks it up (Overclock)`);
 }

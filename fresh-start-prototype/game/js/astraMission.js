@@ -1,5 +1,5 @@
 // Authored mission progression and interaction rules. Pure simulation data: no DOM or renderer.
-import { GATES, rayBoxT, segmentBlocked, setMissionGeometry } from './level.js';
+import { BOXES, ROUTES, GATES, rayBoxT, segmentBlocked, setMissionGeometry } from './level.js';
 import { DT } from './config.js';
 import { hitEnemy } from './combat.js';
 
@@ -12,7 +12,7 @@ const OBJECTS = [
   { id: 'spire-anchor', type: 'anchor', x: 135, y: 15, w: 0.6, h: 0.6, state: 'ready', label: 'Scarf anchor', kind: 'anchor', optional: true },
   { id: 'spire-high-launch', type: 'launch', x: 140.5, y: 13.8, w: 1.6, h: 0.2, state: 'ready', label: 'Skyline launch pad', vx: 8, vy: 21, optional: true },
   { id: 'yard-power', type: 'power', x: 235, y: 12.6, w: 0.9, h: 1.8, state: 'idle', label: 'Power fixture', charge: 0, maxCharge: 3, optional: true },
-  { id: 'relay-west', type: 'relay', x: 271.5, y: 18.6, w: 1.15, h: 1.7, state: 'offline', label: 'West relay control', charge: 0, maxCharge: 1 },
+  { id: 'relay-west', type: 'relay', x: 270.9, y: 18.6, w: 1.15, h: 1.7, state: 'offline', label: 'West relay control', charge: 0, maxCharge: 1 },
   { id: 'relay-east', type: 'relay', x: 290, y: 18.6, w: 1.15, h: 1.7, state: 'offline', label: 'East relay control', charge: 0, maxCharge: 1 },
   { id: 'city-beacon', type: 'relay', x: 306.5, y: 18.6, w: 1.6, h: 2.4, state: 'locked', label: 'Restore the Skyline Relay', charge: 0, maxCharge: 1 },
 ];
@@ -31,22 +31,31 @@ const freshStats = () => ({ elapsedTicks: 0, elapsedSeconds: 0, score: 0, kills:
   deaths: 0, retries: 0, revives: 0, blocks: 0, healing: 0, interactions: 0, optionalRoutes: 0, perPlayer: {} });
 const snapshot = world => world.interactables.map(o => ({ id: o.id, state: o.state === 'connecting' ? 'offline' : o.state,
   hp: o.hp, charge: o.state === 'connecting' ? 0 : o.charge, discovered: !!o.discovered }));
+const environmentSnapshot = world => ({
+  boxes: BOXES.filter(b => b.type === 'd').map(b => ({ id: b.id, hp: b.hp, broken: b.broken })),
+  pickups: world.pickups.filter(k => k.level && !k.dead).map(k => ({ kind: k.kind, x: k.x, y: k.y, vx: k.vx, vy: k.vy, rest: k.rest, life: k.life, t: k.t })),
+});
+const tracked = m => m && (m.mode === 'mission' || m.mode === 'route');
+const score = m => Math.max(0, Math.round(m.stats.kills * 100 + m.stats.optionalRoutes * 250 + m.securedInteractions.length * 25 + m.stats.revives * 200 + m.stats.blocks * 10 + m.stats.healing * 2 - m.stats.retries * 100));
 const alive = p => p && p.state !== 'downed' && p.state !== 'dead';
 const box = o => ({ x0: o.x - o.w / 2, x1: o.x + o.w / 2, y0: o.y, y1: o.y + o.h });
 const overlaps = (a, b) => a.x0 <= b.x1 && a.x1 >= b.x0 && a.y0 <= b.y1 && a.y1 >= b.y0;
 const near = (p, o, r = 2.7) => Math.hypot(p.x - o.x, p.y + p.h * 0.5 - (o.y + o.h * 0.5)) <= r;
 
-export function initializeMission(world, mode = 'training') {
+export function initializeMission(world, mode = 'training', routeId = 'skyport') {
   setMissionGeometry(mode === 'mission');
   world.interactables = mode === 'mission' ? OBJECTS.map(o => ({ charge: 0, maxCharge: 1, active: false, ...o })) : [];
   world._interactionHits = new Map();
-  world.mission = { mode, title: mode === 'mission' ? 'Restore the Skyline Relay' : 'Movement & Combat Training',
+  const route = ROUTES.find(r => r.id === routeId) || ROUTES[0];
+  world.mission = { mode, routeId: route.id, title: mode === 'route' ? route.name : mode === 'mission' ? 'Restore the Skyline Relay' : 'Movement & Combat Training',
     objective: mode === 'mission' ? STAGES[0][1] : 'Practice any hero at your own pace',
     hint: mode === 'mission' ? STAGES[0][2] : 'Use the controls guide to practice moves and character combinations.',
     stage: mode === 'mission' ? 'arrival' : 'training', stageIndex: 0, completed: false, startedTick: world.tick,
     maxX: 0, stats: freshStats(), discoveries: [], securedInteractions: [], onboarding: { move: false, jump: false, dash: false, attack: false, defend: false, interact: false },
     restoration: { concourse: false, spire: false, relay: false, city: false }, nearby: null, checkpointState: [] };
   world.mission.checkpointState = snapshot(world);
+  world.mission.environmentCheckpoint = environmentSnapshot(world);
+  if (mode === 'route') updateRoute(world);
 }
 
 function playerStats(world, p) {
@@ -55,7 +64,7 @@ function playerStats(world, p) {
 }
 export function recordMissionEvent(world, type, ev) {
   const m = world.mission;
-  if (!m || m.mode !== 'mission' || m.completed) return;
+  if (!tracked(m) || m.completed) return;
   const s = m.stats, ps = playerStats(world, ev.p || ev.owner || ev.by);
   if (type === 'hit' && ev.owner?.kind === 'player') { s.damageDealt += ev.dmg || 0; if (ps) ps.damageDealt += ev.dmg || 0; m.onboarding.attack = true; }
   if (type === 'kill' && ev.e?.type !== 'post' && ev.e?.type !== 'turret') { s.kills++; if (ps) ps.kills++; }
@@ -67,18 +76,32 @@ export function recordMissionEvent(world, type, ev) {
   if (['dash', 'rushStart', 'slide'].includes(type)) m.onboarding.dash = true;
   if (type === 'checkpoint') {
     m.checkpointState = snapshot(world);
+    m.environmentCheckpoint = environmentSnapshot(world);
     for (const p of world.players) if (alive(p)) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.35);
   }
   if (type === 'snipe') hitMissionSegment(world, ev.p, ev.x0, ev.y0, ev.x1, ev.y1, ev.full ? 5 : 2, ev.full, `snipe:${world.newInstance()}`);
 }
 export function recordMissionHealing(world, p, amount) {
-  if (world.mission?.mode !== 'mission' || world.mission.completed || amount <= 0) return;
+  if (!tracked(world.mission) || world.mission.completed || amount <= 0) return;
   world.mission.stats.healing += amount;
   const ps = playerStats(world, p); if (ps) ps.healing += amount;
 }
 export function restoreMissionCheckpoint(world) {
-  const m = world.mission; if (m?.mode !== 'mission' || m.completed) return;
+  const m = world.mission; if (!tracked(m) || m.completed) return;
   m.stats.retries++;
+  // Restore the committed environment, including loot still present at the checkpoint.
+  // A consumed pickup stays consumed; a crate broken after the checkpoint becomes intact again.
+  if (m.environmentCheckpoint) {
+    for (const saved of m.environmentCheckpoint.boxes) {
+      const b = BOXES.find(b => b.type === 'd' && b.id === saved.id);
+      if (b) { b.hp = saved.hp; b.broken = saved.broken; b.hitT = -1e9; }
+    }
+    world.pickups = world.pickups.filter(k => !k.level);
+    for (const saved of m.environmentCheckpoint.pickups) {
+      const k = world.addLevelPickup(saved.x, saved.y, saved.kind, saved.rest, saved.vy);
+      Object.assign(k, saved);
+    }
+  }
   for (const o of world.interactables) {
     const saved = m.checkpointState.find(s => s.id === o.id);
     if (saved) Object.assign(o, saved);
@@ -88,7 +111,7 @@ export function restoreMissionCheckpoint(world) {
   }
   world._interactionHits.clear();
   for (const p of world.players) { p.missionPadCd = 0; p.missionPrompt = ''; }
-  syncRestoration(world);
+  if (m.mode === 'mission') syncRestoration(world);
 }
 
 function discover(world, o) {
@@ -197,7 +220,8 @@ function syncRestoration(world) {
 export function relayControlsRestored(world) { return !!world.mission?.restoration.relay; }
 
 export function updateMission(world, cmds = {}, beforePhysics = false) {
-  const m = world.mission; if (m?.mode !== 'mission' || m.completed) return;
+  const m = world.mission; if (!tracked(m) || m.completed) return;
+  if (m.mode === 'route') { if (!beforePhysics) updateRoute(world); return; }
   if (beforePhysics) {
     for (const pr of world.projectiles) {
       if (pr.team !== 'p' || pr.dead || pr.stuck || !(pr.dmg > 0)) continue;
@@ -242,12 +266,29 @@ export function updateMission(world, cmds = {}, beforePhysics = false) {
   if (stage === 1 && m.maxX < 43) m.hint = 'Use the launch pad to reach the upper walk. Crouch under low passages; jump again in the air or against a wall to climb.';
   const p = world.players[0], nearby = p && world.interactables.find(o => !['open', 'restored', 'disabled', 'locked', 'cooldown'].includes(o.state) && near(p, o) && (o.type !== 'anchor' || p.char === 'echo'));
   m.nearby = nearby ? { id: nearby.id, label: nearby.label, type: nearby.type, charge: nearby.charge, state: nearby.state } : null;
-  m.stats.score = Math.max(0, Math.round(m.stats.kills * 100 + m.stats.optionalRoutes * 250 + m.securedInteractions.length * 25 + m.stats.revives * 200 + m.stats.blocks * 10 + m.stats.healing * 2 - m.stats.retries * 100));
+  m.stats.score = score(m);
+}
+function updateRoute(world) {
+  const m = world.mission, route = ROUTES.find(r => r.id === m.routeId);
+  const encounters = world.encounters.filter(s => s.def.route === route.id);
+  const cleared = encounters.filter(s => s.state === 'cleared').length;
+  const active = encounters.find(s => s.state === 'active'), next = encounters.find(s => s.state !== 'cleared');
+  m.stats.elapsedTicks = world.tick - m.startedTick; m.stats.elapsedSeconds = Math.floor(m.stats.elapsedTicks / 60);
+  m.stats.score = score(m); m.stageIndex = cleared;
+  m.stage = active ? 'combat' : next ? 'advance' : 'exit';
+  m.objective = active ? `Clear ${active.def.banner[0]}` : next ? `Reach ${next.def.banner[0]}` : `Reach the end of ${route.name}`;
+  m.hint = `${cleared} / ${encounters.length} encounters cleared. ${route.id === 'foundry' ? 'Use the lift pads to climb the reactor. Heavy hits break pillars and barricades.' : 'Follow the descent into the transit line. Break crates for supplies and use cover in the final plaza.'}`;
+  m.nearby = null;
+  if (!world.routesDone[route.id]) return;
+  m.completed = true; m.stage = 'complete'; m.stageIndex = encounters.length; m.completedTick = world.tick;
+  m.objective = `${route.name} cleared`; m.hint = 'Replay with another hero or try a different route.';
+  m.stats.score += 1500;
+  world.emit('missionComplete', { mission: m, stats: { ...m.stats }, x: route.endX, y: world.players[0]?.y || 0 });
 }
 function completeMission(world) {
   const m = world.mission; if (m.completed) return;
   m.completed = true; m.stageIndex = 8; m.stage = 'complete'; m.objective = STAGES[8][1]; m.hint = STAGES[8][2];
-  m.restoration.city = true; world.routeDone = true; m.completedTick = world.tick; m.stats.score += 1500;
+  m.restoration.city = true; world.routeDone = true; world.routesDone.skyport = true; m.completedTick = world.tick; m.stats.score = score(m) + 1500;
   world.emit('missionComplete', { mission: m, stats: { ...m.stats }, x: 306.5, y: 21 });
   world.emit('banner', { text: 'Skyline relay restored', sub: 'Transit online. The city is moving again.' });
 }

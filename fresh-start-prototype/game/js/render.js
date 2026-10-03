@@ -7,8 +7,9 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BOXES, GATES, pathFrame, ARC_START, ARC_END, ARC_R, TOWER_CENTER } from './level.js';
-import { SETTINGS, PLAYER_COLORS, CHARS } from './config.js';
+import { BOXES, GATES, pathFrame, ARC_R, TOWER_CENTER, curvedSpan, routeAt } from './level.js';
+import { buildLandmarks, Breakables, ATMOS } from './landmarks.js';
+import { SETTINGS, PLAYER_COLORS, CHARS, IMPACT_STYLES, IMPACT_ACCENT } from './config.js';
 import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
@@ -41,7 +42,7 @@ export class View {
     this.trauma = 0; this.time = 0; this.bloomKick = 0; this.punch = 0; this.impact = null; this.impactCd = 0; this.hitPause = 0;
     this.rigs = new Map(); this.enemyRigs = new Map();
 
-    const hemi = new THREE.HemisphereLight(0xb9dcf8, 0x34466b, 0.72); this.scene.add(hemi);
+    const hemi = new THREE.HemisphereLight(0xb9dcf8, 0x34466b, 0.72); this.scene.add(hemi); this.hemi = hemi;
     this.sun = new THREE.DirectionalLight(0xffe0b5, 1.7);
     this.sun.position.set(-18, 30, 22); this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
@@ -52,7 +53,9 @@ export class View {
 
     this.fx = new FX(this.scene, this.rigs);
     this.baked = new Map();
-    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps(); this.astra = new AstraVisuals(this); this.flushBaked();
+    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps();
+    buildLandmarks(this); this.astra = new AstraVisuals(this); this.flushBaked();
+    this.breakables = new Breakables(this.scene, this.fx);
 
     this.composer = new EffectComposer(this.r);
     this.renderPass = new RenderPass(this.scene, this.camera);
@@ -176,7 +179,8 @@ export class View {
     for (const b of BOXES) {
       const depth = depthFor(b), h = b.y1 - b.y0;
       const segs = [];
-      const curved = b.x1 > ARC_START && b.x0 < ARC_END;
+      if (b.type === 'd') continue;   // (breakable pieces have their own meshes: landmarks.js Breakables)
+      const curved = curvedSpan(b.x0, b.x1);
       if (!curved) segs.push([b.x0, b.x1]);
       else { const n = Math.ceil((b.x1 - b.x0) / 0.9); for (let i = 0; i < n; i++) segs.push([b.x0 + (b.x1 - b.x0) * i / n, b.x0 + (b.x1 - b.x0) * (i + 1) / n]); }
       for (const [x0, x1] of segs) {
@@ -315,6 +319,8 @@ export class View {
       if (U.phase === 'cast') { T = { x: mx, y: my + 0.4, dist: Math.max(8.5, T.dist * (SETTINGS.reducedEffects ? 0.95 : 0.78)) }; rate = 9; }
       else if (U.phase === 'run') T = { x: T.x * 0.7 + mx * 0.3, y: T.y * 0.7 + my * 0.3, dist: T.dist * 1.04 };
     }
+    // Routes are separate world locations; interpolating sim x between them would fly through unrelated levels.
+    if (routeAt(T.x).id !== routeAt(this.cam.x).id) Object.assign(this.cam, {x:T.x, y:T.y, dist:T.dist});
     const k = 1 - Math.exp(-dt * rate);
     // Vertical follow speeds up the further behind it falls, so a big launch never leaves the frame
     const ky = 1 - Math.exp(-dt * (rate + Math.max(0, Math.abs(T.y - this.cam.y) - 1.2) * 5));
@@ -323,6 +329,13 @@ export class View {
     if (world.players.some(p => p.state === 'beam' && p.beam)) this.trauma = Math.max(this.trauma, 0.22);   // the beam shakes the frame the whole time
     if (world.players.some(p => p.state === 'ult' && p.ultRun && p.ultRun.segs)) this.trauma = Math.max(this.trauma, 0.4);   // and Supernova far more
     this.punch *= Math.exp(-dt * 10); this.bloomKick = Math.max(0, this.bloomKick - dt * 3.2);
+    // Each route has its own light (landmarks.js ATMOS): it blends in as the camera arrives
+    const A = ATMOS[routeAt(this.cam.x).id] || ATMOS.skyport, ka = 1 - Math.exp(-dt * 2.5);
+    this.tmpC = this.tmpC || new THREE.Color();
+    const lerpC = (c, hex) => c.lerp(this.tmpC.set(hex), ka);
+    lerpC(this.scene.fog.color, A.fog); this.scene.fog.near += (A.near - this.scene.fog.near) * ka; this.scene.fog.far += (A.far - this.scene.fog.far) * ka;
+    const SU = this.sky.material.uniforms; lerpC(SU.top.value, A.top); lerpC(SU.mid.value, A.mid); lerpC(SU.bot.value, A.bot);
+    lerpC(this.sun.color, A.sun); lerpC(this.hemi.color, A.hemi);
     const f = pathFrame(this.cam.x);
     const look = new THREE.Vector3(f.px, this.cam.y, f.pz);
     const ortho = SETTINGS.camera === 'ortho';
@@ -337,6 +350,8 @@ export class View {
       this.camera.position.x += (Math.random() - 0.5) * s; this.camera.position.y += (Math.random() - 0.5) * s;
     }
     this.camera.lookAt(look);
+    // Keep the sky within the far plane even at the distant Foundry/Undercity endpoints.
+    this.sky.position.copy(this.camera.position);
     if (ortho) {
       const halfH = d * Math.tan(SETTINGS.fov * Math.PI / 360), halfW = halfH * (this.w / this.h || 16 / 9);
       Object.assign(this.ortho, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });
@@ -349,6 +364,8 @@ export class View {
   onEvent(ev) {
     this.fx.onEvent(ev);
     this.astra.onEvent(ev);
+    if (ev.type === 'boxChip' || ev.type === 'boxBreak' || ev.type === 'liftBounce') this.breakables.onEvent(ev);
+    if (ev.type === 'boxBreak') this.trauma = Math.max(this.trauma, ev.b.tag === 'pillar' ? 0.4 : ev.b.tag === 'glass' ? 0.12 : 0.2);
     const shake = { armorBreak: 0.5, slam: 0.45, guardBreak: 0.3, impact: 0.5, ambush: 0.35, challenge: 0.2, playerHit: ev.heavy ? 0.35 : 0.15,
       blast: 0.14 + (ev.level || 1) * 0.06 + (ev.perfect ? 0.1 : 0), burst: ev.charged ? 0.06 + ev.level * 0.04 : 0.05, perfectRelease: 0.1,
       splash: ev.level ? 0.04 + ev.level * 0.03 : 0, rocketJump: 0.2 + 0.42 * (ev.power || 0.5), enemyBlast: 0.3, chargeCrash: 0.3,
@@ -377,7 +394,8 @@ export class View {
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
     if (ev.type === 'kill' && ev.e.type === 'brute') this.trauma = Math.min(1, this.trauma + 0.6);
-    // The big moments get an impact frame
+    // The big moments get an impact frame, in the colour of whoever set it off (if the setting asks for that)
+    this.impactBy = ev.p || (ev.owner && ev.owner.kind === 'player' ? ev.owner : null) || ev.by || (ev.members && ev.members[0]) || null;
     if (ev.type === 'impact' || (ev.type === 'armorBreak' && ev.left === 0) || (ev.type === 'parry' && ev.perfect && ev.heavy)) this.startImpact(ev.x, ev.y, ev.type === 'impact' ? 1 : 0.8);
     else if (ev.type === 'kill' && (ev.e.type === 'brute' || ev.e.boss)) this.startImpact(ev.x, ev.y, 1);
     else if (ev.type === 'poundLand' && ev.level >= 3) this.startImpact(ev.x, ev.y + 0.6, 1);
@@ -385,7 +403,7 @@ export class View {
     else if (ev.type === 'bossPhase' || ev.type === 'bossDown') this.startImpact(ev.x, ev.y, 1.2);
     else if (ev.type === 'ultNova') this.startImpact(ev.x, ev.y, 1.4, true);
     else if (ev.type === 'ultFinisher') this.startImpact(ev.x, ev.y, 1.2, true);
-    else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5 };   // when the eclipse shatters
+    else if (ev.type === 'teamFinisher') this.pendingImpact = { t: 0.42, x: ev.x, y: ev.y, k: 1.5, by: this.impactBy };   // when the eclipse shatters
     else if (ev.type === 'perfectDodge') this.startImpact(ev.x, ev.y, 0.6);
     else if (ev.type === 'ramSplat' && ev.n >= 2) this.startImpact(ev.x, ev.y, 0.9);
     else if (ev.type === 'kineticRelease' && ev.k >= 0.8) this.startImpact(ev.x, ev.y, 0.9);
@@ -397,15 +415,20 @@ export class View {
     if (ev.type === 'ramSlam' || ev.type === 'podLand') this.punch = Math.min(this.punch, -0.6);
   }
 
-  // Impact frame (Q-C test; sci-fi look since Version 9), phased: a cyan photonegative flash, then a hologram
-  // grade with glowing edges, scanlines and a hex grid, light streaks, a shockwave ring and glitch tears
-  // spreading from the hit, a zoom punch and colour split, easing back out. In play, a short hit-pause holds
-  // the simulation (main.js) while it runs. At most one every 0.9 s. The same pass dims the world while an
-  // ultimate is called.
+  // Impact frame (Q-C test): a flash, then the chosen look (Settings: Impact frame style; see ImpactShader for
+  // the seven) spreading from the hit, a zoom punch and colour split, easing back out. Its key colour is the
+  // look's own, or (Settings: Impact frame colour) the player colour or character colour of whoever set it off
+  // (the event's player, or the player nearest the impact). In play, a short hit-pause holds the simulation
+  // (main.js) while it runs. At most one every 1.05 s. The same pass dims the world while an ultimate is called.
   startImpact(x, y, strength = 1, force = false) {
     if (!SETTINGS.impactFrames || (this.impactCd > 0 && !force)) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
     this.impact = { t: 0, dur: 0.1 + 0.045 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    const style = IMPACT_STYLES.includes(SETTINGS.impactStyle) ? SETTINGS.impactStyle : 'scifi', U = this.ink.uniforms;
+    let by = this.impactBy;
+    if (!by && this.world) { let bd = Infinity; for (const q of this.world.players) { const dd = Math.hypot(q.x - x, q.y - y); if (dd < bd) { bd = dd; by = q; } } }
+    const mode = SETTINGS.impactColor, col = by && mode === 'player' ? PLAYER_COLORS[by.slot] : by && mode === 'character' ? CHARS[by.char]?.energy : null;
+    U.style.value = IMPACT_STYLES.indexOf(style); U.accent.value.set(col || IMPACT_ACCENT[style]); U.tinted.value = col ? 1 : 0;
     this.impactCd = 1.05; this.hitPause = 0.025 + 0.025 * strength;
     this.trauma = Math.max(this.trauma, 0.35 * strength); this.bloomKick = Math.max(this.bloomKick, 0.25 * strength);
   }
@@ -425,7 +448,7 @@ export class View {
     U.invert.value = (k < 0.1 ? 0.3 : 0) * flash;
     U.amount.value = (1-k) * flash;
     U.zoom.value = 0.024 * I.k * (1 - k) * (1 - k) * flash; U.split.value = 0.002 * I.k * (1 - k) * flash;
-    U.ring.value = 0.05 + k * 1.25; U.glitch.value = 0;
+    U.ring.value = 0.05 + k * 1.25; U.glitch.value = 0; U.phase.value = k;
     this.ink.enabled = true;
     if (I.t >= I.dur) this.impact = null;
     return true;
@@ -434,11 +457,13 @@ export class View {
   render(world, alpha, dt) {
     this.time += dt;
     const PI = this.pendingImpact;
-    if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
+    this.world = world;
+    if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.impactBy = PI.by; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
     this.syncEntities(world, alpha, dt);
     this.astra.update(world, dt, this.time);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });
+    this.breakables.update(dt, world);
     const inking = this.updateImpact(dt, world);
     if (SETTINGS.quality === 'low' && !inking) {
       this.r.shadowMap.enabled = false;

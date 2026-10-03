@@ -1,6 +1,8 @@
 # Nova Striker Astra
 
-Nova Striker Astra is an independent continuation of Nova Striker, with a rebuilt local co-op game and the Skyline Relay mission.
+Nova Striker Astra is an independent continuation of Nova Striker, with a rebuilt local co-op game, optional AI squadmates, and three playable operations: Skyline Relay, Helix Foundry and Undercity Descent.
+
+The integration branch `astra/integrate-wizardly-wozniak` combines the Astra direction with the progress from `claude/wizardly-wozniak-r0q6no` through commit `2c09bd4`.
 
 The active game is in [fresh-start-prototype](fresh-start-prototype/README.md). Open [the offline game](fresh-start-prototype/standalone/nova-striker-prototype.html), or serve its `game` directory locally.
 

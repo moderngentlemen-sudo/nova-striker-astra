@@ -1,8 +1,9 @@
 // World: owns every entity, runs the fixed-tick simulation, and emits events for
 // rendering, audio and UI. Nothing in here touches the DOM or Three.js.
-import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL } from './config.js';
-import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid } from './level.js';
-import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate } from './player.js';
+import { SETTINGS, DIFFICULTY, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, CHARS, GRAVITY, DT, LOCK, AEGIS, DEFLECT, SUB, DODGE, ULT, RAM, FIX, MAX_FALL, POWERUPS } from './config.js';
+import { BOXES, GATES, CHECKPOINTS, ZONES, KILL_Y, ARENA_TRIGGER_X, TOWER_TRIGGER_X, ENCOUNTERS, ROUTE_END_X, hasHeadroom, groundBelow, segmentBlocked, rayCast, rayBoxT, pointInSolid,
+  killYAt, routeAt, ROUTES, restoreBoxes, LEVEL_PICKUPS, DESTRUCT, breakableAt, LIFTS } from './level.js';
+import { createPlayer, updatePlayer, setCharacter, chest, addResolve, focusMult, marksman, rocketHeight, chargeStage, spendOvercharge, parryWindows, gainUlt, trackChord, chordReady, lockChosen, boostRate, addPlate, beamSpec } from './player.js';
 import { createEnemy, updateEnemy, ENEMY_TYPES } from './enemies.js';
 import { spawnBoss, BOSS } from './bosses.js';
 import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus, hurtbox } from './combat.js';
@@ -53,10 +54,11 @@ export class World {
     this.players = []; this.enemies = []; this.projectiles = []; this.hitboxes = [];
     this.barriers = []; this.shockwaves = []; this.events = []; this.scheduled = []; this.snares = []; this.wells = []; this.ultCast = null;
     this.gadgets = []; this.pickups = [];
-    this.hitSets = new Map(); this.tick = 0; this.instanceSeq = 1;
+    this.hitSets = new Map(); this.tick = 0; this.instanceSeq = 1; this.sessionRevision = 0;
     this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
     this.arena = { state: 'idle' }; this.towerSpawned = false;
-    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 })); this.routeDone = false;
+    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 })); this.routeDone = false; this.routesDone = {};
+    restoreBoxes(); this.spawnLevelPickups();
     this.aspect = 16 / 9;
     this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
     this.director = makeDirector(this);
@@ -81,25 +83,34 @@ export class World {
 
   // Reset the current party in place so input devices and UI references remain valid.
   startMission() { return this.startSession('mission'); }
-  replayMission() { return this.startMission(); }
+  startRoute(routeId) {
+    if (routeId === 'skyport') return this.startMission();
+    if (!ROUTES.some(r => r.id === routeId)) return false;
+    return this.startSession('route', routeId);
+  }
+  replayMission() { return this.mission.mode === 'route' ? this.startRoute(this.mission.routeId) : this.startMission(); }
   startTraining(zone = 'gym') { this.startSession('training'); if (zone !== 'gym') this.teleport(zone); return this.mission; }
-  startSession(mode) {
+  startSession(mode, routeId = 'skyport') {
+    this.sessionRevision++;
+    const spawn = mode === 'route' ? ZONES.find(z => z.id === routeId).spawn : { x: 0, y: 0 };
     this.enemies = []; this.projectiles = []; this.hitboxes = []; this.barriers = []; this.shockwaves = [];
     this.scheduled = []; this.snares = []; this.wells = []; this.gadgets = []; this.pickups = []; this.ultCast = null;
     this.events = []; this.hitSets.clear(); this.tick = 0; this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
-    this.arena = { state: 'idle' }; this.towerSpawned = false; this.routeDone = false; this.bossClearedT = null;
+    this.arena = { state: 'idle' }; this.towerSpawned = false; this.routeDone = false; this.routesDone = {}; this.bossClearedT = null;
+    this.checkpoint = Math.max(0, CHECKPOINTS.findIndex(c => c.x === spawn.x && c.y === spawn.y));
+    restoreBoxes(); this.spawnLevelPickups();
     this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 }));
     for (const key of Object.keys(GATES)) GATES[key] = false;
     this.director.reset();
     for (const p of this.players) {
-      const fresh = createPlayer(p.slot, p.device, p.char, p.slot * 0.8, 0);
+      const fresh = createPlayer(p.slot, p.device, p.char, spawn.x + p.slot * 0.8, spawn.y);
       for (const key of Object.keys(p)) delete p[key]; Object.assign(p, fresh); p.mercy = 120;
     }
-    initializeMission(this, mode);
+    initializeMission(this, mode, routeId);
     if (mode === 'training') this.spawnGym();
-    else this.enemies.push(createEnemy('swarmer', 57, 0, { zone: 'gym', cd: 80 }));
-    this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
-    this.emit('sessionStart', { mode });
+    else if (mode === 'mission') this.enemies.push(createEnemy('swarmer', 57, 0, { zone: 'gym', cd: 80 }));
+    this.cam = { x: spawn.x, y: spawn.y + 3, dist: 16, halfW: 10, halfH: 5 };
+    this.emit('sessionStart', { mode, routeId });
     this.emit('banner', { text: this.mission.title, sub: this.mission.objective });
     return this.mission;
   }
@@ -172,6 +183,7 @@ export class World {
   // and cannot be parried.
   explode({ owner, team = 'p', x, y, spec, level = 0, perfect = false, family = null, skip = null, rocket = false, kind = 'splash' }) {
     if (team === 'p') hitMissionBlast(this, owner, x, y, spec);
+    this.blastBoxes(x, y, spec.r, (spec.dmg || 2) * 1.5, owner);
     const reach = (ent, r) => {
       const nx = Math.max(ent.x - ent.w / 2, Math.min(x, ent.x + ent.w / 2)), ny = Math.max(ent.y, Math.min(y, ent.y + ent.h));
       return Math.hypot(x - nx, y - ny) <= r;
@@ -255,7 +267,7 @@ export class World {
   // Every tick: trace the beam to the first wall (a Prism beam bounces once), erase enemy shots it touches,
   // and every `pulse` ticks hit every enemy in it. Attachments add their flavour.
   beamTick(p) {
-    const B = MARKSMAN.beam, b = p.beam, c = chest(p);
+    const B = beamSpec(p), b = p.beam, c = chest(p);
     const segs = []; let sx = c.x + b.dx * 0.6, sy = c.y + b.dy * 0.6, dx = b.dx, dy = b.dy;
     const bounces = b.attach === 'prism' ? B.prism.bounces : 0;
     for (let i = 0; i <= bounces; i++) {
@@ -266,6 +278,8 @@ export class World {
       sx = h.x + h.nx * 0.05; sy = h.y + h.ny * 0.05;
     }
     b.segs = segs; b.pulse++;
+    const endBox = segs.length && rayCast(segs[segs.length - 1].x0, segs[segs.length - 1].y0, dx, dy, B.range).box;
+    if (endBox && endBox.type === 'd' && b.pulse % B.pulse === 1) this.damageBox(endBox, B.dmg * b.mult * 2, segs[segs.length - 1].x1, segs[segs.length - 1].y1, p);
     const near = (x, y, r) => segs.some(g => distToSeg(x, y, g) < r);
     for (const pr of this.projectiles) if (pr.team === 'e' && !pr.dead && near(pr.x, pr.y, B.width + pr.r)) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
     if (b.pulse % B.pulse === 1) {
@@ -276,8 +290,8 @@ export class World {
         if (!segs.some(g => segHitsBox(g, hb, B.width))) continue;
         const last = b.armor.get(e.id), ab = last === undefined || b.pulse - last >= B.armorEvery;
         if (ab) b.armor.set(e.id, b.pulse);
-        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign(b.dx) * 3, 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, 'proj');
-        if (res === 'hit' || res === 'kill') awardFocus(this, { owner: p, family: b.family });
+        const res = hitEnemy(this, e, { owner: p, dmg: B.dmg * b.mult, poise: B.poise * b.mult, kb: [sign(b.dx) * (B.kb || 3), 1], vx: b.dx, armorBreak: ab, rail: true, beam: true }, 'proj');
+        if (p.char === 'nova' && (res === 'hit' || res === 'kill')) awardFocus(this, { owner: p, family: b.family });
       }
     }
     const end = segs[segs.length - 1];
@@ -356,6 +370,7 @@ export class World {
   fireSniper(p, f) {
     const R = HUNTER.rifle, c = chest(p), ax = p.aimX, ay = p.aimY, full = f >= 1;
     const x0 = c.x + ax * 0.9, y0 = c.y + ay * 0.9, wall = rayCast(x0, y0, ax, ay, R.range);
+    if (wall.box && wall.box.type === 'd') this.damageBox(wall.box, R.minDmg + (R.maxDmg - R.minDmg) * f, wall.x, wall.y, p);
     const line = [];
     for (const e of this.enemies) {
       if (e.dead) continue;
@@ -952,6 +967,7 @@ export class World {
   startWipe() { if (this.wipeT <= 0) { this.wipeT = 100; this.emit('wipe', {}); } }
 
   resetToCheckpoint() {
+    this.sessionRevision++;
     const cp = CHECKPOINTS[this.checkpoint];
     this.players.forEach((p, i) => {
       p.x = cp.x + i * 0.8; p.y = cp.y; p.prevX = p.x; p.prevY = p.y; p.vx = 0; p.vy = 0;
@@ -961,15 +977,16 @@ export class World {
       p.aegis = null; p.aegisCd = 0; p.overcharge = 0; p.beam = null;
       p.dodge = null; p.pound = null; p.burstT = 0; p.subArmed = false; p.ultRun = null; p.lockSuspend = false;
       p.rush = null; p.link = null; p.leap = null; p.patch = null; p.tossArmed = false; p.integrity = RAM.guard.integrity; p.guardBroken = false; p.kinetic = 0;
-      p.plate = 0; p.overclockT = 0; p.tuneT = 0; p.braceT = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start); p.fixRevive = false; p.reviveGain = 0;
+      p.plate = 0; p.overclockT = 0; p.furyT = 0; p.tuneT = 0; p.braceT = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start); p.fixRevive = false; p.reviveGain = 0;
       p.hitstop = 0; p.hitConfirm = false; p.queued = null; p.move = null; p.moveId = null; p.dash = null; p.lash = null; p.zip = null;
       p.rifleT = 0; p.dashChargeT = 0; p.meleeHeldT = 0; p.meleeCharged = false; p.rivetQ = 0; p.meleeIntent = 'context';
       p.airEnderUsed = false; p.airRise = true; p.airDodge = true; p.airDashes = 1; p.jumpsUsed = 0; p.onGround = false;
-      p.wallDir = 0; p.wallCoyote = 0; p.wallSliding = false; p.coyote = 0; p.dashCarry = false; p.fastFall = false;
+      p.wallDir = 0; p.wallCoyote = 0; p.wallSliding = false; p.coyote = 0; p.dashCarry = false; p.fastFall = false; p.padCd = 0;
       for (const b in p.buf) p.buf[b] = 99;
     });
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = []; this.wells = []; this.ultCast = null;
     this.gadgets = []; this.pickups = [];
+    restoreBoxes(); this.spawnLevelPickups();
     for (const e of this.enemies) if (e.state === 'plowed') { e.state = 'idle'; e.plowBy = null; }
     for (const p of this.players) p.leash = null;
     if (this.arena.state !== 'cleared') this.resetArena();
@@ -1124,7 +1141,7 @@ export class World {
       const hb = hurtbox(e), qx = Math.max(hb.x0, Math.min(ox, hb.x1)), qy = Math.max(hb.y0, Math.min(oy, hb.y1));
       const dx = qx - ox, dy = qy - oy, d = Math.hypot(dx, dy);
       if (d > r || (d > 0.9 && (dx * nx + dy * ny) / d < cos)) continue;
-      hitEnemy(this, e, { owner: p, dmg, poise, kb: [(sign(e.x - p.x) || p.facing) * kb, 4 + 4 * k], armorBreak: k >= 0.5, heavy: true, ram: true }, 'pulse');
+      hitEnemy(this, e, { owner: p, dmg, poise, kb: [(sign(e.x - p.x) || p.facing) * kb, 4 + 4 * k], armorBreak: k >= 0.5, heavy: true, ram: true, ramKnock: true }, 'pulse');
     }
     for (const pr of this.projectiles) {
       if (pr.team !== 'e' || pr.dead) continue;
@@ -1141,6 +1158,11 @@ export class World {
   ramPlow(p) {
     const R = RAM.rush, r = p.rush; if (!r) return;
     const L = r.level, dir = r.dx, front = p.x + dir * p.w / 2;
+    // A breakable piece in the way is smashed (a pillar takes a Battering Ram); he carries on through what breaks
+    for (const hy of [0.4, p.h * 0.5, p.h - 0.4]) {
+      const bk = breakableAt(front + dir * 0.2, p.y + hy, 0.05);
+      if (bk && this.damageBox(bk, 25 + 30 * L, front + dir * 0.2, p.y + hy, p)) p.hitWall = 0;
+    }
     for (const e of this.enemies) {
       if (e.dead || r.hit.has(e) || e.state === 'plowed') continue;
       const ax0 = dir > 0 ? front - 0.3 : front - R.reach, ax1 = dir > 0 ? front + R.reach : front + 0.3;
@@ -1148,7 +1170,7 @@ export class World {
       r.hit.add(e);
       const rooted = e.boss || ['post', 'turret', 'sniper', 'mortar'].includes(e.type), heavy = !e.light;
       if (rooted || (heavy && L < R.heavyFrom)) {
-        hitEnemy(this, e, { owner: p, dmg: R.bonk.dmg[L], poise: R.bonk.poise[L], kb: [dir * 6, 2], armorBreak: L >= 2, heavy: true, ram: true }, 'pulse');
+        hitEnemy(this, e, { owner: p, dmg: R.bonk.dmg[L], poise: R.bonk.poise[L], kb: [dir * 6, 2], armorBreak: L >= 2, heavy: true, ram: true, ramKnock: true }, 'pulse');
         this.endRush(p, 'bonk', e); p.state = 'normal'; p.st = 0;
         return;
       }
@@ -1283,7 +1305,7 @@ export class World {
     const L = RAM.link, leap = p.leap; p.leap = null;
     p.state = 'normal'; p.st = 0; p.vx *= 0.2;
     this.spawnHitbox({ owner: p, team: 'p', x0: p.x - L.land.r, x1: p.x + L.land.r, y0: p.y - 0.3, y1: p.y + 1.9, dmg: L.land.dmg, poise: L.land.poise,
-      kb: [9, 5], radial: true, cx: p.x, instance: this.newInstance(), scatter: true });
+      kb: [9, 5], radial: true, cx: p.x, instance: this.newInstance(), scatter: true, ramKnock: true });
     this.emit('leapLand', { p, x: p.x, y: p.y });
     const q = leap && leap.q;
     if (q && this.players.includes(q) && q.state !== 'dead' && q.state !== 'downed') this.makeLink(p, q);
@@ -1631,7 +1653,7 @@ export class World {
         if (pointInSolid(nx, k.y)) k.vx *= -0.3; else k.x = nx;
         const g = groundBelow(k.x, k.y + 0.05);
         if (k.vy <= 0 && g > -Infinity && ny - 0.18 <= g) { k.y = g + 0.18; k.vy = 0; k.vx = 0; k.rest = true; } else k.y = ny;
-        if (k.y < KILL_Y) k.dead = true;
+        if (k.y < killYAt(k.x)) k.dead = true;
       }
       for (const q of this.players) {
         if (k.dead || q.state === 'dead' || q.state === 'downed' || (q === k.owner && k.t < P.ownerDelay)) continue;
@@ -1645,9 +1667,66 @@ export class World {
     const P = FIX.power;
     if (kind === 'overclock') q.overclockT = Math.max(q.overclockT, P.overclock.ticks);
     else if (kind === 'plating') addPlate(q, P.plating.plate);
+    else if (kind === 'ultcell') gainUlt(q, POWERUPS.ultcell.ult, this);
+    else if (kind === 'fury') q.furyT = Math.max(q.furyT || 0, POWERUPS.fury.ticks);
     else this.heal(q, P.medkit.heal, from);
     this.emit('powerUp', { p: q, kind, from });
   }
+  // Lift pads (level.js LIFTS): a player coming down onto one is thrown up to the platform over it
+  liftTick() {
+    for (const [x, y, top] of LIFTS) for (const q of this.players) {
+      if (q.padCd > 0 || !['normal', 'guard', 'patch', 'attack'].includes(q.state) || q.vy > 0.5) continue;
+      if (Math.abs(q.x - x) > 0.8 + q.w / 2 || q.y < y - 0.05 || q.y > y + 0.45) continue;
+      q.vy = Math.sqrt(2 * GRAVITY * (top - y + 1.6)); q.onGround = false; q.coyote = 0; q.jumpsUsed = 0; q.airDashes = 1; q.airRise = true;
+      q.fastFall = false; q.dashCarry = true; q.padCd = 30;   // (dashCarry: the full rise, as off Fix's spring pad)
+      this.emit('liftBounce', { p: q, x, y, top });
+    }
+  }
+
+  // Power-ups along the routes (level.js LEVEL_PICKUPS): they wait where they are until someone takes them
+  spawnLevelPickups() {
+    this.pickups = this.pickups.filter(k => !k.level);
+    for (const [x, y, kind] of LEVEL_PICKUPS) this.addLevelPickup(x, y + 0.18, kind, true);
+  }
+  addLevelPickup(x, y, kind, rest = false, vy = 0) {
+    const k = { id: this.newInstance(), kind, owner: null, x, y, px: x, py: y, vx: 0, vy, target: null, t: 0, life: rest ? 1e9 : POWERUPS.dropLife, rest, dead: false, level: true };
+    this.pickups.push(k); return k;
+  }
+
+  // ---- Breakable pieces (level.js DESTRUCT) ----
+  // Damage to a breakable piece: a pillar ignores blows under its `min`; at 0 it breaks (it stops being solid,
+  // anything on it falls) and drops its power-up, if it holds one
+  damageBox(b, dmg, x, y, by = null) {
+    if (!b || b.broken || b.type !== 'd') return false;
+    const D = DESTRUCT[b.tag];
+    if (dmg < D.min) { this.emit('boxChip', { b, x, y, hard: true }); return false; }
+    b.hp -= dmg; b.hitT = this.tick;
+    if (b.hp > 0) { this.emit('boxChip', { b, x, y }); return false; }
+    b.broken = true;
+    this.emit('boxBreak', { b, x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, by });
+    if (b.loot) this.addLevelPickup((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.loot, false, 5);
+    return true;
+  }
+  // Every breakable piece touching a box (a strike), once per attack instance
+  strikeBoxes(hb) {
+    let set = this.hitSets.get(hb.instance); if (!set) { set = new Set(); this.hitSets.set(hb.instance, set); }
+    for (const b of BOXES) {
+      if (b.type !== 'd' || b.broken || set.has('b' + b.id)) continue;
+      if (hb.x0 < b.x1 && hb.x1 > b.x0 && hb.y0 < b.y1 && hb.y1 > b.y0) {
+        set.add('b' + b.id);
+        this.damageBox(b, (hb.dmg || 1) * (hb.heavy || hb.armorBreak ? 2 : 1) + (hb.ram ? 6 : 0), (b.x0 + b.x1) / 2, Math.min(b.y1, Math.max(b.y0, (hb.y0 + hb.y1) / 2)), hb.owner);
+      }
+    }
+  }
+  // A blast: every breakable piece within r (more damage the closer)
+  blastBoxes(x, y, r, dmg, by) {
+    for (const b of BOXES) {
+      if (b.type !== 'd' || b.broken) continue;
+      const nx = Math.max(b.x0, Math.min(x, b.x1)), ny = Math.max(b.y0, Math.min(y, b.y1)), d = Math.hypot(x - nx, y - ny);
+      if (d <= r) this.damageBox(b, dmg * (1.5 - 0.5 * d / Math.max(0.1, r)), nx, ny, by);
+    }
+  }
+
   // An enemy fell: Fix picks up Scrap from it if she is close
   onKill(e) {
     for (const p of this.players) {
@@ -1956,6 +2035,7 @@ export class World {
     this.updateSnares();
     this.updateGadgets();
     this.updatePickups();
+    this.liftTick();
     resolveHitboxes(this);
     if (this.ultCast) this.ultTick();
     for (const b of this.barriers) {
@@ -2040,7 +2120,7 @@ export class World {
     const multi = act.length > 1;
     for (const p of this.players) {
       if (p.state === 'dead') continue;
-      if (p.y < KILL_Y) { this.recall(p, true); continue; }
+      if (p.y < killYAt(p.x)) { this.recall(p, true); continue; }
       if (!multi) continue;
       const right = this.cam.x + halfW - 0.7;
       if (p.x > right) { p.x = right; if (p.vx > 0) p.vx = 0; }
@@ -2071,7 +2151,7 @@ export class World {
     // Checkpoints
     for (let i = this.checkpoint + 1; i < CHECKPOINTS.length; i++) {
       const cp = CHECKPOINTS[i];
-      if (this.players.some(p => p.state !== 'dead' && p.x >= cp.x - 0.5 && p.y >= cp.y - 0.5 && p.onGround)) {
+      if (this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && routeAt(p.x).id === routeAt(cp.x).id && p.x >= cp.x - 0.5 && p.y >= cp.y - 0.5 && p.onGround)) {
         if (i === 1 || this.arena.state === 'cleared' || i > 2) { this.checkpoint = i; this.emit('checkpoint', { i }); }
       }
     }
@@ -2117,7 +2197,7 @@ export class World {
     }
     this.updateSkyline(n);
     // Storm Spire climb enemies
-    if (!this.towerSpawned && this.players.some(p => p.x > TOWER_TRIGGER_X)) {
+    if (!this.towerSpawned && this.players.some(p => p.x > TOWER_TRIGGER_X && p.x < 162)) {
       this.towerSpawned = true;
       for (const [t, x, y] of [['swarmer', 122, 5.2], ['swarmer', 134, 11.2], ['drone', 129, 12], ['shield', 152, 15.6], ['drone', 147, 19.5], ['sniper', 158, 15.6]]) {
         const e = createEnemy(t, x, y); e.zone = 'tower'; this.enemies.push(e);
@@ -2141,11 +2221,12 @@ function segHitsBox(g, b, w) {
 
 // Skyline Relay: data-driven encounters (level.js ENCOUNTERS)
 World.prototype.updateSkyline = function (n) {
-  const here = x0 => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0);
+  // (a trigger counts only for players on that encounter's route: the routes share one long x axis)
+  const here = (x0, route = 'skyport') => this.players.some(p => p.state !== 'dead' && p.state !== 'downed' && p.x > x0 && routeAt(p.x).id === route);
   for (const S of this.encounters) {
     const E = S.def;
     if (S.state === 'idle') {
-      if (!here(E.trigger)) continue;
+      if (!here(E.trigger, E.route)) continue;
       // The authored mission requires the control room to be restored before the gunship arrives.
       if (this.mission.mode === 'mission' && E.boss && !relayControlsRestored(this)) continue;
       S.state = 'active'; S.wave = 0;
@@ -2194,10 +2275,15 @@ World.prototype.updateSkyline = function (n) {
       }
     }
   }
-  // The route completes once every encounter is won (a few seconds after a boss falls, so the banners don't collide)
-  if (this.mission.mode !== 'mission' && !this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X) && this.tick - (this.bossClearedT ?? -1e9) > 150) {
-    this.routeDone = true;
-    this.emit('banner', { text: 'Route complete', sub: 'You reached the end of this build.' });
+  // A route completes once every encounter on it is won and someone reaches its end (a few seconds after a boss
+  // falls, so the banners don't collide)
+  this.routesDone = this.routesDone || {};
+  for (const R of ROUTES) {
+    if (R.id === 'skyport' && this.mission.mode === 'mission') continue; // The authored mission ends at its restored beacon.
+    if (this.routesDone[R.id] || !here(R.endX, R.id) || this.tick - (this.bossClearedT ?? -1e9) <= 150) continue;
+    if (!this.encounters.every(S => S.def.route !== R.id || S.state === 'cleared')) continue;
+    this.routesDone[R.id] = true; if (R.id === 'skyport') this.routeDone = true;
+    this.emit('banner', { text: 'Route complete', sub: R.id === 'skyport' ? 'You reached the end of the Skyport route.' : `${R.name} cleared.` });
   }
 };
 

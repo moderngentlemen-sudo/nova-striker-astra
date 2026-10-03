@@ -3,6 +3,7 @@
 
 const BTNS = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock', 'sub', 'ult', 'strike', 'secondary', 'quick', 'relocate', 'interact'];
 
+const ORDER_HOLD = 380;   // ms of LB + D-pad up/down held for Cover me / Hold here
 const KEYMAP = {
   Space: 'jump', ShiftLeft: 'dash', ShiftRight: 'dash',
   KeyJ: 'melee', KeyK: 'fire', KeyL: 'parry', KeyQ: 'parry', KeyE: 'sig', KeyI: 'sig',
@@ -35,6 +36,8 @@ export class Input {
     this.devices = {};             // deviceId -> { prevHeld, freeAimGrace }
     this.gamepadBlocked = false;
     this.menuEvents = [];          // pause/help/debug/swap toggles for the UI
+    this.repeat = {};              // per pad: when each held direction fires again
+    this.orderReset = false;
     this.anyKbm = false;           // any keyboard/mouse input since last join poll
     this.menuActive = () => false; // bootstrap supplies its live overlay state
 
@@ -49,6 +52,10 @@ export class Input {
         return;
       }
       if (['Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+      // Orders use a modifier so Astra's explicit strike, secondary, paired loadout
+      // swap and interaction stay on X/C/Z/G. An order must not pick a character.
+      const order = e.altKey && { Digit1: 'attack', Digit2: 'cover', Digit3: 'regroup', Digit4: 'hold' }[e.code];
+      if (order) { e.preventDefault(); if (!e.repeat) this.menuEvents.push({ dev: 'kbm', type: 'order', order }); return; }
       if (e.repeat) return;
       this.keys.add(e.code);
       this.kbPressed.add(e.code);
@@ -91,6 +98,10 @@ export class Input {
 
   setMenuActive(readState) { this.menuActive = typeof readState === 'function' ? readState : () => !!readState; }
 
+  deviceState(dev) {
+    return this.devices[dev] || (this.devices[dev] = { prevHeld: {}, grace: 0, lastFree: [1, 0], swallow: true });
+  }
+
   pads() {
     if (this.gamepadBlocked) return [];
     try {
@@ -118,22 +129,62 @@ export class Input {
     return out;
   }
 
-  // Pad menu buttons (Start/View/D-pad) become UI events.
-  pollPadMenus() {
+  // Menus share the live overlay state with keyboard input. The stick and D-pad
+  // repeat directions there; during play only LB + up/down issues team orders.
+  pollPadMenus(t = performance.now()) {
+    const menu = this.menuActive(), resetOrders = this.orderReset, menuChanged = this.lastMenu !== menu;
+    this.lastMenu = menu;
+    this.orderReset = false;
     for (const p of this.pads()) {
       const id = 'pad' + p.index;
       const prev = this.prevPads[id] || [];
-      const now = p.buttons.map(b => b.pressed);
-      if (this.menuActive() && now.some(Boolean)) this.joinBlockedPads.add(id);
+      const now = p.buttons.map(b => b.pressed || b.value > 0.5);
+      const st = this.deviceState(id);
+      if (!st.chordSuppressed) st.chordSuppressed = new Set();
+      if (menu && now.some(Boolean)) this.joinBlockedPads.add(id);
       const edge = i => now[i] && !prev[i];
       if (edge(9)) this.menuEvents.push({ dev: id, type: 'pause' });
       if (edge(8)) this.menuEvents.push({ dev: id, type: 'help' });
-      if (edge(14)) this.menuEvents.push({ dev: id, type: 'swap', dir: -1 });
-      if (edge(15)) this.menuEvents.push({ dev: id, type: 'swap', dir: 1 });
-      if (edge(12)) this.menuEvents.push({ dev: id, type: 'up' });
-      if (edge(13)) this.menuEvents.push({ dev: id, type: 'down' });
       if (edge(0)) this.menuEvents.push({ dev: id, type: 'confirm' });
       if (edge(1)) this.menuEvents.push({ dev: id, type: 'back' });
+      if (menu && edge(4)) this.menuEvents.push({ dev: id, type: 'prevTab' });
+      if (menu && edge(5)) this.menuEvents.push({ dev: id, type: 'nextTab' });
+      const sx = menu ? p.axes[0] || 0 : 0, sy = menu ? p.axes[1] || 0 : 0;
+      const dirs = [
+        ['up', now[12] || sy < -0.6, { type: 'up' }], ['down', now[13] || sy > 0.6, { type: 'down' }],
+        ['left', now[14] || sx < -0.6, { type: 'swap', dir: -1 }], ['right', now[15] || sx > 0.6, { type: 'swap', dir: 1 }],
+      ];
+      const R = this.repeat[id] || (this.repeat[id] = {});
+      if (menuChanged || resetOrders) for (const [k, on] of dirs) {
+        // A held menu direction cannot turn into an in-game character swap on
+        // dismissal; it must return to neutral first.
+        R[k] = !menu && on ? { next: t + 320 } : null;
+      }
+      for (const [btn, tap, hold] of [[12, 'attack', 'cover'], [13, 'regroup', 'hold']]) {
+        const k = 'o' + btn, blocked = 'blocked' + btn, r = R[k];
+        if (!now[btn]) R[blocked] = false;
+        // A menu transition cancels an unfinished order. Held D-pad input must
+        // be released before it can become a gameplay command or interaction.
+        if (menu || resetOrders || now[8] || now[9]) {
+          R[k] = null;
+          if (now[btn]) { R[blocked] = true; st.chordSuppressed.add(btn); }
+          if (r || (now[4] && now[btn])) { st.orderChord = true; st.utilityUsed = true; }
+        } else if (now[4] && now[btn]) {
+          st.chordSuppressed.add(btn); st.orderChord = true; st.utilityUsed = true;
+          if (!r && !R[blocked]) R[k] = { t0: t, done: false };
+          else if (r && !r.done && t - r.t0 >= ORDER_HOLD) { r.done = true; this.menuEvents.push({ dev: id, type: 'order', order: hold }); }
+        } else if (r) {
+          if (!r.done) this.menuEvents.push({ dev: id, type: 'order', order: tap });
+          R[k] = null; R[blocked] = !!now[btn];
+        }
+      }
+      if (!menu) dirs.splice(0, 2); // plain up remains Interact; down remains crouch
+      for (const [k, on, ev] of dirs) {
+        const r = R[k];
+        if (!on) { R[k] = null; continue; }
+        if (!r) { R[k] = { next: t + 320 }; this.menuEvents.push({ dev: id, ...ev }); }
+        else if (menu && t >= r.next) { r.next = t + 110; this.menuEvents.push({ dev: id, ...ev, repeat: true }); }
+      }
       this.prevPads[id] = now;
     }
   }
@@ -142,7 +193,7 @@ export class Input {
   sample(dev, aimFromMouse, p1AimMode) {
     // A newly joined controller is sampled as already held: its join/confirm
     // button cannot also become a jump or attack in the first game frame.
-    const st = this.devices[dev] || (this.devices[dev] = { prevHeld: {}, grace: 0, lastFree: [1, 0], swallow: true });
+    const st = this.deviceState(dev);
     const held = {};
     let mx = 0, my = 0, aimFree = false, ax = 0, ay = 0;
 
@@ -181,7 +232,6 @@ export class Input {
       const bt = i => (pad.buttons[i] ? pad.buttons[i].pressed || pad.buttons[i].value > 0.5 : false);
       [mx, my] = deadzone(pad.axes[0] || 0, -(pad.axes[1] || 0), 0.22);
       const [rx, ry] = deadzone(pad.axes[2] || 0, -(pad.axes[3] || 0), 0.3);
-      if (bt(12)) my = 1; if (bt(13)) my = -1;
       held.jump = bt(0);
       held.sub = bt(4);     // LB: switch secondary weapon
       held.dash = bt(1);
@@ -192,11 +242,10 @@ export class Input {
       held.fire = pad.buttons[7] ? pad.buttons[7].value > 0.35 || pad.buttons[7].pressed : false;
       held.lock = bt(11);   // right stick click
       held.strike = bt(10); // left stick click: deliberate melee, never a contextual secondary
-      held.interact = bt(12);
       // LB is a modifier; releasing it alone still cycles the secondary/power.
       // Deferring that tap prevents LB+X/Y/RB from spending a cycle first.
       const utility = bt(4);
-      if (utility && !st.utilityHeld) st.utilityUsed = !!st.swallow;
+      if (utility && !st.utilityHeld) st.utilityUsed = !!st.swallow || !!st.orderChord;
       if (!st.chordSuppressed) st.chordSuppressed = new Set();
       for (const b of st.chordSuppressed) if (!bt(b)) st.chordSuppressed.delete(b);
       held.sub = false;
@@ -204,11 +253,16 @@ export class Input {
         if (bt(2)) { held.secondary = true; st.chordSuppressed.add(2); st.utilityUsed = true; }
         if (bt(3)) { held.relocate = true; st.chordSuppressed.add(3); st.utilityUsed = true; }
         if (bt(5)) { held.quick = true; st.chordSuppressed.add(5); st.utilityUsed = true; }
+        if (bt(12)) { st.chordSuppressed.add(12); st.utilityUsed = true; }
+        if (bt(13)) { st.chordSuppressed.add(13); st.utilityUsed = true; }
       } else if (st.utilityHeld && !st.utilityUsed) padExtra.sub = true;
       if (st.chordSuppressed.has(2)) held.melee = false;
       if (st.chordSuppressed.has(3)) held.sig = false;
       if (st.chordSuppressed.has(5)) held.mode = false;
+      if (bt(12) && !st.chordSuppressed.has(12)) { held.interact = true; my = 1; }
+      if (bt(13) && !st.chordSuppressed.has(13)) my = -1;
       st.utilityHeld = utility;
+      if (!utility) st.orderChord = false;
       const rm = Math.hypot(rx, ry);
       if (rm > 0.35) {
         aimFree = true; ax = rx / rm; ay = ry / rm; st.grace = 18; st.lastFree = [ax, ay];
@@ -224,6 +278,7 @@ export class Input {
   // raised guards from the same button used to dismiss a modal.
   swallowAll() {
     for (const st of Object.values(this.devices)) { st.swallow = true; st.utilityUsed = true; }
+    this.orderReset = true;
     this.kbPressed.clear(); this.kbReleased.clear(); this.mousePressed.clear(); this.mouseReleased.clear(); this.anyKbm = false;
   }
 

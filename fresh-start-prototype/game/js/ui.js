@@ -1,4 +1,5 @@
 // DOM overlays: start screen, HUD, markers, barks, banners, pause/settings, help, debug.
+import { isBot } from './bot.js';
 import { SETTINGS, saveSettings, PLAYER_COLORS, PLAYER_MARKS, CHARS, NOVA, ECHO, HUNTER, MARKSMAN, ATTACH_LOOK, DASH_CHARGE, AEGIS, SUB_LOOK, ULT, RAM, FIX, FIX_LOOK, ROSTER } from './config.js';
 
 // Echo's scarf mode chip: every player can read which mode his scarf is in
@@ -67,6 +68,7 @@ function fixChips(p, world) {
 // Boosts anyone can carry: Plating (from Fix or RAM), Overclock, Tune-Up (Fix's beam), an Amp Coil's field
 function boostChips(p) {
   return (p.plate > 0.5 ? `<span class="chip plate">Plating ${Math.ceil(p.plate)}</span>` : '') + (p.overclockT > 0 ? `<span class="chip over2">Overclock ${Math.ceil(p.overclockT / 60)}s</span>` : '') +
+    (p.furyT > 0 ? `<span class="chip fury">Fury ${Math.ceil(p.furyT / 60)}s</span>` : '') +
     (p.tuneT > 0 ? '<span class="chip fix on">Tuned up</span>' : '') + (p.ampK > 1 ? `<span class="chip over2">Amp x${p.ampK}</span>` : '') + (p.braceT > 0 ? '<span class="chip ram">Braced</span>' : '');
 }
 
@@ -99,11 +101,14 @@ const SETTING_DEFS = [
   { key: 'novaKit', label: "Nova's kit", opts: [['marksman', 'Marksman: attachments, secondary weapons, dodge, skates'], ['sentinel', 'Sentinel: Pass 1 kit']] },
   { key: 'echoHead', label: "Echo's head (look only)", opts: [['helmet', 'Full helmet, amber visor'], ['mask', 'Survival mask'], ['bare', 'Bare face']] },
   { key: 'echoKit', label: "Echo's kit", opts: [['hunter', 'Hunter: blades, glaive, snares, reel'], ['pursuit', 'Pursuit: Pass 1 kit']] },
+  { key: 'echoBelt', label: "Echo's utility belt (snares), Hunter kit", opts: [['fire', 'Tap fire (crouch + tap plants)'], ['lb', 'LB / T (crouch + LB plants); tap fire is a quick shot']] },
   { key: 'echoRanged', label: "Echo's ranged option, Pursuit kit only (Q-A test)", opts: [['A', 'A: Tracer shot only'], ['B', 'B: Bolts + Tracer'], ['C', 'C: No ranged attack']] },
   { key: 'vbStop', label: 'Velocity Break stop', opts: [['hard', 'Hard stop'], ['keep30', 'Keep 30% momentum']] },
   { key: 'vbRefund', label: 'Velocity Break refunds air dash on hit', bool: true },
   { key: 'dashIframes', label: 'Dash invulnerability (A/B test)', bool: true },
   { key: 'impactFrames', label: 'Impact frames on big moments (Q-C test)', bool: true },
+  { key: 'impactStyle', label: 'Impact frame style', opts: [['scifi', 'Sci-fi hologram'], ['comic', 'Comic ink (original)'], ['eclipse', 'Eclipse'], ['shatter', 'Shatter'], ['thunder', 'Thunderclap'], ['sumi', 'Sumi ink'], ['warp', 'Gravity well']] },
+  { key: 'impactColor', label: 'Impact frame colour', opts: [['style', "The style's own"], ['player', 'Colour of the player who set it off'], ['character', "That player's character colour"]] },
   { key: 'camera', label: 'Camera projection', opts: [['persp', 'Perspective'], ['ortho', 'Orthographic']] },
   { key: 'fov', label: 'Camera field of view', range: [24, 50, 1] },
   { key: 'aimAssist', label: 'Aim assist (gamepad 8-way aim)', bool: true },
@@ -113,6 +118,8 @@ const SETTING_DEFS = [
   { key: 'haptics', label: 'Rumble and vibration', bool: true },
   { key: 'hapticStrength', label: 'Rumble strength', range: [0, 1, 0.05] },
   { key: 'p1Aim', label: 'Keyboard player aims with', opts: [['mouse', 'Mouse'], ['keys', 'Movement keys (8-way)']] },
+  { key: 'aiTeammates', label: 'AI teammates (fill empty slots; a player joining takes one over)', opts: [['0', 'Off'], ['1', '1'], ['2', '2'], ['3', '3']] },
+  { key: 'aiSkill', label: 'AI teammate skill', opts: [['rookie', 'Rookie: slow to react, basic plays'], ['veteran', 'Veteran: reads the fight, uses the whole kit'], ['elite', 'Elite: sharp reactions, every advanced play']] },
   { key: 'difficulty', label: 'Difficulty', opts: [['easy', 'Easy'], ['normal', 'Normal'], ['hard', 'Hard']] },
   { key: 'barks', label: 'Character lines (CP-09 test)', bool: true },
   { key: 'shake', label: 'Screen shake', bool: true },
@@ -161,6 +168,8 @@ export class UI {
             <li>RT fire · LT parry / dodge / guard / beam · LB character action</li>
             <li>LT + RT ultimate · D-pad swap character · Start pause</li></ul></div>
         </div>
+        <p class="fine">New in Version 12: team commands for AI teammates (D-pad up/down, or <kbd>Z</kbd> <kbd>G</kbd> <kbd>X</kbd> <kbd>C</kbd>), two long new levels that wind through 3D (the <b>Helix Foundry</b> and the <b>Undercity Descent</b>, in <kbd>Esc</kbd>/Start), breakable crates, barricades, glass and pillars, and power-ups along the way.</p>
+        <p class="fine">New in Version 11: smarter AI teammates with a skill setting, a controller-friendly pause menu, RAM's Level 4 <b>Breach Beam</b> (keep holding fire) and a shield that cracks and shatters, seven impact frame styles that can take your player colour, and Echo's snares on LB as an option. All in <kbd>Esc</kbd>/Start.</p>
         <p class="fine">New in Version 10: two new characters. <b>RAM</b>, the tank: hold LT to raise his tower shield (it blocks, covers everyone behind him and stores Kinetic; fire while guarding releases it), a dash that plows enemies into walls, a hard-light wall, a guardian link and a war cry. <b>Fix</b>, the support: hold LT for a beam that heals, revives from range and tunes teammates up (faster charging and bars), gadgets on Y, power-ups tossed with X. Players join as Nova, Echo, RAM and Fix; swap with the D-pad or <kbd>1</kbd>–<kbd>4</kbd>.</p>
         <p class="fine">Up to four players: extra gamepads join by pressing any button. <kbd>H</kbd>/View shows every control; <kbd>Esc</kbd>/Start opens settings, zones and the boss fights.</p>
         <p class="fine notice" hidden></p>
@@ -188,10 +197,13 @@ export class UI {
     mk('Concourse Lock', () => this.H.zone('arena'));
     mk('Storm Spire Climb', () => this.H.zone('tower'));
     mk('Skyline Relay', () => this.H.zone('skyline'));
+    mk('Helix Foundry', () => this.H.zone('foundry'));
+    mk('Undercity Descent', () => this.H.zone('undercity'));
     mk('Boss: Lockwarden', () => this.H.boss('warden'));
     mk('Boss: Stormcaller', () => this.H.boss('stormcaller'));
     mk('Controls', () => this.toggleHelp(true));
     card.appendChild(row);
+    card.appendChild(h('p', 'fine padhint', '<b>Controller:</b> D-pad or left stick to move · left/right changes a list or slider · A to select · B to resume · LB top · RB settings'));
     this.playerList = h('div', 'players'); card.appendChild(this.playerList);
     const grid = h('div', 'settings'); card.appendChild(grid);
     for (const d of SETTING_DEFS) {
@@ -210,6 +222,7 @@ export class UI {
     }
     card.appendChild(h('p', 'fine', 'Character lines are placeholder writing for the CP-09 test, not canon. Settings are remembered in this browser only.'));
     this.root.appendChild(p); this.pause = p;
+    p.addEventListener('pointermove', () => p.classList.remove('padnav'));   // the mouse takes over: no controller focus ring
   }
   setPaused(on, world) {
     this.paused = on; this.pause.hidden = !on;
@@ -219,7 +232,7 @@ export class UI {
     this.playerList.innerHTML = '';
     for (const p of world.players) {
       const row = h('div', 'prow');
-      row.appendChild(h('span', 'pmark', `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${p.device === 'kbm' ? 'Keyboard + mouse' : 'Gamepad ' + (Number(p.device.slice(3)) + 1)}`));
+      row.appendChild(h('span', 'pmark', `<b style="color:${PLAYER_COLORS[p.slot]}">${PLAYER_MARKS[p.slot]} P${p.slot + 1}</b> ${isBot(p) ? 'AI teammate' : p.device === 'kbm' ? 'Keyboard + mouse' : 'Gamepad ' + (Number(p.device.slice(3)) + 1)}`));
       for (const c of ROSTER) {
         const b = h('button', 'btn small' + (p.char === c ? ' on' : ''), CHARS[c].name);
         b.addEventListener('click', () => { this.H.pick(p, c); this.renderPlayerList(world); }); row.appendChild(b);
@@ -228,18 +241,54 @@ export class UI {
       this.playerList.appendChild(row);
     }
   }
+  // Controller navigation of the pause menu. The D-pad or left stick moves to the nearest control in that
+  // direction (across the button rows and the settings grid, not just down a list); on a list or a slider,
+  // left/right changes its value instead. A presses a button or ticks a box (and cycles a list), B goes back
+  // to the game, LB jumps to the top and RB to the settings. Held directions repeat (input.js).
   menuNav(ev) {
-    if (!this.paused || !this.focusables) return;
-    const f = this.focusables;
-    if (ev.type === 'up' || ev.type === 'down') {
-      this.focusIdx = (this.focusIdx + (ev.type === 'down' ? 1 : -1) + f.length) % f.length; f[this.focusIdx].focus();
+    if (!this.paused) return;
+    const f = [...this.pause.querySelectorAll('button, select, input')].filter(e => !e.disabled && e.offsetParent !== null);
+    if (!f.length) return;
+    this.pause.classList.add('padnav');
+    let el = f.includes(document.activeElement) ? document.activeElement : null;
+    const go = to => { if (!to) return; to.focus({ preventScroll: true }); to.scrollIntoView({ block: 'nearest' }); this.focusIdx = f.indexOf(to); };
+    if (!el && ['up', 'down', 'swap', 'confirm'].includes(ev.type)) { go(f[Math.max(0, Math.min(this.focusIdx || 0, f.length - 1))]); return; }
+    const fire = (e, type) => e.dispatchEvent(new Event(type, { bubbles: true }));
+    if (ev.type === 'swap' && el && el.tagName === 'SELECT') {
+      const i = Math.max(0, Math.min(el.options.length - 1, el.selectedIndex + ev.dir));
+      if (i !== el.selectedIndex) { el.selectedIndex = i; fire(el, 'change'); }
+      return;
+    }
+    if (ev.type === 'swap' && el && el.type === 'range') {
+      const v = Math.max(Number(el.min), Math.min(Number(el.max), Number(el.value) + Number(el.step || 1) * ev.dir));
+      el.value = String(v); fire(el, 'input'); fire(el, 'change');
+      return;
+    }
+    if (ev.type === 'up' || ev.type === 'down' || ev.type === 'swap') {
+      const [dx, dy] = ev.type === 'up' ? [0, -1] : ev.type === 'down' ? [0, 1] : [ev.dir, 0];
+      const a = el.getBoundingClientRect(), ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+      let best = null, bs = Infinity;
+      for (const c of f) {
+        if (c === el) continue;
+        const b = c.getBoundingClientRect(), bx = b.left + b.width / 2, by = b.top + b.height / 2;
+        const along = (bx - ax) * dx + (by - ay) * dy, across = Math.abs((bx - ax) * dy) + Math.abs((by - ay) * dx);
+        if (along <= 4) continue;
+        const s = along + across * (dy ? 0.6 : 2.5);   // up/down: the next row, then the nearest in it
+        if (s < bs) { bs = s; best = c; }
+      }
+      go(best);
     } else if (ev.type === 'confirm') {
-      const el = f[this.focusIdx];
-      if (el.tagName === 'BUTTON') el.click();
-      else if (el.tagName === 'SELECT') { el.selectedIndex = (el.selectedIndex + 1) % el.options.length; el.dispatchEvent(new Event('change')); }
-      else if (el.type === 'checkbox') { el.checked = !el.checked; el.dispatchEvent(new Event('change')); }
-      else if (el.type === 'range') { const v = Number(el.value) + Number(el.step) * 2; el.value = String(v > Number(el.max) ? el.min : v); el.dispatchEvent(new Event('input')); }
-    } else if (ev.type === 'back') this.H.resume();
+      if (el.tagName === 'BUTTON') {
+        const at = f.indexOf(el); el.click();
+        // (a character pick redraws the player list: keep the focus on the same spot)
+        if (this.paused && !el.isConnected) { const g = [...this.pause.querySelectorAll('button, select, input')].filter(e => !e.disabled && e.offsetParent !== null); if (g[at]) g[at].focus({ preventScroll: true }); }
+      }
+      else if (el.tagName === 'SELECT') { el.selectedIndex = (el.selectedIndex + 1) % el.options.length; fire(el, 'change'); }
+      else if (el.type === 'checkbox') { el.checked = !el.checked; fire(el, 'change'); }
+      else if (el.type === 'range') { const v = Number(el.value) + Number(el.step) * 2; el.value = String(v > Number(el.max) ? el.min : v); fire(el, 'input'); fire(el, 'change'); }
+    } else if (ev.type === 'prevTab') go(f[0]);
+    else if (ev.type === 'nextTab') go(this.pause.querySelector('.settings select, .settings input') || f[f.length - 1]);
+    else if (ev.type === 'back') this.H.resume();
   }
 
   // ---- Help ----
@@ -283,7 +332,7 @@ export class UI {
       <tr><td>Guard: hold to raise the Rampart, a tower shield. It blocks strikes, shots and blasts from in front (shockwaves along the floor still go under it) and covers everyone behind him. The damage comes off its Integrity (the blue bar), which grows back once he lowers it; broken, he reels and must wait for it. Raise it just before a hit for a Perfect Guard: no cost, a shot goes back the way it came, a striker reels. Aim up to hold it overhead. He walks slowly behind it and can jump with it up</td><td>Hold LT</td><td>Hold Q or L</td></tr>
       <tr><td>Kinetic Release: every point the shield blocks is stored as Kinetic; fire while guarding lets it out as a cone of force, stronger the more is stored</td><td>RT while guarding</td><td>Left click or K while guarding</td></tr>
       <tr><td>Ram Charge (his dash): a shoulder charge behind the shield that scoops up light enemies and slams them into the next wall. Hold it while standing still for the Battering Ram: three levels, further and faster, and from level 2 it carries heavy enemies too and breaks armor. Nothing knocks him about while he charges</td><td>B · hold B</td><td>Shift · hold Shift</td></tr>
-      <tr><td>Breach Cannon: tap for a heavy slug; hold to charge a Breach Shot that punches through enemies (level 3 bursts at the end)</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
+      <tr><td>Breach Cannon: tap for a heavy slug; hold to charge a Breach Shot that punches through enemies (level 3 bursts at the end); keep holding to Level 4 for the Breach Beam, a sustained column of hard light that shoves everything in its line back</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
       <tr><td>Melee: shield bash, edge strike, Piston Punch; a shield swat in the air; hold for the Seismic Slam (shockwaves run both ways along the floor). From a guard, melee is a quick shove. His ground pound lands wider and harder</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
       <tr><td>Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). He is big and slow, with lower jumps and much more health</td><td colspan="2">Always</td></tr>
       <tr><td>Bulwark Wall: a hard-light wall in front of him for 8 s. Enemy shots stop at it and enemies can't get through until they break it; your team's shots pass through it boosted</td><td>Y</td><td>E, I, or middle click</td></tr>
@@ -293,6 +342,8 @@ export class UI {
       <tr><td>Patch Beam: hold to beam the teammate who needs it most. It heals fast, then adds Plating, and Tunes Up whoever it holds: they charge, recharge and fill their bars 1.5 times as fast. On a downed teammate it revives them from range; with no one near she welds herself. She moves slowly while it runs</td><td>Hold LT</td><td>Hold Q or L</td></tr>
       <tr><td>Field Mechanic: beside a downed teammate she revives three times as fast as anyone else, and whoever she brings back has 60% of their health</td><td colspan="2">Stand next to them</td></tr>
       <tr><td>Gadgets (cost Scrap): build the selected one in front of her; building it again moves it. <b>Patch Pylon</b>: heals everyone in its field, and a downed teammate inside gets back up on their own. <b>Sentry</b>: shoots the nearest enemy in sight (rockets too at level 3). <b>Amp Coil</b>: teammates in its field charge and fill their bars faster. Two wrench hits raise a gadget a level (up to 3) and refresh it</td><td>Y build · RB pick</td><td>E build · R pick</td></tr>
+      <tr><td>Team commands to the AI teammates (Settings: AI teammates): <b>Attack my target</b> (all go for your lock-on target), <b>Cover me</b> (RAM shields you, Fix beams you, the others take what comes for you), <b>Regroup on me</b> (they close in for a few seconds), <b>Hold here</b> (they stand their ground where you were). The same command again cancels it</td><td>Hold LB + D-pad up: tap Attack / hold Cover; LB + D-pad down: tap Regroup / hold Hold</td><td>Alt+1 Attack / Alt+2 Cover / Alt+3 Regroup / Alt+4 Hold</td></tr>
+      <tr><td>Breakable pieces and power-ups along the routes: crates, barricades, glass and pillars break under attacks (a pillar only under heavy blows; RAM's charge goes through), and some crates hold a power-up. Power-ups wait along the way under a column of light: <b>Medkit</b>, <b>Plating</b>, <b>Overclock</b>, an <b>Ult Cell</b> (40 ultimate) and <b>Fury</b> (+50% damage, +30% horizontal knockback for 12 s)</td><td>Walk into it</td><td>Walk into it</td></tr>
       <tr><td>Power-ups (cost Scrap): melee with no enemy or gadget of hers close tosses the selected one to the nearest teammate in front (or drops it at her feet; anyone can pick it up). <b>Overclock</b>: everything charges, recharges and fills 1.6 times as fast for 10 s. <b>Plating</b>: an overshield over the health bar. <b>Medkit</b>: 40 health</td><td>X (nothing close) · LB pick</td><td>Right click or J · T pick</td></tr>
       <tr><td>Rivet Gun: tap for a burst of rivets; hold for a Hot Rivet that sticks in what it hits and bursts</td><td>RT · hold RT</td><td>Left click or K · hold</td></tr>
       <tr><td>Wrench: swing, backswing and a clanging overhead (close to an enemy or one of her gadgets); hold for the Torque Slam, a ring of sparks that stuns light enemies and drones. Her ground pound's landing heals teammates close by</td><td>X · hold X</td><td>Right click or J · hold</td></tr>
@@ -313,6 +364,14 @@ export class UI {
 
   // ---- In-game messages ----
   showBanner(text, sub) { this.banner.innerHTML = `<strong>${text}</strong>${sub ? `<span>${sub}</span>` : ''}`; this.banner.hidden = false; this.bannerT = 2.8; }
+  // The team command in force (bot.js), shown above the toast line
+  setOrder(o) {
+    const key = o ? o.name + o.slot : '';
+    if (key === this.orderKey) return; this.orderKey = key;
+    if (!this.orderEl) { this.orderEl = h('div', 'order'); this.root.appendChild(this.orderEl); }
+    this.orderEl.hidden = !o;
+    if (o) { this.orderEl.innerHTML = `<b style="color:${PLAYER_COLORS[o.slot]}">${PLAYER_MARKS[o.slot]} P${o.slot + 1}</b> Team order · <strong>${o.name}</strong>`; }
+  }
   toast(text) { this.toastEl.textContent = text; this.toastEl.hidden = false; this.toastT = 2.2; }
   bark(p, text) {
     const el = h('div', 'bark', `<b>${CHARS[p.char].name}</b> ${text}`);
@@ -324,13 +383,13 @@ export class UI {
     switch (ev.type) {
       case 'banner': this.showBanner(ev.text, ev.sub); break;
       case 'checkpoint': this.toast('Checkpoint reached'); break;
-      case 'join': this.toast(`Player ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`); break;
+      case 'join': this.toast(`${isBot(ev.p) ? 'AI teammate' : 'Player'} ${ev.p.slot + 1} joined as ${CHARS[ev.p.char].name}`); break;
       case 'leave': this.toast(`Player ${ev.slot + 1} left`); break;
       case 'downed': this.toast(ev.secondWind ? 'Second Wind: getting back up' : `Player ${ev.p.slot + 1} is down. Stand next to them to revive${world.players.some(q => q.char === 'fix' && q !== ev.p) ? ' (Fix: faster, and her beam works from range)' : ''}`); break;
       case 'wipe': this.showBanner('Team down', 'Returning to the last checkpoint'); break;
       case 'bark': this.bark(ev.p, ev.text); break;
       case 'swap': this.toast(`Player ${ev.p.slot + 1} is now ${CHARS[ev.p.char].name}`); break;
-      case 'ultReady': this.toast(`P${ev.p.slot + 1} ultimate ready: ${ev.p.device === 'kbm' ? 'press V' : 'pull both triggers'}`); break;
+      case 'ultReady': if (isBot(ev.p)) break; this.toast(`P${ev.p.slot + 1} ultimate ready: ${ev.p.device === 'kbm' ? 'press V' : 'pull both triggers'}`); break;
     }
   }
 
@@ -339,7 +398,7 @@ export class UI {
   updateUlt(world) {
     const U = world.ultCast, el = this.ultEl;
     if (!U) { if (this.ultKey) { this.ultKey = ''; el.className = 'ultcast'; } return; }
-    const joiners = U.phase === 'cast' ? world.players.filter(q => !U.members.includes(q) && q.ult >= ULT.max && q.state !== 'dead' && q.state !== 'downed') : [];
+    const joiners = U.phase === 'cast' ? world.players.filter(q => !isBot(q) && !U.members.includes(q) && q.ult >= ULT.max && q.state !== 'dead' && q.state !== 'downed') : [];
     const key = `${U.phase}|${U.name}|${U.members.map(m => m.slot).join()}|${joiners.map(q => q.slot).join()}`;
     if (key === this.ultKey) return;
     this.ultKey = key;
@@ -398,7 +457,7 @@ export class UI {
           ult: $('.ultbar i', el), ultTxt: $('.ultbar b', el), ultReady: null };
         this.panels.set(p.slot, P);
       }
-      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}`;
+      P.mark.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? ' · AI' : ''}`;
       P.name.textContent = CHARS[p.char].name; P.role.textContent = CHARS[p.char].role;
       P.fill.style.width = `${Math.max(0, p.hp / p.maxHp) * 100}%`;
       P.strain.style.width = `${Math.max(0, (p.hp + p.strain) / p.maxHp) * 100}%`;
@@ -446,7 +505,7 @@ export class UI {
       const s = view.screenOf(p.x, p.y + p.h + 0.45);
       const r = view.canvas.getBoundingClientRect();
       const x = Math.max(16, Math.min(r.width - 16, s.x)), y = Math.max(16, Math.min(r.height - 16, s.y));
-      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}` + (p.state === 'downed' ? ' · DOWN' : p.veiled ? ' · hidden' : '');
+      m.textContent = `${PLAYER_MARKS[p.slot]} P${p.slot + 1}${isBot(p) ? ' AI' : ''}` + (p.state === 'downed' ? ' · DOWN' : p.veiled ? ' · hidden' : '');
       m.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
       m.hidden = p.state === 'dead';
     }

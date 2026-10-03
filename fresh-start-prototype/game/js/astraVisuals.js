@@ -50,7 +50,8 @@ export class AstraVisuals {
     // A structural front fascia, recessed ventilation and a quiet rail behind the action plane.
     for(const b of BOXES) {
       const w=b.x1-b.x0, h=b.y1-b.y0, mid=(b.x0+b.x1)/2;
-      if(b.type==='g'||b.tag==='bound'||w<2||b.tag==='tunnel') continue;
+      // New routes have their own landmarks. Destructible meshes must never receive baked trim.
+      if(b.type==='g'||b.type==='d'||mid>=400||b.tag==='bound'||w<2||b.tag==='tunnel') continue;
       const depth=b.type==='o'?1.34:2.26;
       const accent=mid<60?M.cyan:mid<97?M.gold:mid<162?M.steel:M.cyan;
       for(let x=b.x0+0.5;x<b.x1-0.3;x+=2.2) {
@@ -223,7 +224,7 @@ export class AstraVisuals {
       seen.add(p); let shadow=this.shadows.get(p);
       if(!shadow){shadow=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({map:this.shadowTex,transparent:true,depthWrite:false,opacity:0.6,polygonOffset:true,polygonOffsetFactor:-1}));shadow.rotation.x=-Math.PI/2;this.scene.add(shadow);this.shadows.set(p,shadow);}
       let floor=-100;
-      for(const b of BOXES)if(b.type!=='g'&&p.x>=b.x0&&p.x<=b.x1&&b.y1<=p.y+0.2)floor=Math.max(floor,b.y1);
+      for(const b of BOXES)if(b.type!=='g'&&!b.broken&&p.x>=b.x0&&p.x<=b.x1&&b.y1<=p.y+0.2)floor=Math.max(floor,b.y1);
       const height=p.y-floor;
       shadow.visible=!p.dead&&p.state!=='dead'&&height<12&&Math.abs(p.x-world.cam.x)<world.cam.halfW+4;
       if(!shadow.visible)continue;

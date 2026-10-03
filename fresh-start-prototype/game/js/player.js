@@ -49,7 +49,7 @@ export function createPlayer(slot, device, charId, x, y) {
     // Fix: Scrap, the selected gadget and power-up, the Patch Beam, and a tossed power-up waiting for the button
     scrap: FIX.scrap.start, gadgetSel: 'pylon', powerSel: 'overclock', patch: null, tossArmed: false, rivetQ: 0, rivetT: 0,
     // Support anyone can carry: Plating (an overshield), Overclock, the Patch Beam's Tune-Up, an Amp Coil's field
-    plate: 0, overclockT: 0, tuneT: 0, ampK: 1, fixRevive: false, padCd: 0,
+    plate: 0, overclockT: 0, tuneT: 0, ampK: 1, fixRevive: false, padCd: 0, furyT: 0,
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
     lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0, lockSuspend: false,
@@ -154,7 +154,7 @@ export function updatePlayer(p, cmd, world) {
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
     'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'shootT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd', 'quickCd']) if (p[k] > 0) p[k]--;
+    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd', 'quickCd', 'furyT']) if (p[k] > 0) p[k]--;
   // Ability cooldowns recharge faster under Fix's boosts (Overclock, Tune-Up, an Amp Coil)
   const rate = boostRate(p);
   for (const k of ['aegisCd', 'burstCd', 'wallCd', 'linkCd', 'provokeCd']) if (p[k] > 0) p[k] = Math.max(0, p[k] - rate);
@@ -795,7 +795,7 @@ function landPound(p, world) {
   const r = (L.r + P.fallBonus * Math.min(1, fall / 12)) * K;
   const inst = world.newInstance();
   world.spawnHitbox({ owner: p, team: 'p', x0: p.x - r, x1: p.x + r, y0: p.y - 0.3, y1: p.y + 1.6 + 0.3 * S.level, dmg: L.dmg * K, poise: L.poise * K,
-    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak || K > 1, instance: inst, scatter: true });
+    kb: [L.kb, L.up], radial: true, cx: p.x, armorBreak: !!L.armorBreak || K > 1, instance: inst, scatter: true, ramKnock: p.char === 'ram' });
   if (p.char === 'fix') world.repairPulse(p, p.x, p.y, r + 1, FIX.poundHeal[S.level]);
   S.phase = 'land'; S.t = 0; S.inst = inst; S.hit = false;
   p.vx = 0; p.hitConfirm = false; p.hitstop = 2 + S.level;   // a beat of impact freeze, longer the bigger the pound
@@ -846,7 +846,7 @@ function stateAttack(p, cmd, world) {
     world.spawnHitbox({ owner: p, team: 'p', x0: cx - b.w / 2, x1: cx + b.w / 2, y0: p.y + b.y - b.h / 2, y1: p.y + b.y + b.h / 2,
       dmg: m.dmg, poise: m.poise, kb: [p.facing * m.kb[0], m.kb[1]], armorBreak: !!m.armorBreak, heavy: !!m.heavy,
       launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x,
-      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield, airEnder: m.ender,
+      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield, ramKnock: p.char === 'ram', airEnder: m.ender,
       multi: !!m.multi, finalPulse: !m.multi || t >= activeEnd - m.multi });
   }
   if (m.launcher && t === activeEnd && p.hitConfirm) p.vy = 9;   // Echo hops after a launched enemy
@@ -937,6 +937,14 @@ function updateDowned(p, cmd, world) {
   if (p.downedT <= 0) world.bleedOut(p);
 }
 
+// Echo's utility belt: throw a snare, or plant one at his feet (setting a trap keeps Veil up)
+function useSnare(p, world, plant) {
+  if (p.snares <= 0 || !canFire(p)) return;
+  if (plant) world.plantSnare(p);
+  else { world.throwSnare(p); breakVeil(p, world, 'attack'); }
+  p.snares--;
+  if (p.snareRecharge <= 0) p.snareRecharge = HUNTER.snareRecharge;
+}
 // Echo's sniper focus (0-1) after holding fire for t ticks
 export function rifleFocus(t) { const R = HUNTER.rifle; return Math.max(0, Math.min(1, (t - R.raise) / R.focus)); }
 
@@ -993,9 +1001,14 @@ function handleFire(p, cmd, world) {
     return;
   }
   // Echo, Hunter kit: tap to throw a snare (crouch + tap plants one at your feet); hold to raise the
-  // staff-rifle and let go to fire a long shot, or hold longer for a marking shot (HUNTER.rifle)
+  // staff-rifle and let go to fire a long shot, or hold longer for a marking shot (HUNTER.rifle).
+  // Settings: Echo's utility belt on LB moves the snares to LB (crouch + LB plants), and a tap of fire is
+  // then a quick unscoped rifle shot.
   if (SETTINGS.echoKit === 'hunter') {
-    const R = HUNTER.rifle;
+    const R = HUNTER.rifle, beltLB = SETTINGS.echoBelt === 'lb';
+    if (beltLB && p.buf.sub <= ACTION_BUFFER && canFire(p)) {
+      p.buf.sub = 99; useSnare(p, world, p.onGround && cmd.my < -0.55);
+    }
     if (cmd.pressed.fire) p.plantPress = p.onGround && cmd.my < -0.55;   // crouched when pressed: plant on release
     if (cmd.held.fire && canFire(p)) {
       // Raising the rifle takes real time; the focus builds faster under Fix's boosts
@@ -1005,13 +1018,9 @@ function handleFire(p, cmd, world) {
     }
     if (!cmd.held.fire && p.rifleT > 0) {
       const t = p.rifleT; p.rifleT = 0;
-      if (t < R.raise) {
-        if (p.snares > 0 && canFire(p)) {
-          if (p.onGround && (p.plantPress || cmd.my < -0.55)) world.plantSnare(p);   // setting a trap keeps Veil up
-          else { world.throwSnare(p); breakVeil(p, world, 'attack'); }
-          p.snares--;
-          if (p.snareRecharge <= 0) p.snareRecharge = HUNTER.snareRecharge;
-        }
+      if (t < R.raise && !beltLB) useSnare(p, world, p.onGround && (p.plantPress || cmd.my < -0.55));
+      else if (t < R.raise) {
+        if (p.rifleCd === 0 && canFire(p)) { world.fireSniper(p, 0); p.rifleCd = p.rifleCdMax = R.cd; breakVeil(p, world, 'attack'); }
       } else if (p.rifleCd === 0 && canFire(p)) {
         world.fireSniper(p, rifleFocus(t)); p.rifleCd = p.rifleCdMax = R.cd; breakVeil(p, world, 'attack');
       } else world.emit('rifleLower', { p });
@@ -1150,18 +1159,19 @@ export function gainUlt(p, amount, world) {
   if (was < ULT.max && p.ult >= ULT.max) world.emit('ultReady', { p });
 }
 
-// Level 4: the sustained beam. He braces (slow on the ground, hovering in the air), the beam follows the
-// aim at a limited turn rate, and the world deals its damage (world.beamTick). Dash or parry cut it short;
-// a hit ends it (combat.hitPlayer).
+// Level 4: the sustained beam (Nova's, and RAM's Breach Beam: beamSpec). He braces (slow on the ground,
+// hovering in the air), the beam follows the aim at a limited turn rate, and the world deals its damage
+// (world.beamTick). Dash or parry cut it short; a hit ends it (combat.hitPlayer).
+export const beamSpec = p => (p.char === 'ram' ? RAM.beam : MARKSMAN.beam);
 function startBeam(p, world) {
-  const B = MARKSMAN.beam;
-  p.beam = { t: B.ticks, dx: p.aimX, dy: p.aimY, mult: focusMult(p) * spendOvercharge(p), attach: p.attachment, pulse: 0,
+  const B = beamSpec(p), ram = p.char === 'ram';
+  p.beam = { t: B.ticks, dx: p.aimX, dy: p.aimY, mult: ram ? 1 : focusMult(p) * spendOvercharge(p), attach: ram ? 'breach' : p.attachment, pulse: 0,
     armor: new Map(), family: { focused: false, rocketed: true, perfect: false }, segs: [] };
   p.chargeT = 0;
-  setState(p, 'beam'); world.emit('beamStart', { p, attach: p.attachment, over: p.beam.mult > focusMult(p) });
+  setState(p, 'beam'); world.emit('beamStart', { p, attach: p.beam.attach, over: !ram && p.beam.mult > focusMult(p) });
 }
 function stateBeam(p, cmd, world) {
-  const B = MARKSMAN.beam, b = p.beam;
+  const B = beamSpec(p), b = p.beam;
   if (!b) { setState(p, 'normal'); return; }
   const a0 = Math.atan2(b.dy, b.dx);
   let da = Math.atan2(p.aimY, p.aimX) - a0;
@@ -1170,7 +1180,7 @@ function stateBeam(p, cmd, world) {
   b.dx = Math.cos(a); b.dy = Math.sin(a);
   if (Math.abs(b.dx) > 0.2) p.facing = sign(b.dx);
   // No push-back: on the ground he can creep along; in the air he hangs, sinking slowly, while it fires
-  if (p.onGround) { p.vx = approach(p.vx, cmd.mx * CHARS.nova.run * B.slow, 40 * DT); p.vy = -0.5; }
+  if (p.onGround) { p.vx = approach(p.vx, cmd.mx * CHARS[p.char].run * B.slow, 40 * DT); p.vy = -0.5; }
   else { p.vx = approach(p.vx, 0, 20 * DT); p.vy = approach(p.vy, -B.hover, 40 * DT); p.fastFall = false; }
   if (tryParry(p, world) || tryDash(p, cmd, world)) { world.endBeam(p, 'cancel'); return; }
   world.beamTick(p);
@@ -1196,7 +1206,7 @@ function stageOf(t, C, win, l4 = Infinity) {
 }
 export function chargeStage(p) {
   if (marksman(p)) return stageOf(p.chargeT, MARKSMAN.charge, MARKSMAN.perfectWindow, MARKSMAN.beam.at);
-  if (p.char === 'ram') return stageOf(p.chargeT, RAM.cannon.charge, 0);
+  if (p.char === 'ram') return stageOf(p.chargeT, RAM.cannon.charge, 0, RAM.beam.at);
   if (p.char === 'fix') return stageOf(p.chargeT, FIX.rivet.charge, 0);
   // Sentinel kit: two levels (lance, rail) and no Perfect Release
   return p.chargeT <= 0 ? '' : p.chargeT < NOVA.charge1 ? 'charging' : p.chargeT < NOVA.charge2 ? 'L1' : 'L2';
@@ -1448,11 +1458,12 @@ function fireRam(p, cmd, world) {
   if (cmd.pressed.fire && p.fireCd === 0 && canFire(p)) { world.fireSlug(p, 0); p.fireCd = C.cd; }
   if (cmd.held.fire && canFire(p)) {
     const t0 = p.chargeT; p.chargeT += boostRate(p);
-    crossed(t0, p.chargeT, C.charge, level => world.emit('chargeLevel', { p, level }));
+    crossed(t0, p.chargeT, [...C.charge, RAM.beam.at], level => world.emit('chargeLevel', { p, level }));
   }
   if (!cmd.held.fire && p.chargeT > 0) {
-    const level = levelOf(p.chargeT, C.charge); p.chargeT = 0;
-    if (level && canFire(p)) world.fireSlug(p, level);
+    const t = p.chargeT, level = levelOf(t, C.charge); p.chargeT = 0;
+    if (t >= RAM.beam.at) { if (canFire(p)) startBeam(p, world); }   // Level 4: the Breach Beam
+    else if (level && canFire(p)) world.fireSlug(p, level);
   }
 }
 

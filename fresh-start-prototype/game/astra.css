@@ -32,6 +32,12 @@ button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visi
 .start-actions { display:flex; flex-wrap:wrap; gap:8px; max-width:500px; margin-top:17px; }
 .start-actions .deploy { width:100%; min-height:49px; font-size:14px; letter-spacing:.1em; text-align:left; padding-left:20px; }
 .start-actions .btn:not(.deploy) { flex:1; font-size:12px; }
+.deployment-settings.settings { grid-template-columns:1.3fr 1fr; gap:12px; margin:8px 0 10px; max-width:500px; }
+.deployment-settings .setting { display:flex; flex-direction:column; align-items:stretch; gap:5px; padding:0; border:0; font-size:10px; }
+.deployment-settings select { min-width:0; width:100%; padding:7px 8px; font-size:12px; background:#102a3b; color:#d5e7ec; }
+.operation-actions { margin-top:10px; border-top:1px solid #3c596b; padding-top:14px; }
+.order { bottom:104px; font-size:11px; max-width:50vw; text-align:center; }
+.padnav summary:focus { outline:3px solid var(--warm); outline-offset:3px; }
 .join-note { font:9px var(--font-mono); color:#89b6c7; margin-top:17px; }
 .join-note span { display:block; font:11px var(--font-body); margin-top:5px; color:#87a1b4; }
 .start-stamp { position:absolute; right:40px; bottom:38px; border-left:2px solid #efc77f; padding-left:16px; text-shadow:0 2px 6px #001; }
@@ -80,6 +86,6 @@ button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visi
 .loading-state { position:absolute; z-index:100; inset:0; display:grid; place-content:center; text-align:center; background:#091c2c; color:#d5e9f4; padding:30px; font-family:system-ui; }
 .loading-state strong { font-size:24px; color:#e9bd72; }
 .loading-state p { max-width:600px; line-height:1.5; }
-@media(max-height:760px) and (min-width:801px) { .start-content { padding-top:22px; } .start-content h1{font-size:85px;margin:20px 0 15px;} .start-tag{margin:15px 0 8px;} .start-copy{font-size:13px;} .roster{margin:17px 0 10px;} .hero-card{height:92px;} .hero-card svg{height:78px;} .hero-description{min-height:95px;} .start-actions{margin-top:10px;} .join-note{margin-top:12px;} }
+@media(max-height:760px) and (min-width:801px) { .start-content { padding-top:18px; padding-bottom:12px; } .start-content h1{font-size:80px;margin:18px 0 15px;} .start-tag{margin:15px 0 8px;} .start-copy{font-size:13px;} .roster{margin:17px 0 10px;} .hero-card{height:88px;} .hero-card svg{height:76px;} .hero-description{min-height:90px;} .start-actions{margin-top:10px;} .join-note{margin-top:10px;} }
 @media(max-width:800px) { .start-content { width:min(580px,95vw); padding:26px; } .start-wash{background:linear-gradient(90deg,#061725f7,#061725ce);} .start-content h1{font-size:84px;} .start-stamp{display:none;} .mission-hud{top:115px;width:80vw;} .mission-hud.boss-active{top:115px;} .mission-hud small{display:none;} .bossbar{top:auto;bottom:62px;width:70vw;} .context-hint{font-size:8px;max-width:80vw;white-space:normal;text-align:center;} .hud .panel{width:210px;} .result-stats{grid-template-columns:repeat(2,1fr);} .results-card h2{font-size:54px;} }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;}}

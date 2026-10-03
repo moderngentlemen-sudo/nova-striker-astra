@@ -1,6 +1,7 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><title>Astra integration smoke test</title>
-<style>body{margin:0;background:#071725;color:#cee4ec;font:14px system-ui}header{padding:12px;display:flex;gap:10px;align-items:center}button{padding:9px 12px}iframe{width:100%;height:calc(100vh - 62px);border:0}output{margin-left:auto}</style>
-<header><b>LOCAL TEST HARNESS</b><button id="source">Load source</button><button id="offline">Load standalone</button><button id="party">Four-player scene</button><button id="complete">Verify completion screen</button><output id="status">Loading…</output></header>
+<style>body{margin:0;background:#071725;color:#cee4ec;font:14px system-ui}header{padding:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}button{padding:9px 12px}iframe{width:100%;height:calc(100vh - 62px);border:0}output{margin-left:auto}details{padding:8px 12px;border-top:1px solid #345269}pre{white-space:pre-wrap;max-height:260px;overflow:auto}</style>
+<header><b>LOCAL TEST HARNESS</b><button id="source">Load source</button><button id="offline">Load standalone</button><button id="party">Four-player scene</button><button id="complete">Verify completion screen</button><button id="squad">Verify squad integration</button><button id="visuals">Verify renderer integration</button><output id="status">Loading…</output></header>
+<details id="visual-results" hidden><summary>Renderer integration results</summary><pre id="visual-log"></pre></details>
 <iframe id="game" src="../game/" title="Game under test"></iframe>
 <script>
 const game=document.getElementById('game'), status=document.getElementById('status');
@@ -23,5 +24,140 @@ document.getElementById('complete').onclick=()=>{
   const beacon=w.interactables.find(o=>o.id==='city-beacon');p.x=beacon.x;p.y=beacon.y;p.vx=p.vy=0;p.state='normal';p.hp=p.maxHp;
   w.interact(p);n.step(100);
   requestAnimationFrame(()=>requestAnimationFrame(()=>{status.textContent=w.mission.completed&&n.ui.resultsOpen?'PASS: production mission completion → results':'FAIL: completion did not reach results';}));
+};
+// Uses the production main loop, DOM event listeners, bot manager, UI handlers,
+// and world reset. It deliberately does not substitute a second implementation.
+document.getElementById('squad').onclick=async()=>{
+  const iw=game.contentWindow,n=iw.__NS;if(!n)return;
+  const saved={ai:n.SETTINGS.aiTeammates,pads:n.input.pads,manual:n.manual,ring:n.view.fx.groundRing};
+  let savedSettings;try{savedSettings=iw.localStorage.getItem('nova-striker-proto-settings');}catch{}
+  const frames=()=>new Promise(resolve=>iw.requestAnimationFrame(()=>iw.requestAnimationFrame(resolve)));
+  const checks=[]; const check=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
+  const pad={index:0,axes:[0,0,0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0}))};
+  status.textContent='Checking squad lifecycle…';
+  try{
+    n.title();n.manual=true;n.SETTINGS.aiTeammates=0;n.input.pads=()=>[pad];await frames();
+    const focusButton=(panel,text)=>[...panel.querySelectorAll('button')].find(b=>b.textContent===text).focus();
+    focusButton(n.ui.start,'Settings');pad.buttons[0]={pressed:true,value:1};await frames();
+    check(n.ui.paused&&!n.world.players.length,'A controller can open title Settings without joining prematurely');
+    pad.buttons[0]={pressed:false,value:0};await frames();focusButton(n.ui.pause,'Training');
+    pad.buttons[0]={pressed:true,value:1};await frames();n.step();
+    check(n.world.players.length===1&&n.world.players[0].device==='pad0','Controller deployment through title Settings owns P1 without a phantom keyboard player');
+    pad.buttons[0]={pressed:false,value:0};await frames();n.title();
+    focusButton(n.ui.start,'Settings');pad.buttons[0]={pressed:true,value:1};await frames();
+    pad.buttons[0]={pressed:false,value:0};await frames();
+    n.ui.pause.dispatchEvent(new iw.KeyboardEvent('keydown',{key:'Tab',code:'Tab',bubbles:true}));
+    n.ui.H.start('training');n.step();
+    check(n.world.players.length===1&&n.world.players[0].device==='kbm','Switching to keyboard inside title Settings transfers deployment ownership');
+    n.title();n.ui.menuDevice='pad0';n.ui.start.dispatchEvent(new iw.PointerEvent('pointerdown',{bubbles:true}));
+    check(n.ui.menuDevice==='kbm','Pointer interaction restores keyboard/mouse menu ownership');
+    n.title();n.manual=true;n.SETTINGS.aiTeammates=3;n.start('nova','foundry');n.step();
+    check(n.world.players.length===4&&n.world.players.filter(p=>p.device.startsWith('cpu')).length===3,'Foundry deploy fills three AI slots');
+    const human=n.world.players.find(p=>p.device==='kbm');
+    iw.dispatchEvent(new iw.KeyboardEvent('keydown',{code:'Digit4',altKey:true,bubbles:true}));
+    await frames();iw.dispatchEvent(new iw.KeyboardEvent('keyup',{code:'Digit4',altKey:true,bubbles:true}));
+    check(n.bots.order?.type==='hold'&&n.bots.order.by===human&&human.char==='nova','Alt+4 reaches the real order handler without swapping character');
+    const hold=n.bots.order;n.world.enemies=[];let rings=0;
+    n.view.fx.groundRing=(...args)=>{rings++;return saved.ring.apply(n.view.fx,args);};n.order('attack');
+    check(n.bots.order===hold&&n.ui.toastEl.textContent==='No target in sight.'&&rings===0,'An Attack without a target preserves Hold and reports failure without a success marker');
+    n.bots.reset(n.world);n.order('attack');
+    check(!n.bots.order&&n.ui.toastEl.textContent==='No target in sight.'&&rings===0,'An Attack without a target never claims to cancel an absent order');
+    n.view.fx.groundRing=saved.ring;
+    n.input.pads=()=>[pad];await frames();pad.buttons[0]={pressed:true,value:1};await frames();n.step();
+    check(n.world.players.length===4&&n.world.players.some(p=>p.device==='pad0')&&n.world.players.filter(p=>p.device.startsWith('cpu')).length===2,'A human controller replaces one AI in a full party');
+    pad.buttons[0]={pressed:false,value:0};await frames();
+    n.ui.H.restart();n.step();
+    check(n.world.mission.mode==='route'&&n.world.mission.routeId==='foundry'&&!n.bots.order,'Restart preserves the operation and clears the old order');
+    check(n.world.players.some(p=>p.device==='kbm')&&n.world.players.some(p=>p.device==='pad0')&&n.world.players.length===4,'Restart preserves human ownership and squad size');
+    n.ui.H.remove(n.world.players.find(p=>p.device.startsWith('cpu')));n.step(2);
+    check(+n.SETTINGS.aiTeammates===1&&n.world.players.filter(p=>p.device.startsWith('cpu')).length===1&&n.world.players.length===3,'Removing an AI with two human players does not respawn it from a capacity-limited preference');
+    n.title();
+    check(!n.world.players.length&&!n.bots.order&&!n.ui.resultsOpen&&!n.ui.start.hidden,'Returning to title clears the party, order and results');
+    n.start('ram','undercity');n.step();
+    check(n.world.mission.routeId==='undercity'&&n.world.players[0].char==='ram'&&n.world.players[0].maxHp===350,'Next deployment uses the new operation and RAM baseline');
+    status.textContent=`PASS: ${checks.length} production squad integration checks`;
+  }catch(error){status.textContent='FAIL: '+error.message;console.error(error);}
+  finally{
+    n.input.pads=saved.pads;n.view.fx.groundRing=saved.ring;n.SETTINGS.aiTeammates=saved.ai;n.title();n.manual=saved.manual;
+    try{if(savedSettings===null)iw.localStorage.removeItem('nova-striker-proto-settings');else if(typeof savedSettings==='string')iw.localStorage.setItem('nova-striker-proto-settings',savedSettings);}catch{}
+  }
+};
+// Real WebGL smoke coverage, usable against both the ES modules and the generated standalone.
+// Only test fixtures (camera positions and guard damage) are supplied directly; beam/guard transitions
+// run through main.step, production input commands, world events and View.render.
+document.getElementById('visuals').onclick=async()=>{
+  const iw=game.contentWindow,n=iw.__NS;if(!n)return;
+  const v=n.view,w=n.world,gl=v.r.getContext(),saved={settings:{...n.SETTINGS},manual:n.manual,inject:n.inject,pads:n.input.pads};
+  const results=document.getElementById('visual-results'),log=document.getElementById('visual-log'),checks=[],errors=[];
+  const buttons=[...document.querySelectorAll('header button')],oldError=iw.console.error;
+  const note=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);log.textContent=checks.map(s=>'PASS '+s).join('\n');};
+  const frames=()=>new Promise(resolve=>iw.requestAnimationFrame(()=>iw.requestAnimationFrame(resolve)));
+  const onError=e=>errors.push(e.message||String(e.reason||'unhandled browser error'));
+  iw.console.error=(...args)=>{errors.push(args.map(String).join(' '));oldError.apply(iw.console,args);};
+  iw.addEventListener('error',onError);iw.addEventListener('unhandledrejection',onError);
+  const draw=(dt=1/60)=>{
+    v.render(w,1,dt);
+    const error=gl.getError();if(error!==gl.NO_ERROR)throw Error('WebGL error 0x'+error.toString(16));
+    if(v.r.info.programs.some(p=>p.diagnostics?.runnable===false))throw Error('A renderer shader failed to link');
+    if(errors.length)throw Error(errors[0]);
+  };
+  const quiet=()=>{w.enemies=[];w.arena.state='cleared';w.towerSpawned=true;for(const e of w.encounters)e.state='cleared';};
+  let prev={};
+  const drive=(held={},ticks=1)=>{
+    n.inject=()=>{const p=w.players[0],pressed={},released={};for(const key of ['fire','parry','jump','dash','melee','sig','mode','sub','ult']){pressed[key]=!!held[key]&&!prev[key];released[key]=!held[key]&&!!prev[key];}prev={...held};
+      return {[p.slot]:{mx:0,my:0,aimFree:true,ax:1,ay:0,held:{...held},pressed,released}};};
+    n.step(ticks);
+  };
+  const cameraAt=(x,y)=>{const p=w.players[0];Object.assign(p,{x,y,prevX:x,prevY:y,vx:0,vy:0});Object.assign(w.cam,{x,y:y+2,dist:22});Object.assign(v.cam,w.cam);draw();};
+  buttons.forEach(b=>b.disabled=true);results.hidden=false;results.open=true;log.textContent='';
+  status.textContent='Checking renderer, route landmarks and RAM effects…';
+  try{
+    for(let i=0;i<32&&gl.getError()!==gl.NO_ERROR;i++){} // Ignore errors predating this test.
+    n.title();n.manual=true;n.inject=null;n.input.pads=()=>[];
+    Object.assign(n.SETTINGS,{aiTeammates:0,quality:'high',reducedEffects:false,effectIntensity:0.8,flashIntensity:0.55,impactFrames:true,lockMode:'manual'});
+    for(const [route,points] of [['foundry',[[408,0],[490,0],[626,13.2],[734,24.2]]],['undercity',[[806,20],[878,20],[952,10.4],[1044,0],[1172,0]]]]){
+      n.start('ram',route);n.step(2);quiet();
+      for(const [x,y]of points){cameraAt(x,y);await frames();draw();
+        note(Number.isFinite(v.camera.position.x)&&v.r.info.render.calls>0&&v.sky.position.distanceTo(v.camera.position)<0.001,route+' landmark view at '+x+' renders with a centered sky');}
+      note(v.breakables.meshes.size>0&&[...v.breakables.meshes].some(([b,M])=>!b.broken&&M.g.visible),route+' breakable meshes render near the camera');
+      note([...v.fx.fixfx.pickups.keys()].some(k=>k.level),route+' level power-up meshes are live');
+    }
+    // Every style must execute on the GPU in both rendering paths; all three color modes are covered.
+    const styles=['scifi','comic','eclipse','shatter','thunder','sumi','warp'];
+    for(const quality of ['high','low']){
+      Object.assign(n.SETTINGS,{quality,reducedEffects:quality==='low'});
+      for(let i=0;i<styles.length;i++){
+        n.SETTINGS.impactStyle=styles[i];n.SETTINGS.impactColor=['style','player','character'][i%3];
+        const p=w.players[0];v.impactBy=p;v.startImpact(p.x,p.y+1,1,true);draw(0.01);
+        const U=v.ink.uniforms;
+        note(v.ink.enabled&&U.style.value===i&&U.amount.value>0&&(!n.SETTINGS.reducedEffects||U.amount.value<0.1),quality+' '+styles[i]+' impact compiles/renders'+(n.SETTINGS.reducedEffects?' within reduced-flash limit':''));
+        await frames();draw();
+      }
+    }
+    for(const reduced of [false,true]){
+      Object.assign(n.SETTINGS,{quality:reduced?'low':'high',reducedEffects:reduced,impactStyle:'scifi'});
+      n.start('ram','foundry');prev={};quiet();drive({},3);drive({fire:true},172);drive({},2);draw();
+      const p=w.players[0],B=v.fx.beam.beams.get(p),tag=reduced?'low/reduced':'high/full';
+      note(p.state==='beam'&&p.beam?.segs.length>0&&B?.ram&&B.edge.mesh.visible&&B.core.mesh.visible,tag+' RAM charge/release produces the broad Breach Beam');
+      await frames();draw();
+      w.endBeam(p,'smoke-test');drive({},3);drive({parry:true},12);draw();
+      note(p.state==='guard'&&v.fx.ram.panes.get(p)?.face.visible,tag+' RAM guard pane follows the production guard state');
+      w.guardResult(p,45,false,p.x+1,p.y+1.3,true);drive({parry:true},1);draw(0.06);
+      const P=v.fx.ram.panes.get(p);
+      note(p.integrity<100&&P.cracks.some(k=>k.m.visible),tag+' RAM damage creates visible shield fractures');
+      w.guardResult(p,80,false,p.x+1,p.y+1.3,true);drive({parry:true},1);draw(0.02);
+      note(p.guardBroken&&v.fx.ram.shards.some(s=>s.life>0&&s.m.visible),tag+' broken RAM guard emits shield shards');
+      await frames();draw();
+    }
+    n.inject=null;n.start('nova','mission');n.step(2);draw();
+    note(v.astra.objects.size===w.interactables.length&&v.astra.objects.size>0,'Astra restoration machinery survives the integration');
+    n.title();draw();note(v.astra.showcase.visible&&!v.rigs.size,'Astra title roster returns after route gameplay');
+    note(!errors.length,'No runtime, shader-link or WebGL errors were reported');
+    status.textContent=`PASS: ${checks.length} renderer checks (${game.src.includes('/standalone/')?'standalone':'source'})`;
+  }catch(error){log.textContent+='\nFAIL '+error.message;status.textContent='FAIL: '+error.message;oldError.call(iw.console,error);}
+  finally{
+    Object.assign(n.SETTINGS,saved.settings);n.inject=null;n.title();n.manual=saved.manual;n.inject=saved.inject;n.input.pads=saved.pads;
+    iw.console.error=oldError;iw.removeEventListener('error',onError);iw.removeEventListener('unhandledrejection',onError);buttons.forEach(b=>b.disabled=false);
+  }
 };
 </script></html>

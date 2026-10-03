@@ -2,7 +2,7 @@
   "name": "nova-striker-astra",
   "private": true,
   "type": "module",
-  "description": "Nova Striker Astra: a local co-op action platformer and Skyline Relay mission.",
+  "description": "Nova Striker Astra: a local co-op action platformer with three operations and AI squadmates.",
   "scripts": {
     "test": "node tests/run-all.mjs",
     "build": "node tools/build.mjs",

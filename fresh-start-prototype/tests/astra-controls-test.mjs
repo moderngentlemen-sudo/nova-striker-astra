@@ -47,6 +47,20 @@ for (const action of ['jump', 'parry']) {
   assert(events(t.log, action === 'jump' ? 'jump' : 'dodge').length === 1, `${action} buffer is consumed once`);
 }
 {
+  const t = setup('echo'); SETTINGS.echoBelt = 'lb';
+  const before = t.p.snares; t.p.hitstop = 9;
+  t.run(i => ({ held: { sub: i === 0 } }), 10); t.run({}, 8);
+  assert(events(t.log, 'snareThrow').length === 1 && t.p.snares === before - 1,
+    'Echo optional utility belt inherits Astra hitstop buffering and consumes a press once');
+  SETTINGS.echoBelt = DEFAULT_SETTINGS.echoBelt;
+}
+{
+  const t = setup(); t.p.quickCd = 3; t.p.furyT = 3; t.run({}, 3);
+  assert(t.p.quickCd === 0 && t.p.furyT === 0, 'Paired-loadout cooldown and incoming Fury lifetime both advance after the merge');
+  const ram = setup('ram').p;
+  assert(ram.hp === 350 && ram.maxHp === 350, 'RAM starts with the incoming 350-health tank baseline');
+}
+{
   const t = setup('echo');
   t.p.state = 'attack'; t.p.moveId = 'echo_b1'; t.p.move = MOVES.echo_b1;
   t.p.st = t.p.move.su + t.p.move.ac + 1; t.p.queued = 'echo_b2'; t.p.hitConfirm = true;
@@ -187,7 +201,8 @@ for (const [direction, expected, used] of [[{mx: 1}, 'carry', false], [{my: -1},
     reserveLoadout: { attachment: 'prism', sub: 'well' }, tossArmed: true, subArmed: true });
   for (const key of Object.keys(p.buf)) p.buf[key] = 0;
   t.w.projectiles = [{}]; t.w.hitboxes = [{}]; t.w.barriers = [{}]; t.w.shockwaves = [{}];
-  t.w.gadgets = [{ owner: p, carried: true }]; t.w.pickups = [{}]; t.w.snares = [{}]; t.w.wells = [{}];
+  const oldPickup = { oldSession: true };
+  t.w.gadgets = [{ owner: p, carried: true }]; t.w.pickups = [oldPickup]; t.w.snares = [{}]; t.w.wells = [{}];
   t.w.ultCast = { phase: 'cast', members: [p] }; t.w.scheduled = [{ t: 10, fn() { throw new Error('stale session callback'); } }];
   t.w.startMission();
   assert(t.w.players[0] === p && t.w.players[1] === q && p.device === device && p.hp === p.maxHp && p.scrap > 0,
@@ -196,6 +211,7 @@ for (const [direction, expected, used] of [[{mx: 1}, 'carry', false], [{my: -1},
     p.ult === 0 && p.chargeT === 0 && p.burstT === 0 && p.rifleT === 0 && p.hitstop === 0 && p.quickCd === 0 && !p.airEnderUsed &&
     Object.values(p.buf).every(age => age === 99) && p.reserveLoadout.attachment === 'arc',
     'Mission restart clears pending actions, freezes, ultimates and alternate-loadout state');
-  assert(!t.w.ultCast && ['projectiles', 'hitboxes', 'barriers', 'shockwaves', 'gadgets', 'pickups', 'snares', 'wells', 'scheduled'].every(key => !t.w[key].length),
+  assert(!t.w.ultCast && ['projectiles', 'hitboxes', 'barriers', 'shockwaves', 'gadgets', 'snares', 'wells', 'scheduled'].every(key => !t.w[key].length) &&
+    !t.w.pickups.includes(oldPickup) && t.w.pickups.every(pickup => pickup.level && pickup.rest),
     'Mission restart removes carried gadgets, lingering attacks and previous-session callbacks');
 }

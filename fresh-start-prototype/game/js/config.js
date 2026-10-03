@@ -44,7 +44,7 @@ export const CHARS = {
   // on his feet, lower jumps, more health. He still fits under the gym tunnel crouched and under the arena's
   // floating columns standing.
   ram: {
-    name: 'RAM', role: 'Vanguard', hp: 160,
+    name: 'RAM', role: 'Vanguard', hp: 350,
     run: 6.3, backpedal: 0.75, accelG: 62, decelG: 85, accelA: 42, crouchSpeed: 0.35,
     jumpV: 16.4, dblV: 13.8,
     dash: { ticks: 14, speed: 15, exitKeep: 0.35, cooldown: 26 },
@@ -431,12 +431,22 @@ export const RAM = {
     1: { speed: 32, dmg: 5, poise: 50, kb: 10, r: 0.26, ttl: 40, pierce: 1 },
     2: { speed: 34, dmg: 8, poise: 80, kb: 12, r: 0.32, ttl: 44, pierce: 2, armorBreak: true },
     3: { speed: 36, dmg: 12, poise: 110, kb: 15, r: 0.4, ttl: 48, pierce: 3, armorBreak: true, blast: { r: 2.2, dmg: 6, poise: 60 } } },
+  // Breach Beam (Level 4: keep holding fire past level 3 until `at` ticks): like Nova's Level 4, a sustained
+  // beam, but RAM's is a broad battering column of hard light. It lasts `ticks`, follows the aim at `turn`
+  // rad/tick, hits everything in it every `pulse` ticks (breaking armor every `armorEvery`) and shoves it back
+  // `kb` m/s along the beam, erases enemy shots, and he braces behind it (`slow` on the ground, sinking at
+  // `hover` in the air). A dash or guard cuts it short; a hit that staggers him ends it.
+  beam: { at: 170, ticks: 110, pulse: 6, dmg: 3.2, poise: 30, width: 0.55, range: 40, turn: 0.035, slow: 0.15, hover: 0.6, armorEvery: 18, kb: 7 },
   // Ram Charge (dash): a shoulder charge behind the shield. Light enemies in front are scooped up and carried;
   // hitting a wall with them slams them into it (splat). A charged dash (hold dash while standing still) is
   // the Battering Ram: longer and faster, and from level `heavyFrom` it carries heavy enemies too and breaks
   // armor. Bosses and rooted enemies stop it with a heavy hit (bonk). Arrays: ordinary charge, then levels 1-3.
   rush: { ticks: [14, 18, 24, 30], speed: [15, 17, 19.5, 22], keep: 0.35, catchDmg: [2, 3, 4.5, 6], poise: [30, 45, 70, 100], reach: 0.95,
-    end: { kb: [10, 4] }, splat: { dmg: [4, 5, 7, 10], poise: [60, 80, 110, 160], stun: 70 }, bonk: { dmg: [3, 4, 6, 9], poise: [45, 65, 95, 140] }, heavyFrom: 2 },
+    end: { kb: [14, 5] }, splat: { dmg: [4, 5, 7, 10], poise: [60, 80, 110, 160], stun: 70 }, bonk: { dmg: [3, 4, 6, 9], poise: [45, 65, 95, 140] }, heavyFrom: 2 },
+  // Knockback: his melee and close-range hits (the shield and fist, the Meteor Drop, Kinetic Release, the leap's
+  // landing) throw enemies `light` times as far (heavy enemies `heavy` times). A light enemy pushed at `launchAt`
+  // m/s or more leaves its feet and flies (at least `lift` m/s upward), so a finisher sends it well clear.
+  knock: { light: 1.6, heavy: 1.25, launchAt: 9, lift: 6 },
   // Stalwart: ordinary hits don't knock him about (heavy hits and blasts still do). During a Ram Charge nothing
   // does, and he takes `rushTaken` of the damage.
   rushTaken: 0.6,
@@ -452,7 +462,7 @@ export const RAM = {
   link: { cd: 720, ticks: 480, range: 18, leapAt: 4.5, leapTicks: 34, share: 0.6, plate: 25, breakAt: 22, land: { r: 2.4, dmg: 3, poise: 45 } },
   // Provoke (LB): a war cry. Every enemy within `range` m turns on him for `ticks`; he braces (takes `brace` of
   // the damage) for as long, and the roar shoves light enemies close by.
-  provoke: { cd: 600, ticks: 240, range: 11, brace: 0.6, shove: { r: 2.6, kb: 9 } },
+  provoke: { cd: 600, ticks: 240, range: 11, brace: 0.6, shove: { r: 2.6, kb: 13 } },
 };
 
 // Fix (Mechanic): heals, tunes up and revives the team, and builds gadgets and power-ups from Scrap.
@@ -504,6 +514,7 @@ export const PLATE_MAX = 60;
 export const FIX_LOOK = {
   pylon: { name: 'Patch Pylon', tint: '#5cf2a6' }, sentry: { name: 'Sentry', tint: '#ffcf5a' }, coil: { name: 'Amp Coil', tint: '#6fe3ff' },
   overclock: { name: 'Overclock', tint: '#6fe3ff' }, plating: { name: 'Plating', tint: '#a9c8ff' }, medkit: { name: 'Medkit', tint: '#5cf2a6' },
+  ultcell: { name: 'Ult Cell', tint: '#ffd23f' }, fury: { name: 'Fury', tint: '#ff5a4a' },
 };
 
 // Ultimates. Everyone has an ultimate bar that fills in play (dealing damage, taking it, kills, perfect
@@ -562,6 +573,8 @@ export const DEFAULT_SETTINGS = {
   vbStop: 'hard',       // 'hard' stop or 'keep30' momentum
   vbRefund: true,
   impactFrames: true,   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
+  impactStyle: 'scifi', // the look: scifi, comic (the original), eclipse, shatter, thunder, sumi, warp (fx.js ImpactShader)
+  impactColor: 'style', // its key colour: the look's own ('style'), the player's colour ('player') or the character's ('character')
   camera: 'persp',
   fov: 34,
   aimAssist: true,
@@ -583,10 +596,24 @@ export const DEFAULT_SETTINGS = {
   dashCharge: true,     // hold dash while standing still to charge it (off: dash is always instant)
   haptics: true,        // controller rumble, and phone vibration where the browser allows it
   hapticStrength: 0.8,
+  echoBelt: 'fire',     // Echo's utility belt (Hunter kit snares): on a tap of fire, or on LB
+  aiTeammates: 0,       // computer-controlled players filling the team's empty slots (0-3; see bot.js)
+  aiSkill: 'veteran',   // how sharp they are: rookie, veteran or elite (BOT.skill)
   settingsVersion: 9,
 };
 
 export const SETTINGS = { ...DEFAULT_SETTINGS };
+
+// Power-ups found along the routes and in broken crates (level.js LEVEL_PICKUPS, DESTRUCT), besides Fix's three
+// (Overclock, Plating, Medkit: FIX.power): an Ult Cell adds `ult` to the ultimate bar; Fury makes every hit do
+// `dmg` times the damage and `kb` times the knockback for `ticks`. A crate's power-up lasts `dropLife` ticks.
+export const POWERUPS = { ultcell: { ult: 40 }, fury: { ticks: 720, dmg: 1.5, kb: 1.3 }, dropLife: 1500 };
+
+// Impact frame looks (Settings: Impact frame style; drawn by fx.js ImpactShader, in this order) and each one's own
+// key colour (used unless Settings: Impact frame colour picks the player's)
+export const IMPACT_STYLES = ['scifi', 'comic', 'eclipse', 'shatter', 'thunder', 'sumi', 'warp'];
+export const IMPACT_ACCENT = { scifi: '#38c8ff', comic: '#14101a', eclipse: '#ffb347', shatter: '#bfe8ff', thunder: '#8f7bff', sumi: '#c8202c', warp: '#a070ff' };
+
 
 const KEY = 'nova-striker-proto-settings';
 export function loadSettings() {

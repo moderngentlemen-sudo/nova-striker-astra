@@ -1,7 +1,7 @@
 // Combat resolution: melee hitboxes, projectiles, barriers, shockwaves, damage and parries.
-import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT, RAM } from './config.js';
+import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT, RAM, POWERUPS } from './config.js';
 import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus, gainUlt, chest } from './player.js';
-import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y } from './level.js';
+import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y, killYAt, breakableAt } from './level.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 
@@ -24,6 +24,7 @@ export function crossesBarrier(b, x0, y0, x1, y1) {
 
 export function resolveHitboxes(world) {
   for (const hb of world.hitboxes) {
+    if (world.strikeBoxes) world.strikeBoxes(hb);   // breakable pieces in reach (either side's strikes)
     let set = world.hitSets.get(hb.instance);
     if (!set) { set = new Set(); world.hitSets.set(hb.instance, set); }
     if (hb.team === 'p') {
@@ -93,12 +94,14 @@ export function hitEnemy(world, e, hit, source) {
     if (fromFront && breaks) { world.emit('guardBreak', { x: cx, y: cy, e }); stagger(world, e, 90); }
   }
 
-  let dmg = (hit.dmg || 0) * (ambush ? SCARF.ambushDmg : 1), poise = hit.poise || 0;
+  const fury = owner && owner.kind === 'player' && owner.furyT > 0;
+  if (fury && hit.kb && !hit.furied) hit = { ...hit, furied: true, kb: [hit.kb[0] * POWERUPS.fury.kb, hit.kb[1]] };
+  let dmg = (hit.dmg || 0) * (ambush ? SCARF.ambushDmg : 1) * (fury ? POWERUPS.fury.dmg : 1), poise = hit.poise || 0;
   let armored = e.armor > 0;
   if (armored) {
     if (hit.armorBreak || ambush) {
       e.armor--; armored = e.armor > 0; dmg *= 0.6;
-      world.emit('armorBreak', { x: cx, y: cy, e, left: e.armor });
+      world.emit('armorBreak', { x: cx, y: cy, e, left: e.armor, owner });
     } else { dmg *= 0.3; poise *= 0.4; world.emit('armorHit', { x: cx, y: cy, e }); }
   }
   if (e.tagged > 0) poise *= 1.25;
@@ -158,6 +161,15 @@ export function hitEnemy(world, e, hit, source) {
   }
   if (canMove && !armored && hit.kb && !e.boss && !hit.well) {
     if (e.state !== 'launched') { e.vx = hit.kb[0]; if (hit.kb[1] > 0) e.vy = Math.max(e.vy, hit.kb[1] * 0.6); }
+  }
+  // RAM's close-range hits throw enemies much further (RAM.knock): a hard enough push sends a light enemy flying,
+  // a heavy one is shoved back. Launchers keep their own arc; bosses, armor and held enemies don't budge.
+  if (hit.ramKnock && canMove && !armored && hit.kb && !e.boss && !hit.launcher && !['caught', 'snared', 'plowed'].includes(e.state)) {
+    const K = RAM.knock, vx = hit.kb[0] * (e.light ? K.light : K.heavy);
+    if (e.light && !e.flier && Math.abs(vx) >= K.launchAt) {
+      world.director.release(e);
+      e.state = 'launched'; e.st = 0; e.vx = vx; e.vy = hit.kb[1] < 0 ? hit.kb[1] * K.light : Math.max(e.vy, hit.kb[1] * K.light, K.lift);   // (a downward swat drives it down)
+    } else e.vx = vx;
   }
   return 'hit';
 }
@@ -392,6 +404,9 @@ function detonate(world, pr, x, y, skip, onTerrain) {
 // Walls: shards ricochet while they have bounces left, shells burst, other shots splash, prisms
 // split off the surface. Returns true when the projectile is gone.
 function hitWall(world, pr, ox, oy) {
+  // A breakable piece takes the shot's damage (enemy fire wears cover down too); blasting shells do it in explode
+  const bk = !pr.blast && breakableAt(pr.x, pr.y, 0.05);
+  if (bk && world.damageBox) world.damageBox(bk, Math.max(0.5, pr.dmg || 0) * (pr.heavy ? 2 : 1), pr.x, pr.y, pr.owner);
   const fx = pointInSolid(pr.x, oy), fy = pointInSolid(ox, pr.y);
   const flipX = fx || !fy, flipY = fy || !fx;
   if (pr.disc) {
@@ -473,7 +488,7 @@ export function updateProjectiles(world, frozen = false) {
     pr.ttl--;
     if (pr.ttl <= 0) { expire(world, pr); continue; }
     // Anything that leaves the level is gone (Nova's shots otherwise fly until they hit something)
-    if (pr.x < LEVEL_X0 - 2 || pr.x > LEVEL_X1 + 2 || pr.y < KILL_Y - 6 || pr.y > 90) { pr.dead = true; continue; }
+    if (pr.x < LEVEL_X0 - 2 || pr.x > LEVEL_X1 + 2 || pr.y < killYAt(pr.x) - 6 || pr.y > 90) { pr.dead = true; continue; }
     // Sub-step so fast shots cannot skip over thin targets or walls
     const steps = Math.max(1, Math.ceil(Math.hypot(pr.vx, pr.vy) * DT * k / 0.3));
     for (let s = 0; s < steps && !pr.dead; s++) {
@@ -607,7 +622,7 @@ function steerToTagged(world, pr) {
 export function updateShockwaves(world) {
   for (const s of world.shockwaves) {
     s.x += s.dir * s.speed * DT; s.ttl--;
-    if (pointInSolid(s.x + s.dir * 0.5, s.y + 0.3)) s.ttl = 0;
+    if (pointInSolid(s.x + s.dir * 0.5, s.y + 0.3)) { const bk = breakableAt(s.x + s.dir * 0.5, s.y + 0.3); if (bk && world.damageBox) world.damageBox(bk, (s.dmg || 4) * 2, s.x + s.dir * 0.5, s.y + 0.4, s.owner); s.ttl = 0; }
     if (s.team === 'p') world.spawnHitbox({ owner: s.owner, team: 'p', x0: s.x - 0.5, x1: s.x + 0.5, y0: s.y, y1: s.y + s.h,
       dmg: s.dmg, poise: s.poise, kb: [s.dir * 6, 9], launcher: true, instance: s.instance, quake: true });
     else world.spawnHitbox({ owner: s.owner, team: 'e', x0: s.x - 0.45, x1: s.x + 0.45, y0: s.y, y1: s.y + s.h,

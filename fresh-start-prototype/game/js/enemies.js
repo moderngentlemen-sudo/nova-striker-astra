@@ -1,7 +1,7 @@
 // Enemy archetypes and behaviour. Every attack announces its category through the world's
 // telegraph events: 'standard' (parryable), 'heavy' (perfect parry to fully negate), 'unblockable'.
 import { DT, GRAVITY, MAX_FALL, HUNTER, SCARF } from './config.js';
-import { moveBody, segmentBlocked, groundBelow, KILL_Y } from './level.js';
+import { moveBody, segmentBlocked, groundBelow, KILL_Y, killYAt } from './level.js';
 
 export const ENEMY_TYPES = {
   swarmer: { w: 0.7, h: 0.8, hp: 3, poise: 18, speed: 5.2, flinch: true, light: true },
@@ -72,7 +72,7 @@ export function updateEnemy(e, world) {
     if (e.boss && !e.onGround) { e.vy = Math.max(e.vy - GRAVITY * DT, -14); e.vx *= 0.95; moveBody(e, DT); }   // a downed gunship falls onto the pad
     return;
   }
-  if (e.y < KILL_Y) {   // fell out of the level (a charge off a ledge, a knockback over the edge)
+  if (e.y < killYAt(e.x)) {   // fell out of the level (a charge off a ledge, a knockback over the edge)
     e.dead = true; e.deathT = 0; e.hp = 0; world.director.release(e);
     world.emit('kill', { x: e.x, y: e.y, e, owner: null });
     return;
