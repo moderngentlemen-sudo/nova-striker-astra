@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Astra integration smoke test</title>
+<style>body{margin:0;background:#071725;color:#cee4ec;font:14px system-ui}header{padding:12px;display:flex;gap:10px;align-items:center}button{padding:9px 12px}iframe{width:100%;height:calc(100vh - 62px);border:0}output{margin-left:auto}</style>
+<header><b>LOCAL TEST HARNESS</b><button id="source">Load source</button><button id="offline">Load standalone</button><button id="party">Four-player scene</button><button id="complete">Verify completion screen</button><output id="status">Loading…</output></header>
+<iframe id="game" src="../game/" title="Game under test"></iframe>
+<script>
+const game=document.getElementById('game'), status=document.getElementById('status');
+document.getElementById('source').onclick=()=>{game.src='../game/';status.textContent='Loading source…';};
+document.getElementById('offline').onclick=()=>{game.src='../standalone/nova-striker-prototype.html';status.textContent='Loading standalone…';};
+game.onload=()=>{const check=()=>{if(game.contentWindow.__NS)status.textContent='Ready';else setTimeout(check,100);};check();};
+document.getElementById('party').onclick=()=>{
+  const n=game.contentWindow.__NS;if(!n)return;
+  n.start('nova','training');n.manual=true;
+  for(const p of [...n.world.players].slice(1))n.world.removePlayer(p.slot);
+  ['echo','ram','fix'].forEach((c,i)=>n.world.addPlayer('pad'+i,c));
+  n.step(20);status.textContent='Four heroes rendered / training simulation';
+};
+document.getElementById('complete').onclick=()=>{
+  const n=game.contentWindow.__NS;if(!n)return;n.start('fix');n.manual=true;
+  const w=n.world,p=w.players[0];w.enemies=[];w.arena.state='cleared';w.routeDone=true;
+  w.encounters.forEach(e=>{e.state='cleared';e.wave=99;});w.towerSpawned=true;
+  for(const o of w.interactables)if(o.id==='relay-west'||o.id==='relay-east')o.state='restored';
+  n.step(1);
+  const beacon=w.interactables.find(o=>o.id==='city-beacon');p.x=beacon.x;p.y=beacon.y;p.vx=p.vy=0;p.state='normal';p.hp=p.maxHp;
+  w.interact(p);n.step(100);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{status.textContent=w.mission.completed&&n.ui.resultsOpen?'PASS: production mission completion → results':'FAIL: completion did not reach results';}));
+};
+</script></html>

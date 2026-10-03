@@ -2,19 +2,19 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { HOSTILE } from './config.js';
-import { addRim } from './rigs.js';
+import { addRim, toonMaterial } from './rigs.js';
 
-const rbox = (w, h, d, r = 0.06) => new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
+const rbox = (w, h, d, r = 0.06) => new RoundedBoxGeometry(w, h, d, 1, Math.min(r * 0.4, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
 const cap = (r, len) => new THREE.CapsuleGeometry(r, len, 4, 10);
 
 function mats() {
   return {
-    plate: new THREE.MeshStandardMaterial({ color: 0xe6e9f0, roughness: 0.34, metalness: 0.06, emissive: 0xffffff, emissiveIntensity: 0 }),
-    joint: new THREE.MeshStandardMaterial({ color: 0x2b2f3a, roughness: 0.6, metalness: 0.2 }),
+    plate: Object.assign(toonMaterial('#9fabbf'), { emissive: new THREE.Color('#ffffff'), emissiveIntensity: 0 }),
+    joint: toonMaterial('#24253e'),
     energy: new THREE.MeshStandardMaterial({ color: HOSTILE, emissive: HOSTILE, emissiveIntensity: 2.2, roughness: 0.3 }),
   };
 }
-function rimAll(M) { addRim(M.plate, '#ff9cc5', 0.35); addRim(M.joint, '#ff7fb2', 0.3); return M; }
+function rimAll(M) { addRim(M.plate, '#bc79a0', 0.18); addRim(M.joint, '#a66a90', 0.15); return M; }
 function add(parent, geo, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m;
 }
@@ -186,6 +186,34 @@ export function buildEnemyRig(e) {
       P.shield = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1), shieldMat); P.shield.scale.set(1.9, 0.95, 1.4); P.shield.visible = false; P.hull.add(P.shield);
       P.shieldMat = shieldMat;
       break;
+    }
+  }
+  // Security machines share a severe graphite/purple language and large exposed energy features.
+  // The new panels belong to animated parts, so breakable plates and attack tells still behave correctly.
+  if (P.eye) P.eye.scale.multiplyScalar(1.2);
+  if (e.type === 'swarmer') {
+    M.plate.color.set('#8794af');
+    for (const z of [-0.3,0.3]) {
+      const fin=add(P.core,rbox(0.46,0.14,0.12),M.joint,-0.07,0.16,z);fin.rotation.z=-0.3;
+      add(P.core,rbox(0.34,0.026,0.025),M.energy,-0.03,0.1,z+Math.sign(z)*0.065);
+    }
+  } else if (e.type === 'shield' && P.shield) {
+    for (const y of [-0.48,0,0.48])add(P.shield,rbox(0.19,0.11,1.12),M.joint,0.02,y);
+    add(P.shield,new THREE.OctahedronGeometry(0.18),M.energy,0.16,0,0.25);
+  } else if (e.type === 'brute' || e.type === 'charger' || e.type === 'warden') {
+    M.plate.color.set(e.type==='warden'?'#68758e':'#818ba1');
+    const part=P.chest||P.torso||body;
+    const wide=e.type==='warden'?1.45:0.72;
+    for(const z of [-wide/2,wide/2]){
+      const horn=add(part,new THREE.ConeGeometry(e.type==='warden'?0.19:0.13,0.55,4),M.joint,-0.22,e.type==='warden'?1.23:0.93,z);horn.rotation.z=-0.6;
+    }
+    add(part,rbox(0.12,0.4,0.06),M.energy,0.1,e.type==='warden'?0.65:0.5,wide/2+0.02);
+  } else if (e.type === 'drone' || e.type === 'stormcaller') {
+    M.plate.color.set('#797c9b');
+    const part=P.hull||P.core||P.torso||body, scale=e.type==='stormcaller'?2:1;
+    for(const z of [-0.45,0.45]){
+      const fin=add(part,rbox(0.8*scale,0.06,0.28*scale),M.joint,-0.3*scale,0.12,z*scale);fin.rotation.z=0.12;
+      add(part,rbox(0.5*scale,0.025,0.035),M.energy,-0.28*scale,0.16,z*scale+0.13*scale);
     }
   }
   return R;

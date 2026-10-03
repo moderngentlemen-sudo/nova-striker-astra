@@ -13,6 +13,7 @@ import { buildPlayerRig } from './rigs.js';
 import { animatePlayer } from './anim.js';
 import { buildEnemyRig, animateEnemy } from './enemyRigs.js';
 import { FX, toWorld, ImpactShader } from './fx.js';
+import { AstraVisuals } from './astraVisuals.js';
 
 const yawAt = x => { const f = pathFrame(x); return Math.atan2(-f.tz, f.tx); };
 // A rig leaving the scene frees its geometry buffers. Enemy rigs free their materials too (a warmed stand-in
@@ -29,10 +30,10 @@ export class View {
     this.canvas = canvas;
     this.r = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.r.toneMapping = THREE.ACESFilmicToneMapping; this.r.toneMappingExposure = 0.95;
+    this.r.toneMapping = THREE.ACESFilmicToneMapping; this.r.toneMappingExposure = 1.04;
     this.r.shadowMap.enabled = true; this.r.shadowMap.type = THREE.PCFSoftShadowMap;
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(0xc6e2f4, 70, 260);
+    this.scene.fog = new THREE.Fog(0xb2d0d8, 65, 245);
     this.persp = new THREE.PerspectiveCamera(SETTINGS.fov, 16 / 9, 0.5, 600);
     this.ortho = new THREE.OrthographicCamera(-10, 10, 5, -5, 0.5, 600);
     this.camera = this.persp;
@@ -40,22 +41,22 @@ export class View {
     this.trauma = 0; this.time = 0; this.bloomKick = 0; this.punch = 0; this.impact = null; this.impactCd = 0; this.hitPause = 0;
     this.rigs = new Map(); this.enemyRigs = new Map();
 
-    const hemi = new THREE.HemisphereLight(0xd8ecff, 0x7a6f63, 0.95); this.scene.add(hemi);
-    this.sun = new THREE.DirectionalLight(0xffeed6, 2.1);
+    const hemi = new THREE.HemisphereLight(0xb9dcf8, 0x34466b, 0.72); this.scene.add(hemi);
+    this.sun = new THREE.DirectionalLight(0xffe0b5, 1.7);
     this.sun.position.set(-18, 30, 22); this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera; sc.left = -30; sc.right = 30; sc.top = 24; sc.bottom = -24; sc.near = 1; sc.far = 120;
     this.sun.shadow.bias = -0.0006; this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun); this.scene.add(this.sun.target);
-    const rim = new THREE.DirectionalLight(0xa9dbff, 1.4); rim.position.set(14, 12, -26); this.scene.add(rim);
+    const rim = new THREE.DirectionalLight(0xa9e2ed, 1.05); rim.position.set(14, 12, -26); this.scene.add(rim);
 
     this.fx = new FX(this.scene, this.rigs);
     this.baked = new Map();
-    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps(); this.flushBaked();
+    this.buildSky(); this.buildBackdrop(); this.buildLevel(); this.buildProps(); this.astra = new AstraVisuals(this); this.flushBaked();
 
     this.composer = new EffectComposer(this.r);
     this.renderPass = new RenderPass(this.scene, this.camera);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.65, 0.5, 1.5);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.3, 0.35, 1.65);
     this.output = new OutputPass();
     this.ink = new ShaderPass(ImpactShader); this.ink.enabled = false; this.dim = 0;
     this.composer.addPass(this.renderPass); this.composer.addPass(this.bloom); this.composer.addPass(this.output); this.composer.addPass(this.ink);
@@ -98,7 +99,7 @@ export class View {
     const geo = new THREE.SphereGeometry(420, 32, 16);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, fog: false,
-      uniforms: { top: { value: new THREE.Color(0x2b7fd3) }, mid: { value: new THREE.Color(0x7fbfee) }, bot: { value: new THREE.Color(0xd9eefa) } },
+      uniforms: { top: { value: new THREE.Color(0x315b8c) }, mid: { value: new THREE.Color(0x91c8d5) }, bot: { value: new THREE.Color(0xf2dec1) } },
       vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: 'uniform vec3 top, mid, bot; varying vec3 vP; void main(){ float h = vP.y; vec3 c = h > 0.15 ? mix(mid, top, smoothstep(0.15, 0.7, h)) : mix(bot, mid, smoothstep(-0.2, 0.15, h)); gl_FragColor = vec4(c, 1.0); }',
     });
@@ -156,17 +157,18 @@ export class View {
 
   buildLevel() {
     const M = {
-      cap: new THREE.MeshStandardMaterial({ color: 0xd9dfe7, roughness: 0.82 }),
-      body: new THREE.MeshStandardMaterial({ color: 0x5f7897, roughness: 0.72 }),
-      dark: new THREE.MeshStandardMaterial({ color: 0x46596f, roughness: 0.7 }),
-      trim: new THREE.MeshStandardMaterial({ color: 0x7fe3ff, emissive: 0x4fd6ff, emissiveIntensity: 2.0 }),
+      cap: new THREE.MeshStandardMaterial({ color: 0xd1dde0, roughness: 0.86 }),
+      body: new THREE.MeshStandardMaterial({ color: 0x314a66, roughness: 0.82 }),
+      dark: new THREE.MeshStandardMaterial({ color: 0x20344b, roughness: 0.8 }),
+      trim: new THREE.MeshStandardMaterial({ color: 0x78dfdf, emissive: 0x42aebd, emissiveIntensity: 0.8 }),
       gate: new THREE.MeshStandardMaterial({ color: 0xff2e7e, emissive: 0xff2e7e, emissiveIntensity: 1.6, transparent: true, opacity: 0.45, depthWrite: false }),
     };
     this.gateMeshes = [];
     const pc = document.createElement('canvas'); pc.width = pc.height = 128;
     const g = pc.getContext('2d'); g.fillStyle = '#ffffff'; g.fillRect(0, 0, 128, 128);
-    g.fillStyle = '#c9d2dc'; g.fillRect(0, 0, 128, 3); g.fillRect(0, 0, 3, 128);
-    g.fillStyle = '#e6ebf0'; g.fillRect(62, 20, 4, 88);
+    g.fillStyle = '#506d80'; g.fillRect(0, 0, 128, 3); g.fillRect(0, 0, 3, 128);
+    g.fillStyle = '#b2c6cc'; g.fillRect(62, 20, 4, 88);
+    g.fillStyle = '#799aaa'; for(let i=0;i<4;i++){g.fillRect(8+i*29,115,13,5);g.fillRect(8+i*29,8,13,5);}
     this.panelTex = new THREE.CanvasTexture(pc); this.panelTex.colorSpace = THREE.SRGBColorSpace;
     this.panelTex.wrapS = this.panelTex.wrapT = THREE.RepeatWrapping; this.panelTex.anisotropy = 4;
     M.capTex = M.cap.clone(); M.capTex.map = this.panelTex;
@@ -298,17 +300,19 @@ export class View {
       g.mesh.visible = GATES[g.tag];
       g.mesh.material.opacity = 0.35 + 0.12 * Math.sin(t * 6);
     }
-    for (const pd of this.pods) { pd.pod.position.x += pd.speed * dt; if (pd.pod.position.x > 260) pd.pod.position.x = -220; if (pd.pod.position.x < -220) pd.pod.position.x = 260; }
+    const transitOn = world.mission?.mode !== 'mission' || world.mission?.restoration?.city;
+    for (const pd of this.pods) { pd.pod.position.x += pd.speed * dt * (transitOn ? 1 : 0); if (pd.pod.position.x > 260) pd.pod.position.x = -220; if (pd.pod.position.x < -220) pd.pod.position.x = 260; }
   }
 
   // ---- Camera ----
   updateCamera(world, dt) {
     let T = world.cam, rate = 5.5;
+    if (!world.players.length) T = { x: 3.5, y: 1.5, dist: 14.5 };
     // An ultimate's call pushes in on whoever is calling it; while it plays out the frame eases back
     const U = world.ultCast;
     if (U && U.members.length) {
       const n = U.members.length, mx = U.members.reduce((a, m) => a + m.x, 0) / n, my = U.members.reduce((a, m) => a + m.y, 0) / n + 1.1;
-      if (U.phase === 'cast') { T = { x: mx, y: my + 0.4, dist: Math.max(8.5, T.dist * 0.6) }; rate = 9; }
+      if (U.phase === 'cast') { T = { x: mx, y: my + 0.4, dist: Math.max(8.5, T.dist * (SETTINGS.reducedEffects ? 0.95 : 0.78)) }; rate = 9; }
       else if (U.phase === 'run') T = { x: T.x * 0.7 + mx * 0.3, y: T.y * 0.7 + my * 0.3, dist: T.dist * 1.04 };
     }
     const k = 1 - Math.exp(-dt * rate);
@@ -325,10 +329,11 @@ export class View {
     this.camera = ortho ? this.ortho : this.persp;
     this.renderPass.camera = this.camera;
     const d = this.cam.dist;
-    this.camera.position.set(f.px + f.nx * d, this.cam.y + d * 0.1 + this.punch, f.pz + f.nz * d);
-    look.y += this.punch * 0.6;   // a blast under a player thumps the whole frame down, then it settles
+    const punch = SETTINGS.shake ? this.punch * (SETTINGS.reducedEffects ? 0.1 : 0.55) : 0;
+    this.camera.position.set(f.px + f.nx * d, this.cam.y + d * 0.1 + punch, f.pz + f.nz * d);
+    look.y += punch * 0.6;   // a blast under a player thumps the whole frame down, then it settles
     if (SETTINGS.shake && this.trauma > 0) {
-      const s = this.trauma * this.trauma * 0.35;
+      const s = this.trauma * this.trauma * 0.26 * (SETTINGS.reducedEffects ? 0.2 : (SETTINGS.effectIntensity ?? 0.8));
       this.camera.position.x += (Math.random() - 0.5) * s; this.camera.position.y += (Math.random() - 0.5) * s;
     }
     this.camera.lookAt(look);
@@ -343,6 +348,7 @@ export class View {
 
   onEvent(ev) {
     this.fx.onEvent(ev);
+    this.astra.onEvent(ev);
     const shake = { armorBreak: 0.5, slam: 0.45, guardBreak: 0.3, impact: 0.5, ambush: 0.35, challenge: 0.2, playerHit: ev.heavy ? 0.35 : 0.15,
       blast: 0.14 + (ev.level || 1) * 0.06 + (ev.perfect ? 0.1 : 0), burst: ev.charged ? 0.06 + ev.level * 0.04 : 0.05, perfectRelease: 0.1,
       splash: ev.level ? 0.04 + ev.level * 0.03 : 0, rocketJump: 0.2 + 0.42 * (ev.power || 0.5), enemyBlast: 0.3, chargeCrash: 0.3,
@@ -358,7 +364,8 @@ export class View {
       guardBlock: ev.heavy ? 0.2 : 0.07, perfectGuard: 0.18, rampartBreak: 0.45, kineticRelease: 0.25 + 0.5 * (ev.k || 0), rush: ev.level ? 0.05 + 0.06 * ev.level : 0.04,
       plowCatch: 0.08, ramSplat: 0.55, ramBonk: 0.3, wallUp: 0.18, wallDown: ev.broken ? 0.25 : 0, wallHit: 0.04, leapLand: 0.4, provoke: 0.3, quake: 0.4, upliftBlast: 0.2,
       linkHit: 0.05, ramSlam: 1, fortify: 0.2, padBounce: 0.05, rivetBlast: 0.12, sparkRing: 0.2, podLand: 0.7, overhaulPulse: 0.3, gadgetEnd: ev.why === 'broken' ? 0.1 : 0 }[ev.type];
-    if (shake) this.trauma = Math.min(1, this.trauma + shake);
+    // Shared-camera effects use a peak envelope: four rapid hits should not add into a huge shake.
+    if (shake) this.trauma = Math.max(this.trauma, Math.min(0.9, shake * 0.8));
     // Big releases light the whole frame for a moment (bloom) and the rocket jump thumps the camera
     const glow = { rocketJump: 0.45 + 0.75 * (ev.power || 0.5), perfectRelease: 0.4, dash: ev.level >= 3 ? 0.35 : 0,
       shot: ev.level >= 3 ? 0.22 : 0, blast: ev.level >= 3 ? 0.15 : 0, snipe: ev.full ? 0.3 : 0.08, beamStart: 0.6, chargeLevel: ev.level >= 4 ? 0.3 : 0,
@@ -366,7 +373,7 @@ export class View {
       wellCollapse: 0.25, riseBlast: 0.2, perfectDodge: 0.35, ultCast: 0.6, ultJoin: 0.5, ultNova: 1.4, ultFinisher: 1, teamFinisher: 1.4, chain: 0.08 * (1 + (ev.level || 0)),
       perfectGuard: 0.3, kineticRelease: 0.3 + 0.7 * (ev.k || 0), ramSplat: 0.5, quake: 0.3, upliftBlast: 0.25, ramSlam: 1.3, podLand: 0.8, overhaulPulse: 0.7, overhaulDone: 0.6,
       fortify: 0.4, wallUp: 0.25, leapLand: 0.3, provoke: 0.35, sparkRing: 0.3, gadgetUp: 0.15, powerUp: 0.15 }[ev.type];
-    if (glow) this.bloomKick = Math.min(1.4, this.bloomKick + glow);
+    if (glow) this.bloomKick = Math.max(this.bloomKick, Math.min(1, glow * 0.65));
     if (ev.type === 'rocketJump') this.punch = Math.min(this.punch, -(0.25 + 0.5 * (ev.power || 0.5)));
     if (ev.type === 'poundLand') this.punch = Math.min(this.punch, -(0.15 + 0.12 * ev.level));   // the frame thumps down with the landing
     if (ev.type === 'kill' && ev.e.type === 'brute') this.trauma = Math.min(1, this.trauma + 0.6);
@@ -398,26 +405,27 @@ export class View {
   startImpact(x, y, strength = 1, force = false) {
     if (!SETTINGS.impactFrames || (this.impactCd > 0 && !force)) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
-    this.impact = { t: 0, dur: 0.26 + 0.12 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
-    this.impactCd = 0.9; this.hitPause = 0.05 + 0.05 * strength;
-    this.trauma = Math.min(1, this.trauma + 0.25 * strength); this.bloomKick = Math.min(1.4, this.bloomKick + 0.4 * strength);
+    this.impact = { t: 0, dur: 0.1 + 0.045 * strength, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    this.impactCd = 1.05; this.hitPause = 0.025 + 0.025 * strength;
+    this.trauma = Math.max(this.trauma, 0.35 * strength); this.bloomKick = Math.max(this.bloomKick, 0.25 * strength);
   }
   updateImpact(dt, world) {
     this.impactCd = Math.max(0, this.impactCd - dt);
     const I = this.impact, U = this.ink.uniforms, C = world && world.ultCast;
     // An ultimate's call drains the colour from the world; it comes back as the ultimate plays out
     // (and the world darkens again under a team finisher's eclipse, until it shatters)
-    const dimTo = C ? (C.phase === 'cast' ? 0.85 : C.phase === 'run' ? 0.3 : C.t >= 8 && C.t < 34 ? 0.8 : 0.12) : 0;
+    const dimTo = C ? (C.phase === 'cast' ? 0.5 : C.phase === 'run' ? 0.12 : C.t >= 8 && C.t < 34 ? 0.42 : 0.08) * (SETTINGS.reducedEffects ? 0.4 : 1) : 0;
     this.dim += (dimTo - this.dim) * (1 - Math.exp(-dt * (dimTo > this.dim ? 14 : 5)));
     if (this.dim < 0.01 && !dimTo) this.dim = 0;
     U.dim.value = this.dim; U.time.value = this.time;
     if (!I) { U.amount.value = 0; this.ink.enabled = this.dim > 0; return this.ink.enabled; }
     I.t += dt; const k = Math.min(1, I.t / I.dur);
     U.center.value.set(I.cx, I.cy); U.seed.value = I.seed;
-    U.invert.value = k < 0.1 ? 1 : Math.max(0, 1 - (k - 0.1) / 0.06);
-    U.amount.value = k < 0.78 ? 1 : Math.max(0, 1 - (k - 0.78) / 0.22);
-    U.zoom.value = 0.07 * I.k * (1 - k) * (1 - k); U.split.value = 0.008 * I.k * (1 - k);
-    U.ring.value = 0.05 + k * 1.25; U.glitch.value = Math.max(0, 1 - k * 2.4) * Math.min(1, I.k);
+    const flash = (SETTINGS.flashIntensity ?? 0.55) * (SETTINGS.reducedEffects ? 0.15 : 1);
+    U.invert.value = (k < 0.1 ? 0.3 : 0) * flash;
+    U.amount.value = (1-k) * flash;
+    U.zoom.value = 0.024 * I.k * (1 - k) * (1 - k) * flash; U.split.value = 0.002 * I.k * (1 - k) * flash;
+    U.ring.value = 0.05 + k * 1.25; U.glitch.value = 0;
     this.ink.enabled = true;
     if (I.t >= I.dur) this.impact = null;
     return true;
@@ -428,6 +436,7 @@ export class View {
     const PI = this.pendingImpact;
     if (PI && (PI.t -= dt) <= 0) { this.pendingImpact = null; this.startImpact(PI.x, PI.y, PI.k, true); this.punch = Math.min(this.punch, -0.6); this.trauma = 1; }
     this.syncEntities(world, alpha, dt);
+    this.astra.update(world, dt, this.time);
     this.updateCamera(world, dt);
     this.fx.update(dt, world, { alpha, rigs: this.rigs, camera: this.camera });
     const inking = this.updateImpact(dt, world);
@@ -438,7 +447,7 @@ export class View {
     }
     this.r.shadowMap.enabled = SETTINGS.quality !== 'low';
     this.bloom.enabled = SETTINGS.quality !== 'low';
-    this.bloom.strength = 0.65 + this.bloomKick * 0.9;
+    this.bloom.strength = 0.28 + this.bloomKick * 0.38 * (SETTINGS.reducedEffects ? 0.15 : (SETTINGS.flashIntensity ?? 0.55));
     this.composer.render(dt);
   }
 

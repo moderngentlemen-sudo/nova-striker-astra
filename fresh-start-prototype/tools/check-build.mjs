@@ -1,0 +1,14 @@
+import { readFile } from 'node:fs/promises';
+import { dirname,resolve,join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
+import { sourceHash } from './source-hash.mjs';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const html=await readFile(join(root,'standalone/nova-striker-prototype.html'),'utf8');
+const fingerprint=html.match(/name="astra-source-sha256" content="([a-f0-9]+)"/)?.[1];
+if(fingerprint!==await sourceHash(root))throw new Error('Standalone is stale. Run the build before delivery.');
+const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+if(scripts.length!==1)throw new Error('Expected one self-contained game bundle.');
+new Script(scripts[0][1],{filename:'nova-striker-prototype.html'});
+if(/<script[^>]+(?:src=|type="(?:module|importmap)")/.test(html) || /<link[^>]+(?:stylesheet|preconnect)/.test(html))throw new Error('Standalone still loads external resources.');
+console.log('Standalone source fingerprint, JavaScript syntax, and offline packaging verified.');

@@ -1,9 +1,17 @@
 {
-  "name": "nova-striker-fresh-start-prototype",
+  "name": "nova-striker-astra",
   "private": true,
   "type": "module",
-  "description": "Isolated fresh-start browser prototype track for Nova Striker (placeholder art and sound).",
+  "description": "Nova Striker Astra: a local co-op action platformer and Skyline Relay mission.",
   "scripts": {
-    "test": "node tests/run-all.mjs"
+    "test": "node tests/run-all.mjs",
+    "build": "node tools/build.mjs",
+    "check:build": "node tools/check-build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  },
+  "dependencies": {
+    "three": "0.170.0"
   }
 }

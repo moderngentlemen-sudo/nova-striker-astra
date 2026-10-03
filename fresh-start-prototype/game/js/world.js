@@ -7,6 +7,8 @@ import { createEnemy, updateEnemy, ENEMY_TYPES } from './enemies.js';
 import { spawnBoss, BOSS } from './bosses.js';
 import { resolveHitboxes, updateProjectiles, updateShockwaves, crossesBarrier, hitEnemy, hitPlayer, awardFocus, hurtbox } from './combat.js';
 import { EMPTY_CMD } from './input.js';
+import { initializeMission, recordMissionEvent, recordMissionHealing, restoreMissionCheckpoint, updateMission,
+  hitMissionBox, hitMissionSegment, hitMissionBlast, interactMission, useAnchor, relayControlsRestored } from './astraMission.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 // How tall each of Fix's gadgets stands (what enemy shots and strikes can hit)
@@ -58,16 +60,17 @@ export class World {
     this.aspect = 16 / 9;
     this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
     this.director = makeDirector(this);
+    initializeMission(this, 'training');
     this.spawnGym();
   }
 
-  emit(type, data = {}) { this.events.push({ type, ...data }); }
+  emit(type, data = {}) { this.events.push({ type, ...data }); recordMissionEvent(this, type, data); }
   newInstance() { return this.instanceSeq++; }
   schedule(ticks, fn) { this.scheduled.push({ t: this.tick + ticks, fn }); }
   activePlayers() { return this.players.filter(p => p.state !== 'dead' && p.state !== 'downed'); }
 
   // ---- Spawning helpers used by players, enemies and combat ----
-  spawnHitbox(hb) { this.hitboxes.push(hb); }
+  spawnHitbox(hb) { hitMissionBox(this, hb); this.hitboxes.push(hb); }
   spawnProjectile(pr) {
     this.projectiles.push({ ttl: 60, r: 0.15, dmg: 1, poise: 6, hitSet: new Set(), dead: false, ...pr, px: pr.x, py: pr.y });
   }
@@ -75,6 +78,32 @@ export class World {
     this.shockwaves.push({ owner: e, x: e.x + dir * (e.w / 2), y: e.y, dir, speed: 11, ttl: Math.round(60 * scale), dmg, h: 0.9, instance: this.newInstance() });
   }
   telegraph(e, cat, ticks) { this.emit('telegraph', { e, cat, ticks }); }
+
+  // Reset the current party in place so input devices and UI references remain valid.
+  startMission() { return this.startSession('mission'); }
+  replayMission() { return this.startMission(); }
+  startTraining(zone = 'gym') { this.startSession('training'); if (zone !== 'gym') this.teleport(zone); return this.mission; }
+  startSession(mode) {
+    this.enemies = []; this.projectiles = []; this.hitboxes = []; this.barriers = []; this.shockwaves = [];
+    this.scheduled = []; this.snares = []; this.wells = []; this.gadgets = []; this.pickups = []; this.ultCast = null;
+    this.events = []; this.hitSets.clear(); this.tick = 0; this.checkpoint = 0; this.wipeT = 0; this.globalBarkCd = 0;
+    this.arena = { state: 'idle' }; this.towerSpawned = false; this.routeDone = false; this.bossClearedT = null;
+    this.encounters = ENCOUNTERS.map(def => ({ def, state: 'idle', wave: 0 }));
+    for (const key of Object.keys(GATES)) GATES[key] = false;
+    this.director.reset();
+    for (const p of this.players) {
+      const fresh = createPlayer(p.slot, p.device, p.char, p.slot * 0.8, 0);
+      for (const key of Object.keys(p)) delete p[key]; Object.assign(p, fresh); p.mercy = 120;
+    }
+    initializeMission(this, mode);
+    if (mode === 'training') this.spawnGym();
+    else this.enemies.push(createEnemy('swarmer', 57, 0, { zone: 'gym', cd: 80 }));
+    this.cam = { x: 0, y: 3, dist: 16, halfW: 10, halfH: 5 };
+    this.emit('sessionStart', { mode });
+    this.emit('banner', { text: this.mission.title, sub: this.mission.objective });
+    return this.mission;
+  }
+  interact(p) { return interactMission(this, p); }
 
   fireShot(p, level) {
     const c = chest(p), ax = p.aimX, ay = p.aimY, far = marksman(p);
@@ -142,6 +171,7 @@ export class World {
   // shot already hit directly; with `rocket` set it can also launch Nova. An enemy blast hits players
   // and cannot be parried.
   explode({ owner, team = 'p', x, y, spec, level = 0, perfect = false, family = null, skip = null, rocket = false, kind = 'splash' }) {
+    if (team === 'p') hitMissionBlast(this, owner, x, y, spec);
     const reach = (ent, r) => {
       const nx = Math.max(ent.x - ent.w / 2, Math.min(x, ent.x + ent.w / 2)), ny = Math.max(ent.y, Math.min(y, ent.y + ent.h));
       return Math.hypot(x - nx, y - ny) <= r;
@@ -239,6 +269,7 @@ export class World {
     const near = (x, y, r) => segs.some(g => distToSeg(x, y, g) < r);
     for (const pr of this.projectiles) if (pr.team === 'e' && !pr.dead && near(pr.x, pr.y, B.width + pr.r)) { pr.dead = true; this.emit('erase', { x: pr.x, y: pr.y }); }
     if (b.pulse % B.pulse === 1) {
+      for (const g of segs) hitMissionSegment(this, p, g.x0, g.y0, g.x1, g.y1, B.dmg, true, `beam:${p.slot}:${this.tick}`);
       for (const e of this.enemies) {
         if (e.dead) continue;
         const hb = hurtbox(e);
@@ -603,11 +634,13 @@ export class World {
       if (t < bt) { bt = t; best = ent; }
     };
     for (const e of this.enemies) if (!e.dead) consider(e);
+    if (p.char === 'echo') for (const a of this.interactables || []) if (a.type === 'anchor' && !segmentBlocked(cx, cy, a.x, a.y)) consider(a);
     for (const q of this.players) if (q !== p && q.state === 'downed') consider(q);
     return best;
   }
 
   lashConnect(p, t, held = false) {
+    if (t.kind === 'anchor') { useAnchor(this, p, t); return; }
     if (t.kind === 'player') {
       t.x = p.x + p.facing * 0.9; t.y = p.y + 0.1;
       this.emit('lashAlly', { p, q: t });
@@ -635,6 +668,18 @@ export class World {
     const L = p.leash; p.leash = null;
     if (L && L.e && L.e.state === 'caught') L.e.st = Math.max(L.e.st, 20);
     this.emit('leashEnd', { p });
+  }
+
+  releaseLeashDirectional(p, dx = p.facing, dy = 0) {
+    const e = p.leash?.e; if (!e || e.dead || e.state !== 'caught') return false;
+    this.releaseLeash(p); this.director.release(e); e.catcher = null;
+    const side = Math.sign(dx) || p.facing;
+    e.state = 'launched'; e.st = 0; e.dropT = dy < -0.5 ? 18 : 0;
+    e.vx = side * (dy > 0.5 ? 5 : 15); e.vy = dy > 0.5 ? 16 : dy < -0.5 ? -16 : 5;
+    e.missionThrower = p; e.missionThrownUntil = this.tick + 75;
+    p.hitConfirm = true; p.zipArriveT = 12;
+    this.emit('directedThrow', { p, e, dx: side, dy, x: e.x, y: e.y + e.h / 2 });
+    return true;
   }
 
   // ---- Scarf modes ----
@@ -917,6 +962,11 @@ export class World {
       p.dodge = null; p.pound = null; p.burstT = 0; p.subArmed = false; p.ultRun = null; p.lockSuspend = false;
       p.rush = null; p.link = null; p.leap = null; p.patch = null; p.tossArmed = false; p.integrity = RAM.guard.integrity; p.guardBroken = false; p.kinetic = 0;
       p.plate = 0; p.overclockT = 0; p.tuneT = 0; p.braceT = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start); p.fixRevive = false; p.reviveGain = 0;
+      p.hitstop = 0; p.hitConfirm = false; p.queued = null; p.move = null; p.moveId = null; p.dash = null; p.lash = null; p.zip = null;
+      p.rifleT = 0; p.dashChargeT = 0; p.meleeHeldT = 0; p.meleeCharged = false; p.rivetQ = 0; p.meleeIntent = 'context';
+      p.airEnderUsed = false; p.airRise = true; p.airDodge = true; p.airDashes = 1; p.jumpsUsed = 0; p.onGround = false;
+      p.wallDir = 0; p.wallCoyote = 0; p.wallSliding = false; p.coyote = 0; p.dashCarry = false; p.fastFall = false;
+      for (const b in p.buf) p.buf[b] = 99;
     });
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = []; this.wells = []; this.ultCast = null;
     this.gadgets = []; this.pickups = [];
@@ -934,6 +984,8 @@ export class World {
       for (const g of S.def.gates || []) GATES[g] = false;
     }
     this.director.reset();
+    this.hitboxes = []; this.scheduled = [];
+    restoreMissionCheckpoint(this);
     this.emit('respawnAll', {});
   }
 
@@ -1147,6 +1199,16 @@ export class World {
     this.emit('rushEnd', { p, why, n: pile.length });
   }
 
+  endRushDirected(p, up = false) {
+    const r = p.rush; if (!r || p.state !== 'rush') return false;
+    const pile = r.carried.filter(e => !e.dead && e.state === 'plowed'), dir = r.dx;
+    if (!pile.length) return false; // A missed charge keeps its commitment; only a caught pile may be released early.
+    this.endRush(p, 'directed'); p.state = 'normal'; p.st = 0; p.vx *= 0.35;
+    for (const e of pile) { e.vx = dir * (up ? 5 : 16); e.vy = up ? 16 : 5; e.missionThrower = p; e.missionThrownUntil = this.tick + 75; }
+    if (pile.length) { p.hitConfirm = true; this.emit('directedPile', { p, n: pile.length, up, x: p.x, y: p.y + 1 }); }
+    return true;
+  }
+
   // Bulwark Wall: a hard-light wall planted in front of him (one at a time). It is a barrier: enemy shots stop
   // at it, the team's pass through it boosted (combat.updateProjectiles), and enemies can't get through it
   // (wallBlock) until it breaks.
@@ -1305,6 +1367,7 @@ export class World {
     if (q.strain) q.strain = Math.max(0, Math.min(q.strain, q.maxHp - q.hp));
     const healed = q.hp - before;
     if (from && from !== q && healed > 0) gainUlt(from, healed * ULT.gain.heal, this);
+    if (from && from !== q) recordMissionHealing(this, from, healed);
     return healed;
   }
   // Fix's ground pound: a repair pulse from the landing
@@ -1390,6 +1453,37 @@ export class World {
   gadgetNear(p) {
     return this.gadgets.some(g => g.owner === p && g.kind !== 'pad' && !g.dead && (g.x - p.x) * p.facing > -0.6 && Math.abs(g.x - p.x) < 1.9 && Math.abs(g.y - p.y) < 1.6);
   }
+
+  // Pick up a nearby owned gadget, then place it with a second deliberate press.
+  // Age, damage and upgrade state survive transport; its effects are disabled while carried.
+  relocateGadget(p) {
+    if (p.char !== 'fix' || ['downed', 'dead', 'ult', 'hitstun'].includes(p.state)) return false;
+    const held = this.gadgets.find(g => g.owner === p && g.carried && !g.dead);
+    if (held) {
+      const x = p.x + p.facing * 1.05, gy = groundBelow(x, p.y + 0.2);
+      if (!p.onGround || !Number.isFinite(gy) || Math.abs(gy - p.y) > 1 || !hasHeadroom(x, gy, 0.9, held.h)) return false;
+      Object.assign(held, { x, y: gy, py: gy, gy, vy: 0, carried: false, landed: true });
+      this.emit('gadgetRelocate', { p, g: held, phase: 'place', x, y: gy }); return true;
+    }
+    const g = this.gadgets.filter(q => q.owner === p && !q.dead && q.kind !== 'pad' && Math.hypot(q.x - p.x, q.y - p.y) < 2.6)
+      .sort((a, b) => Math.abs(a.x - p.x) - Math.abs(b.x - p.x))[0];
+    if (!g) return false;
+    g.carried = true; g.landed = false;
+    this.emit('gadgetRelocate', { p, g, phase: 'pickup', x: g.x, y: g.y }); return true;
+  }
+  detonateRivetsNear(p, hb) {
+    let n = 0;
+    for (const pr of this.projectiles) {
+      if (pr.owner !== p || pr.team !== 'p' || pr.dead || !pr.stuck || !pr.stick || pr.kind !== 'hotRivet') continue;
+      const x = pr.stuck.e && !pr.stuck.e.dead ? pr.stuck.e.x + pr.stuck.ox : pr.x;
+      const y = pr.stuck.e && !pr.stuck.e.dead ? pr.stuck.e.y + Math.min(pr.stuck.oy, pr.stuck.e.h) : pr.y;
+      if (x < hb.x0 - 0.25 || x > hb.x1 + 0.25 || y < hb.y0 - 0.25 || y > hb.y1 + 0.25) continue;
+      pr.dead = true; n++;
+      this.explode({ owner: p, x, y, spec: pr.stick.blast, kind: 'rivetBlast', level: pr.level });
+    }
+    if (n) this.emit('rivetDetonate', { p, n, x: p.x, y: p.y + 1 });
+    return n > 0;
+  }
   // A gadget an enemy shot (radius r at x, y) has reached
   gadgetAt(x, y, r) {
     for (const g of this.gadgets) {
@@ -1418,7 +1512,7 @@ export class World {
   ampField() {
     for (const p of this.players) p.ampK = 1;
     for (const g of this.gadgets) {
-      if (g.kind !== 'coil' || g.dead || !g.landed) continue;
+      if (g.kind !== 'coil' || g.dead || g.carried || !g.landed) continue;
       const C = FIX.gadget.coil, L = g.level - 1;
       for (const p of this.players) if (p.state !== 'dead' && Math.hypot(p.x - g.x, p.y + p.h * 0.5 - (g.y + 0.8)) <= C.r[L]) p.ampK = Math.max(p.ampK, C.rate[L]);
     }
@@ -1429,6 +1523,11 @@ export class World {
       const o = g.owner;
       if (!this.players.includes(o) || o.char !== 'fix') { g.dead = true; this.emit('gadgetEnd', { g, why: 'gone' }); continue; }
       g.py = g.y;
+      if (g.carried) {
+        g.x = o.x - o.facing * 0.6; g.y = o.y + o.h * 0.55; g.vy = 0;
+        if (++g.t >= g.life) { g.dead = true; this.emit('gadgetEnd', { g, why: 'expire' }); }
+        continue;
+      }
       if (!g.landed) {
         g.vy -= GRAVITY * DT; g.y += g.vy * DT;
         if (g.y <= g.gy) { g.y = g.gy; g.vy = 0; g.landed = true; this.emit('gadgetLand', { g }); }
@@ -1851,6 +1950,7 @@ export class World {
     }
     if (this.barriers.some(b => b.kind === 'rampart')) for (const e of this.enemies) if (!e.dead) this.wallBlock(e);
     if (!frozen) updateShockwaves(this);
+    updateMission(this, cmds, true);
     updateProjectiles(this, frozen);
     this.updateWells(frozen);
     this.updateSnares();
@@ -1867,6 +1967,7 @@ export class World {
     this.tickRevives();
     this.updateCamera();
     this.updateEncounters();
+    updateMission(this, cmds);
 
     this.enemies = this.enemies.filter(e => !(e.dead && e.deathT > (e.boss ? 84 : 45)));   // a boss stays for its explosions
     if (this.tick % 120 === 0) {
@@ -2045,6 +2146,8 @@ World.prototype.updateSkyline = function (n) {
     const E = S.def;
     if (S.state === 'idle') {
       if (!here(E.trigger)) continue;
+      // The authored mission requires the control room to be restored before the gunship arrives.
+      if (this.mission.mode === 'mission' && E.boss && !relayControlsRestored(this)) continue;
       S.state = 'active'; S.wave = 0;
       if (E.boss) S.boss = spawnBoss(this, E.boss, E.bossAt[0], E.bossAt[1], { zone: 'skyline', enc: E.id });
       else this.spawnWave(S, n);
@@ -2056,6 +2159,20 @@ World.prototype.updateSkyline = function (n) {
       }
       this.emit('banner', { text: E.banner[0], sub: E.banner[1] });
     } else if (S.state === 'active') {
+      // Reconnecting both controls powers down the room. Killing everything is optional;
+      // solo players can clear space for each short connection, while allies can cover it.
+      if (this.mission.mode === 'mission' && E.id === 'relay') {
+        if (!relayControlsRestored(this)) continue;
+        for (const e of this.enemies) if (e.enc === E.id && !e.dead) {
+          e.hp = 0; e.dead = true; e.deathT = 0; this.director.release(e);
+          this.emit('machineShutdown', { e, x: e.x, y: e.y + e.h / 2 });
+        }
+        S.state = 'cleared';
+        for (const g of E.gates || []) GATES[g] = false;
+        this.emit('gates', { closed: false });
+        this.emit('banner', { text: 'Relay controls online', sub: 'Security machines powered down. Reach the beacon.' });
+        continue;
+      }
       if (E.boss && S.boss && S.boss.dead && S.state === 'active') {
         // The boss is down: its drones go with it
         for (const e of this.enemies) if (e.enc === E.id && !e.dead && e.add) { e.hp = 0; e.dead = true; e.deathT = 0; this.emit('kill', { x: e.x, y: e.y + e.h / 2, e, owner: null }); }
@@ -2078,7 +2195,7 @@ World.prototype.updateSkyline = function (n) {
     }
   }
   // The route completes once every encounter is won (a few seconds after a boss falls, so the banners don't collide)
-  if (!this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X) && this.tick - (this.bossClearedT ?? -1e9) > 150) {
+  if (this.mission.mode !== 'mission' && !this.routeDone && this.encounters.every(S => S.state === 'cleared') && here(ROUTE_END_X) && this.tick - (this.bossClearedT ?? -1e9) > 150) {
     this.routeDone = true;
     this.emit('banner', { text: 'Route complete', sub: 'You reached the end of this build.' });
   }

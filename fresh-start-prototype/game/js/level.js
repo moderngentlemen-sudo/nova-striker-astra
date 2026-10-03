@@ -78,6 +78,15 @@ export const BOXES = RAW.map(([x0, x1, y0, y1, type, tag]) => ({ x0, x1, y0, y1,
 export const LEVEL_X0 = Math.min(...BOXES.map(b => b.x0)), LEVEL_X1 = Math.max(...BOXES.map(b => b.x1));
 export const GATES = { L: false, R: false, L2: false, R2: false };
 
+// The authored mission adds one optional, destructible passage panel. It uses the same
+// solid collision contract as the energy gates, while its visible model is an interactable.
+export function setMissionGeometry(enabled) {
+  const index = BOXES.findIndex(b => b.tag === 'ASTRA_BREACH');
+  if (index >= 0) BOXES.splice(index, 1);
+  GATES.ASTRA_BREACH = !!enabled;
+  if (enabled) BOXES.push({ x0: 50.65, x1: 51.35, y0: 0, y1: 2.5, type: 'g', tag: 'ASTRA_BREACH', mission: true });
+}
+
 export const ZONES = [
   { id: 'gym', name: 'Movement Gym', x0: -10, x1: 60, spawn: { x: 0, y: 0 } },
   { id: 'arena', name: 'Concourse Lock', x0: 60, x1: 97, spawn: { x: 58.5, y: 0 } },

@@ -236,6 +236,7 @@ export class FX {
   // ---- Particles and sprites ----
   burst(x, y, color, n = 10, speed = 5, size = 0.35, life = 0.35, opts = {}) {
     const c = new THREE.Color(color), w = toWorld(x, y, 0, this.tmp);
+    n = Math.ceil(n * (SETTINGS.reducedEffects ? 0.22 : Math.max(0,Math.min(1,SETTINGS.effectIntensity ?? 0.8))));
     for (let i = 0; i < n; i++) {
       const P = this.parts[this.pi]; const idx = this.pi; this.pi = (this.pi + 1) % this.N;
       const a = opts.dir !== undefined ? opts.dir + (Math.random() - 0.5) * (opts.spread || 1) : Math.random() * Math.PI * 2;
@@ -317,9 +318,39 @@ export class FX {
   onEvent(ev, world) {
     const pc = ev.p ? CHARS[ev.p.char].energy : '#ffffff';
     switch (ev.type) {
+      case 'interactionActivated': {
+        const x=ev.x??ev.obj?.x, y=ev.y??ev.obj?.y;
+        if(!Number.isFinite(x)||!Number.isFinite(y))break;
+        const col=ev.obj?.type==='breach'?'#f7bd68':'#74efc1';
+        this.groundRing(x,y,col,0.3,1.6,0.38,0.6);
+        this.burst(x,y+0.8,col,18,4,0.16,0.45,{dir:Math.PI/2,spread:1.1,grav:3});break;
+      }
+      case 'interactionHit': {
+        const x=ev.x??ev.obj?.x, y=ev.y??ev.obj?.y;
+        if(Number.isFinite(x)&&Number.isFinite(y))this.burst(x,y+0.6,'#f8c57f',7,3,0.12,0.22,{grav:8});break;
+      }
+      case 'interactionLaunch': {
+        const p=ev.p;if(!p)break;
+        this.groundRing(p.x,p.y,'#77f1d7',0.4,1.5,0.25,0.8);this.burst(p.x,p.y,'#b7fff0',14,7,0.18,0.3,{dir:-Math.PI/2,spread:0.8});break;
+      }
+      case 'airEnder': {
+        const p=ev.p;if(!p)break;
+        const angle=ev.kind==='slam'?-Math.PI/2:ev.kind==='lift'?Math.PI/2:0;
+        this.slashMark(p.x+p.facing*0.55,p.y+0.8,'#ffe5bc',2.1,angle,0.13);break;
+      }
+      case 'tetherThrow': case 'rushRelease': {
+        const p=ev.p;if(!p)break;
+        this.burst(p.x+p.facing*0.8,p.y+0.8,pc,12,8,0.17,0.25,{dir:p.facing>0?0:Math.PI,spread:0.6});break;
+      }
+      case 'rivetDetonate': case 'gadgetRelocate': {
+        const p=ev.p;const x=ev.x??p?.x,y=ev.y??p?.y;
+        if(Number.isFinite(x)&&Number.isFinite(y))this.groundRing(x,y,'#6bebc4',0.2,1.4,0.3,0.6);break;
+      }
       case 'hit': {
         const col = ev.owner && ev.owner.kind === 'player' ? CHARS[ev.owner.char].energy : '#ffffff', d = ev.dmg || 1;
-        this.burst(ev.x, ev.y, col, (ev.heavy ? 18 : 9) + Math.min(14, d * 2), (ev.heavy ? 9 : 6) + Math.min(5, d * 0.5), ev.heavy ? 0.5 : 0.35, 0.3);
+        const facing=ev.owner?.facing||1, kind=ev.owner?.char;
+        this.burst(ev.x, ev.y, col, (ev.heavy ? 13 : 6) + Math.min(8, d), (ev.heavy ? 9 : 6) + Math.min(5, d * 0.5), ev.heavy ? 0.29 : 0.18, 0.24,
+          {dir:facing>0?0:Math.PI,spread:kind==='echo'?0.9:1.8,grav:kind==='fix'?10:2});
         if (ev.heavy || d >= 4) this.sprite(ev.x, ev.y, 'ring', col, 0.6 + Math.min(1, d * 0.1), 0.22, 3);
         if (ev.tier) this.sprite(ev.x, ev.y, 'ring', '#ffffff', 1 + ev.tier * 0.5, 0.25, 3.5);
         // Echo's blades and glaive leave a slash mark across what they cut; Nova's fists a hard-light flash
@@ -329,7 +360,16 @@ export class FX {
             const ds = o.state === 'dashslash' && o.slash, rot = ds ? Math.atan2(ds.dy, ds.dx) : (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? 0 : 0.5);
             this.slashMark(ev.x, ev.y, '#fff1d6', 1.2 + Math.min(1.4, d * 0.18), rot, ds ? 0.2 : 0.14);
             if (d >= 4) this.slashMark(ev.x, ev.y, col, 1.6 + d * 0.12, rot + 1.2, 0.16);
-          } else this.sprite(ev.x, ev.y, 'star', '#fff4d6', 0.7 + Math.min(1, d * 0.15), 0.12, 1.5);
+          } else if(o.char==='ram') {
+            this.slashMark(ev.x,ev.y,'#cae6ff',0.9+Math.min(1.5,d*0.2),0,0.11);
+            this.slashMark(ev.x,ev.y,'#86bafd',0.65+Math.min(1,d*0.12),Math.PI/2,0.1);
+          } else if(o.char==='fix') {
+            this.sprite(ev.x,ev.y,'star','#fff0be',0.6+Math.min(0.65,d*0.08),0.08,1.2);
+            this.burst(ev.x,ev.y,'#ffbd65',7,6,0.12,0.3,{dir:Math.PI/3,spread:1.4,grav:13});
+          } else {
+            this.sprite(ev.x, ev.y, 'star', '#fff4d6', 0.7 + Math.min(1, d * 0.15), 0.09, 1.3);
+            this.slashMark(ev.x,ev.y,'#ffd482',1.1+Math.min(1,d*0.1),0,0.1);
+          }
         }
         break;
       }

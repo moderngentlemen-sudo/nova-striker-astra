@@ -148,6 +148,11 @@ export const MOVES = {
   echo_ab1:   { su: 3, ac: 3, rc: 8, box: { fx: 0.75, y: 0.95, w: 1.15, h: 1.05 }, dmg: 1.6, poise: 11, kb: [1.5, 5], air: true, hover: true, next: 'echo_ab2', blade: true },
   echo_ab2:   { su: 3, ac: 3, rc: 8, box: { fx: 0.75, y: 0.95, w: 1.15, h: 1.05 }, dmg: 1.6, poise: 11, kb: [1.5, 5], air: true, hover: true, next: 'echo_ab3', blade: true, offhand: true },
   echo_ab3:   { su: 5, ac: 4, rc: 11, box: { fx: 0.95, y: 0.9, w: 1.8, h: 1.3 }, dmg: 3.2, poise: 28, kb: [7, 1], air: true, staff: true, glaive: true, deflect: true },
+  // Directional air finishers share the neutral finisher's damage. They change where
+  // the duel continues, with one lift per airtime to prevent an endless air ladder.
+  echo_aircarry: { su: 5, ac: 4, rc: 12, box: { fx: 1.05, y: 0.9, w: 2.0, h: 1.3 }, dmg: 3.2, poise: 28, kb: [12, 2], air: true, staff: true, glaive: true, deflect: true, ender: 'carry' },
+  echo_airslam: { su: 7, ac: 4, rc: 14, box: { fx: 0.7, y: 0.55, w: 1.7, h: 1.8 }, dmg: 3.2, poise: 38, kb: [3, -15], air: true, staff: true, glaive: true, heavy: true, ender: 'slam' },
+  echo_airlift: { su: 5, ac: 4, rc: 14, box: { fx: 0.7, y: 1.2, w: 1.5, h: 1.8 }, dmg: 3.2, poise: 24, kb: [2, 10], air: true, staff: true, glaive: true, deflect: true, launcher: true, ender: 'lift' },
   // Spin Slash (up + melee in the air): the glaive whirls all the way round him, four hits, a slow fall
   echo_spin:  { su: 2, ac: 16, rc: 10, box: { fx: 0, y: 0.9, w: 2.6, h: 2.4 }, dmg: 1.3, poise: 12, kb: [4, 4], air: true, staff: true, glaive: true,
     spin: true, multi: 4, hoverAll: 0.35, deflect: true },
@@ -562,6 +567,11 @@ export const DEFAULT_SETTINGS = {
   aimAssist: true,
   difficulty: 'normal',
   shake: true,
+  effectIntensity: 0.8, // shared impact and particle budget
+  flashIntensity: 0.55, // screen-wide flashes independently adjustable
+  uiScale: 1,
+  reducedEffects: false,
+  hudDetail: 'compact',
   quality: 'high',
   hitboxes: false,
   barks: true,

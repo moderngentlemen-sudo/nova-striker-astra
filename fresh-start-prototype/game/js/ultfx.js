@@ -4,7 +4,7 @@
 // an afterimage of him mid-strike beside its target, then every cut at once. A team ultimate ends in an
 // eclipse over the whole screen that shatters into light. Presentation only: reads the sim, never changes it.
 import * as THREE from 'three';
-import { ULT, CHARS } from './config.js';
+import { ULT, CHARS, SETTINGS } from './config.js';
 import { toWorld, planeDir } from './space.js';
 import { Strip } from './beamfx.js';
 
@@ -117,6 +117,10 @@ export class UltFX {
   // The team finisher: an eclipse fills the screen, its corona flares, then it shatters into light
   teamFinisher(ev) {
     const E = this.eclipse, F = this.fx;
+    if(SETTINGS.reducedEffects){
+      E.t=-1;E.disc.visible=E.corona.visible=E.ring.visible=false;
+      F.sprite(ev.x,ev.y,'ring',CYAN,2.0,0.3,2.0);F.burst(ev.x,ev.y,CYAN,18,8,0.2,0.35);return;
+    }
     E.t = 0; E.x = ev.x; E.y = ev.y;
     this.after(0.42, () => {
       F.sprite(ev.x, ev.y, 'star', '#ffffff', 14, 0.45, 1.6); F.sprite(ev.x, ev.y, 'glow', '#ffffff', 16, 0.5, 1.4);

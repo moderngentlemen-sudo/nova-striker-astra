@@ -5,7 +5,7 @@ import {
   COYOTE, JUMP_BUFFER, ACTION_BUFFER, PARRY_BUFFER, PARRY, CHARS, MOVES, VB, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, SETTINGS,
   WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT, RAM, FIX, PLATE_MAX,
 } from './config.js';
-import { moveBody, hasHeadroom } from './level.js';
+import { moveBody, hasHeadroom, groundBelow, segmentBlocked } from './level.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 const approach = (v, t, d) => (v < t ? Math.min(v + d, t) : Math.max(v - d, t));
@@ -38,6 +38,7 @@ export function createPlayer(slot, device, charId, x, y) {
     snares: HUNTER.snareCharges, snareRecharge: 0, leash: null,
     scarfMode: 'tether', modeCd: 0, veiled: false, veilCharge: 0, veilBreakT: 0, ambushT: 0, targetedBy: 0,
     attachment: 'lance', focus: 0, focusT: 0, burstCd: 0, burstT: 0, shootT: 0, carveT: 0,
+    reserveLoadout: { attachment: 'arc', sub: 'disc' }, quickCd: 0, meleeIntent: 'context', airEnderUsed: false,
     fuel: MARKSMAN.boost.fuel, thrusting: false, rockets: 0, rocketT: 0, rocketPow: 0,
     aegis: null, aegisCd: 0, overcharge: 0, overT: 0, beam: null, slash: null, pound: null,
     sub: 'scatter', subSwCd: 0, subArmed: false, dodge: null, dodgeCd: 0, airDodge: true, airRise: true, stick: [0, 0],
@@ -52,7 +53,7 @@ export function createPlayer(slot, device, charId, x, y) {
     aimX: 1, aimY: 0, aimFree: false,
     wallT: 0, wallStick: 0, wallCoyote: 0, lastWallDir: 0, dashChargeT: 0, rifleT: 0, rifleCd: 0,
     lockT: null, lockHeld: 0, lockHoldDone: false, lockLost: 0, lockSuspend: false,
-    buf: { jump: 99, dash: 99, melee: 99, fire: 99, parry: 99, sig: 99, mode: 99, sub: 99 },
+    buf: { jump: 99, dash: 99, melee: 99, fire: 99, parry: 99, sig: 99, mode: 99, sub: 99, secondary: 99, quick: 99, relocate: 99, interact: 99 },
     downedT: 0, revive: 0, respawnT: 0, secondWind: true,
     lastSafeX: x, lastSafeY: y, offscreenT: 0, vbTierShown: 0,
   };
@@ -70,6 +71,8 @@ export function setCharacter(p, charId) {
   p.subArmed = false; p.dodge = null; p.pound = null;
   p.integrity = RAM.guard.integrity; p.kinetic = 0; p.guardBroken = false; p.rush = null; p.leap = null; p.braceT = 0;
   p.patch = null; p.tossArmed = false; p.rivetQ = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start);
+  p.meleeIntent = 'context'; p.airEnderUsed = false; p.quickCd = 0;
+  for (const b in p.buf) p.buf[b] = 99;
 }
 
 export function chest(p) { return { x: p.x, y: p.y + p.h * 0.62 }; }
@@ -113,7 +116,21 @@ function updateAim(p, cmd, world) {
 
 export function updatePlayer(p, cmd, world) {
   p.prevX = p.x; p.prevY = p.y;
-  for (const b in p.buf) p.buf[b] = cmd.pressed[b] ? 0 : Math.min(99, p.buf[b] + 1);
+  // Explicit strike shares the existing combo button, but retains intent through
+  // hitstop/recovery: nearby targets never turn a secondary press into a punch.
+  if (cmd.pressed.strike) { p.meleeIntent = 'strike'; p.burstT = 0; p.subArmed = false; }
+  else if (cmd.pressed.melee) p.meleeIntent = 'context';
+  if (cmd.held.strike || cmd.pressed.strike || cmd.released.strike) {
+    cmd = { ...cmd, held: { ...cmd.held, melee: !!(cmd.held.melee || cmd.held.strike) },
+      pressed: { ...cmd.pressed, melee: !!(cmd.pressed.melee || cmd.pressed.strike) },
+      released: { ...cmd.released, melee: !!(cmd.released.melee || cmd.released.strike) } };
+  }
+  // Hitstop freezes the actor, not input sampling. Age queued presses only when
+  // the actor's simulation can advance; otherwise a heavy impact ate the buffer.
+  for (const b in p.buf) {
+    if (cmd.pressed[b]) p.buf[b] = 0;
+    else if (p.hitstop <= 0) p.buf[b] = Math.min(99, p.buf[b] + 1);
+  }
   trackChord(p, cmd); p.stick = [cmd.mx, cmd.my];
   if (p.state === 'dead') return;
   // Mode switches (Echo's scarf, Nova's bracer attachment and secondary weapon) are instant, so a press
@@ -127,6 +144,9 @@ export function updatePlayer(p, cmd, world) {
     if (marksman(p)) cycleSub(p, world);
     else if (p.char === 'fix') cyclePower(p, world);
   }
+  if (p.buf.quick <= ACTION_BUFFER && marksman(p) && p.quickCd === 0 && !['dead', 'downed', 'ult'].includes(p.state)) {
+    p.buf.quick = 99; quickSwap(p, world);
+  }
   if (p.hitstop > 0) { p.hitstop--; return; }
   // Both triggers together with a full bar: the ultimate (the world takes over from here)
   if (p.ult >= ULT.max && chordReady(p, cmd) && !world.ultCast && p.state !== 'downed' && p.state !== 'ult') { world.startUlt(p); return; }
@@ -134,7 +154,7 @@ export function updatePlayer(p, cmd, world) {
   p.st++;
   for (const k of ['mercy', 'dashCd', 'fireCd', 'bulwarkCd', 'tracerCd', 'controlLock', 'launchedT',
     'zipArriveT', 'boostT', 'dropT', 'riposteT', 'coyote', 'modeCd', 'ambushT', 'shootT', 'carveT', 'rocketT',
-    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd']) if (p[k] > 0) p[k]--;
+    'rifleCd', 'wallCoyote', 'subSwCd', 'dodgeCd', 'overclockT', 'tuneT', 'braceT', 'padCd', 'quickCd']) if (p[k] > 0) p[k]--;
   // Ability cooldowns recharge faster under Fix's boosts (Overclock, Tune-Up, an Amp Coil)
   const rate = boostRate(p);
   for (const k of ['aegisCd', 'burstCd', 'wallCd', 'linkCd', 'provokeCd']) if (p[k] > 0) p[k] = Math.max(0, p[k] - rate);
@@ -150,6 +170,11 @@ export function updatePlayer(p, cmd, world) {
   if (p.state === 'downed') { updateDowned(p, cmd, world); return; }
   updateLock(p, cmd, world);
   updateAim(p, cmd, world);
+  if (!['hitstun', 'ult', 'leap', 'dashCharge'].includes(p.state)) {
+    if (p.buf.interact <= ACTION_BUFFER) { p.buf.interact = 99; if (world.interact) world.interact(p); }
+    if (p.buf.relocate <= ACTION_BUFFER) { p.buf.relocate = 99; if (p.char === 'fix' && world.relocateGadget) world.relocateGadget(p); }
+  }
+  if (marksman(p) && p.buf.secondary <= ACTION_BUFFER && canFire(p)) trySecondary(p, world);
   p.meleeHeldT = cmd.held.melee ? p.meleeHeldT + 1 : 0;
   // RAM's abilities and Fix's gadgets are instant and work from most states
   if (p.char === 'ram') ramAbilities(p, world);
@@ -192,7 +217,7 @@ export function updatePlayer(p, cmd, world) {
   if (!['dash', 'zip'].includes(p.state)) p.h = low ? CHARS[p.char].crouchH : CHARS[p.char].height;
   moveBody(p, DT);
   if (p.onGround) {
-    p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airDodge = true; p.airRise = true;
+    p.coyote = COYOTE; p.jumpsUsed = 0; p.airDashes = 1; p.fastFall = false; p.dashCarry = false; p.airDodge = true; p.airRise = true; p.airEnderUsed = false;
     p.rockets = 0; p.rocketT = 0; p.wallCoyote = 0; if (p.fuel < MARKSMAN.boost.fuel) p.fuel = Math.min(MARKSMAN.boost.fuel, p.fuel + MARKSMAN.boost.refill);
     if (!wasGround && p.st > 1) world.emit('land', { p, vy: fallV });
     p.lastSafeX = p.x; p.lastSafeY = p.y;
@@ -352,6 +377,11 @@ function trySignature(p, cmd, world) {
 function tryMelee(p, cmd, world) {
   if (p.buf.melee > ACTION_BUFFER) return false;
   const hunter = p.char === 'echo' && SETTINGS.echoKit === 'hunter';
+  if (hunter && p.leash && world.releaseLeashDirectional) {
+    if (world.releaseLeashDirectional(p, Math.abs(cmd.mx) > 0.2 ? cmd.mx : p.facing, cmd.my)) {
+      p.buf.melee = 99; p.lash = null; setState(p, 'normal'); return true;
+    }
+  }
   // Echo on a wall: Wall Slash (before anything else, so a slide never turns it into something else)
   if (hunter && p.wallSliding && !p.onGround) { p.buf.melee = 99; startMove(p, 'echo_wall', world); return true; }
   // In the air, the secondary aimed down: the ground pound. Holding down to fast-fall must not turn it into
@@ -367,11 +397,11 @@ function tryMelee(p, cmd, world) {
     p.buf.melee = 99; if (!p.onGround) p.airRise = false;
     startMove(p, p.char + '_rise', world); return true;
   }
-  if (p.char === 'fix') return fixMelee(p, world);
+  if (p.char === 'fix') return fixMelee(p, world, p.meleeIntent === 'strike');
   if (marksman(p)) {
     // Marksman kit: close to an enemy, his bracer combo; otherwise his secondary weapon (it cancels whatever
     // it interrupts)
-    if (meleeTarget(p, world)) { p.buf.melee = 99; startMove(p, p.onGround ? 'nova_k1' : 'nova_kair', world); return true; }
+    if (p.meleeIntent === 'strike' || meleeTarget(p, world)) { p.buf.melee = 99; startMove(p, p.onGround ? 'nova_k1' : 'nova_kair', world); return true; }
     return pressSub(p, world);
   }
   p.buf.melee = 99;
@@ -444,15 +474,35 @@ function startMove(p, id, world) {
   breakVeil(p, world, 'attack');
   p.moveId = id; p.move = MOVES[id]; p.queued = null; p.hitConfirm = false; p.instance = world.newInstance();
   p.crouch = false; p.riseAir = !p.onGround;
-  if (Math.abs(p.aimX) > 0.2 && p.aimFree) p.facing = sign(p.aimX);
+  if (!p.move.ender && Math.abs(p.aimX) > 0.2 && p.aimFree) p.facing = sign(p.aimX);
   // Lock-on: turn to a target that is close, and step in toward it during the swing (lungeTo)
   p.lungeTo = null;
   const t = p.lockT;
-  if (t && !t.dead && Math.abs(t.x - p.x) < LOCK.magnet && Math.abs(t.y - p.y) < 2.5) {
+  if (!p.move.ender && t && !t.dead && Math.abs(t.x - p.x) < LOCK.magnet && Math.abs(t.y - p.y) < 2.5 && approachAllowed(p, t)) {
     p.facing = sign(t.x - p.x) || p.facing; p.lungeTo = t;
     if (p.onGround && Math.abs(t.x - p.x) - t.w / 2 - p.w / 2 > 0.3) p.vx = p.facing * LOCK.lunge;   // the step starts at once
   }
   setState(p, 'attack'); world.emit('swing', { p, id });
+  if (p.move.ender) {
+    if (p.move.ender === 'lift') p.airEnderUsed = true;
+    world.emit('airEnder', { p, kind: p.move.ender });
+  }
+}
+
+function approachAllowed(p, target) {
+  const dx = target.x - p.x, dir = sign(dx) || p.facing;
+  if ((p.stick?.[0] || 0) * dir < -0.3) return false; // holding away means keep space
+  if (segmentBlocked(p.x, p.y + 0.8, target.x, target.y + Math.min(target.h * 0.5, 0.8))) return false;
+  if (p.onGround && groundBelow(p.x + dir * Math.min(0.8, Math.abs(dx)), p.y + 0.25) < p.y - 0.6) return false;
+  return true;
+}
+
+function airFinisher(p, id, cmd) {
+  if (id !== 'echo_ab3' || p.onGround) return id;
+  if (cmd.my < -0.55) return 'echo_airslam';
+  if (cmd.my > 0.55 && !p.airEnderUsed) return 'echo_airlift';
+  if (Math.abs(cmd.mx) > 0.55) { p.facing = sign(cmd.mx); return 'echo_aircarry'; }
+  return id;
 }
 
 // A Velocity Break: Echo's Hunter kit turns it into the Dash Slash
@@ -773,6 +823,7 @@ function stateAttack(p, cmd, world) {
   if (m.hover && p.hitConfirm && p.vy < 1.5) p.vy = 1.5;
   if (m.hoverAll && p.vy < -3) p.vy = -3;
   if (t === activeStart && p.onGround && !m.launcher) p.vx += p.facing * 2.2;
+  if (t === activeStart && m.ender === 'carry') p.vx = p.facing * 11;
   if (m.multi && t > activeStart && t < activeEnd && (t - activeStart) % m.multi === 0) p.instance = world.newInstance();
   if (t === activeStart && m.blastFist) {
     world.explode({ owner: p, x: p.x + p.facing * 1.2, y: p.y + 1.1, spec: { ...m.blastFist, armorBreak: false }, kind: 'blast', level: 1 });
@@ -787,23 +838,30 @@ function stateAttack(p, cmd, world) {
   if (p.lungeTo && t < activeEnd && p.onGround) {
     // Locked on: close the gap to the target until the swing lands
     const e = p.lungeTo, gap = Math.abs(e.x - p.x) - e.w / 2 - p.w / 2;
-    if (!e.dead && gap > 0.3) p.vx = p.facing * Math.min(LOCK.lunge, gap * 30); else p.lungeTo = null;
+    if (!e.dead && gap > 0.3 && approachAllowed(p, e)) p.vx = p.facing * Math.min(LOCK.lunge, gap * 30);
+    else { p.lungeTo = null; p.vx *= 0.35; }
   }
   if (t >= activeStart && t < activeEnd) {
     const b = m.box, cx = m.spin ? p.x : p.x + p.facing * b.fx;
     world.spawnHitbox({ owner: p, team: 'p', x0: cx - b.w / 2, x1: cx + b.w / 2, y0: p.y + b.y - b.h / 2, y1: p.y + b.y + b.h / 2,
       dmg: m.dmg, poise: m.poise, kb: [p.facing * m.kb[0], m.kb[1]], armorBreak: !!m.armorBreak, heavy: !!m.heavy,
       launcher: !!m.launcher, shove: !!m.shove, instance: p.instance, moveId: p.moveId, spin: !!m.spin, cx: p.x,
-      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield });
+      wrench: !!m.wrench, ram: p.char === 'ram' && !!m.shield, airEnder: m.ender,
+      multi: !!m.multi, finalPulse: !m.multi || t >= activeEnd - m.multi });
   }
   if (m.launcher && t === activeEnd && p.hitConfirm) p.vy = 9;   // Echo hops after a launched enemy
   if (p.buf.melee <= ACTION_BUFFER && m.next && t >= activeStart) p.queued = m.next;
   if (t >= activeEnd) {
+    const lateWhiff = t >= activeEnd + Math.floor(m.rc * 0.6);
+    // A defense entered during the impact pause must beat an older queued chain.
+    // Whiffs keep their commitment; only the existing late-whiff window opens it.
+    if ((p.hitConfirm || lateWhiff) && cancelInto(p, cmd, world, { jump: false, sig: false, melee: false })) {
+      p.queued = null; p.buf.melee = 99; return;
+    }
     if (p.queued && t >= activeEnd + 2) {
-      const nxt = p.queued;
+      const nxt = airFinisher(p, p.queued, cmd);
       if (MOVES[nxt].air === !p.onGround || !MOVES[nxt].air) { p.buf.melee = 99; startMove(p, nxt, world); return; }
     }
-    const lateWhiff = t >= activeEnd + Math.floor(m.rc * 0.6);
     if (p.hitConfirm) { if (cancelInto(p, cmd, world, { melee: false })) return; }
     else if (lateWhiff) { if (cancelInto(p, cmd, world, { jump: false, sig: false, melee: false })) return; }
   }
@@ -1002,11 +1060,12 @@ function fireMarksman(p, cmd, world) {
   // Secondary weapon: holding charges it (not while a disc or well of his is still out); letting go fires
   // the charged level, or a tap (the Scatter fired its tap on the press, in tryMelee)
   const ready = subReady(p, world);
-  if (cmd.held.melee && canFire(p) && ready) {
+  const secondaryHeld = cmd.held.secondary || (cmd.held.melee && p.meleeIntent !== 'strike');
+  if (secondaryHeld && canFire(p) && ready) {
     const t0 = p.burstT; p.burstT += rate;
     crossed(t0, p.burstT, B.charge, level => world.emit('burstLevel', { p, level, sub: p.sub }));
   }
-  if (!cmd.held.melee && (p.burstT > 0 || p.subArmed)) {
+  if (!secondaryHeld && (p.burstT > 0 || p.subArmed)) {
     const t = p.burstT, level = levelOf(t, B.charge), armed = p.subArmed; p.burstT = 0; p.subArmed = false;
     if (level && canFire(p) && ready) world.fireSub(p, level, level === 3 && t < B.charge[2] + B.perfectWindow);
     else if (!level && armed && canFire(p) && ready && p.sub !== 'scatter') world.fireSub(p, 0, false);
@@ -1015,13 +1074,20 @@ function fireMarksman(p, cmd, world) {
 
 // The secondary button pressed with no enemy close enough for the combo. The Scatter fires at once; the
 // others fire when it is let go (fireMarksman). A disc or well already out is called back or collapsed.
-function pressSub(p, world) {
+function pressSub(p, world, preserveState = false) {
   if (!subReady(p, world)) { p.buf.melee = 99; world.recallSub(p, p.sub); return false; }
   if (p.burstCd > 0) return false;
   p.buf.melee = 99;
-  if (p.state !== 'normal') { if (p.state === 'dodge') p.dodge = null; setState(p, 'normal'); }
+  if (!preserveState && p.state !== 'normal') { if (p.state === 'dodge') p.dodge = null; setState(p, 'normal'); }
   if (p.sub === 'scatter') world.fireSub(p, 0, false); else p.subArmed = true;
   return true;
+}
+function trySecondary(p, world) {
+  // A separate input always means the selected secondary, even at point-blank
+  // range or in a dash. A dry cooldown keeps its short input buffer alive.
+  if (p.burstCd > 0 && subReady(p, world)) return false;
+  p.buf.secondary = 99;
+  return pressSub(p, world, true);
 }
 // A disc or a well: one of each at a time
 const subReady = (p, world) => !((p.sub === 'disc' || p.sub === 'well') && world.subOut(p, p.sub));
@@ -1029,6 +1095,18 @@ const subReady = (p, world) => !((p.sub === 'disc' || p.sub === 'well') && world
 function cycleSub(p, world) {
   p.sub = SUBS[(SUBS.indexOf(p.sub) + 1) % SUBS.length]; p.subSwCd = SUB.switchCd; p.burstT = 0; p.subArmed = false;
   world.emit('subSwitch', { p, sub: p.sub });
+}
+
+function quickSwap(p, world) {
+  const old = { attachment: p.attachment, sub: p.sub };
+  const next = p.reserveLoadout || { attachment: 'arc', sub: 'disc' };
+  p.attachment = next.attachment; p.sub = next.sub; p.reserveLoadout = old;
+  // Charges belong to the weapon that built them; swapping cannot cash a
+  // near-perfect charge into a different attachment or fire an accidental shot.
+  p.chargeT = 0; p.burstT = 0; p.subArmed = false; p.quickCd = 12;
+  world.emit('attach', { p, attach: p.attachment });
+  world.emit('subSwitch', { p, sub: p.sub });
+  world.emit('quickSwap', { p, attach: p.attachment, sub: p.sub });
 }
 
 // ---- Nova: the dodge (Marksman kit, on the parry button) --------------------------------------
@@ -1329,6 +1407,9 @@ function stateRush(p, cmd, world) {
   const R = RAM.rush, r = p.rush;
   if (!r) { setState(p, 'normal'); return; }
   r.t++;
+  if (r.t >= 3 && p.buf.melee <= ACTION_BUFFER && world.endRushDirected) {
+    p.buf.melee = 99; if (world.endRushDirected(p, cmd.my > 0.55)) return;
+  }
   p.vx = r.dx * r.speed * (r.t > r.ticks - 3 ? 0.8 : 1);
   if (r.air) p.vy = 0; else applyGravity(p, cmd);   // run off a ledge and he falls, still charging
   // A jump out of a grounded charge carries its speed
@@ -1396,9 +1477,9 @@ function cyclePower(p, world) {
 // Melee: close to an enemy or one of her gadgets it is the wrench (a hit on a gadget upgrades it). Otherwise
 // the press readies a power-up: it is tossed when the button comes up, unless it is held on into the Torque
 // Slam. Without the Scrap for one it is the wrench anyway.
-function fixMelee(p, world) {
+function fixMelee(p, world, explicit = false) {
   p.buf.melee = 99;
-  if (meleeTarget(p, world) || world.gadgetNear(p) || p.scrap < FIX.power.cost) { startMove(p, p.onGround ? 'fix_w1' : 'fix_air', world); return true; }
+  if (explicit || meleeTarget(p, world) || world.gadgetNear(p) || p.scrap < FIX.power.cost) { startMove(p, p.onGround ? 'fix_w1' : 'fix_air', world); return true; }
   p.tossArmed = true; p.tossT = 0;
   return true;
 }

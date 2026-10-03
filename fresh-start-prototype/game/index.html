@@ -1,4 +1,9 @@
-<title>Nova Striker Prototype</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#091c2c">
+<title>Nova Striker Astra — Skyline Relay</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=IBM+Plex+Mono&family=Saira+Condensed:wght@600;700;800&display=swap">
@@ -200,14 +205,26 @@ th { font-family: var(--font-display); text-transform: uppercase; letter-spacing
 }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } .bar i { transition: none; } .reticle .spin, .reticle.pop .spin { animation: none; } }
 </style>
+<link rel="stylesheet" href="./astra.css">
 <script type="importmap">
 { "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
 } }
 </script>
 <div id="app">
-  <canvas id="game" tabindex="0" aria-label="Nova Striker prototype game view"></canvas>
+  <canvas id="game" tabindex="0" aria-label="Nova Striker Astra game view"></canvas>
   <div id="overlay"></div>
+  <div id="loading" class="loading-state"><strong>NOVA STRIKER / ASTRA</strong><p>Establishing the skyline uplink…</p></div>
 </div>
-<script type="module" src="./js/main.js"></script>
+<script type="module">
+import('./js/main.js').then(() => document.getElementById('loading')?.remove()).catch(err => {
+  const box=document.getElementById('loading'); box.replaceChildren();
+  const title=document.createElement('strong'); title.textContent='The skyline could not load.';
+  const note=document.createElement('p'); note.textContent='Check that WebGL is enabled and the game files are served by a local web server. Then try again.';
+  const detail=document.createElement('p'); detail.textContent=err.message;
+  const retry=document.createElement('button'); retry.className='btn primary'; retry.textContent='Retry'; retry.onclick=()=>location.reload();
+  box.append(title,note,detail,retry); console.error(err);
+});
+</script>
+</html>

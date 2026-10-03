@@ -1,169 +1,84 @@
-# Nova Striker: fresh-start prototype (Version 10)
+# Nova Striker Astra
 
-**Scope.** This folder is an isolated, hypothetical fresh-start track. It does not replace, cancel, reset or
-change the existing Nova Striker project or any current work, and it is not a decision to restart the
-project. It is a playable test of feel. The characters are procedural placeholder rigs, not approved or
-game-ready art, and all sound and music is synthesized placeholder audio.
+A rebuilt 2.5D action platformer for one to four local players. The playable mission is **Restore the Skyline Relay**: cross the concourse, defeat the Lockwarden, climb the Storm Spire, reconnect both relay controls, defeat the Stormcaller, and restart the city beacon.
 
-## What it is
+Development belongs to `moderngentlemen-sudo/nova-striker-astra`. The original Claude repository is unchanged.
 
-A browser prototype of a 2.5D sci-fi action platformer for 1–4 player local co-op, with four characters.
+## Play
 
-- **Nova** (Sentinel) starts with the Marksman kit: a bracer with four chargeable attachments (Lance,
-  Volley, Arc, Prism) and a Level 4 beam, five secondary weapons (Scatter, Grenade, Chain, Disc, Gravity
-  Well), a dodge, the hard-light Aegis, a close-range combo, rocket jumps, light boosters and skate-blade
-  boots. His Pass 1 Sentinel kit is in Settings.
-- **Echo** (Pursuit) starts with the Hunter kit: twin blades and a glaive, a sniper rifle, snares, staff
-  deflects, and a nano-scarf with three modes (Tether, Veil, Flare). His Pass 1 Pursuit kit is in Settings.
-- **RAM** (Vanguard) is the tank: a 2.3 m heavy frame with a tower shield that blocks for the whole team, a
-  shoulder charge that plows through enemies, a shoulder cannon, and abilities that protect teammates.
-- **Fix** (Mechanic) is the support: a Patch Beam that heals and speeds teammates up, faster revives,
-  gadgets and power-ups built from Scrap, a rivet gun and a big wrench.
-- **Everyone** has a rising attack of their own (up + melee), a chargeable ground pound, and an ultimate;
-  teammates can combine ultimates into a team ultimate.
-- **Zones:** Movement Gym, Concourse Lock (an arena ending in the Lockwarden boss), Storm Spire Climb and
-  Skyline Relay (ending in the Stormcaller boss).
+- **Offline single file:** open `standalone/nova-striker-prototype.html`. The game, styles, and Three.js are embedded; no network is required. It uses installed system fonts.
+- **Editable source:** serve `game/`, for example `python -m http.server 8766 --bind 127.0.0.1 --directory game`, then open `http://127.0.0.1:8766/`. Three.js is included locally. Optional Google Fonts improve title typography when online.
+- Choose a hero, then **Deploy to Skyline** or **Training**. Additional controllers can join during play. A keyboard or controller is required; touch controls are not included.
 
-## Run it
+Use a normal desktop browser if an embedded viewer blocks controllers or audio. The source view displays a retry screen if its modules or WebGL cannot initialize.
 
-- **From source:** serve `game/` with any static web server (ES modules do not load from `file://`), for
-  example `cd game && python3 -m http.server 8000`, then open http://localhost:8000.
-- **Single file:** open `standalone/nova-striker-prototype.html` in a browser.
+## The rebuild
 
-Both load three.js 0.170 and the fonts from public CDNs, so they need an internet connection. Use a normal
-browser tab for controllers and rumble, because embedded viewers may block gamepads and vibration.
+- **Mission:** authored objectives, contextual interaction prompts, repair channels, checkpoint healing, completion results, personal best time, and support contributions.
+- **World interaction:** eleven machines including breach panels, charged power fixtures, launch surfaces, a repair circuit, an Echo tether anchor, two relay controls and the final beacon. Every hero can complete the main route; abilities offer additional opportunities.
+- **Combat:** local hitstop preserves inputs. Defense has a clear cancel priority; missed attacks retain commitment. Melee assistance respects retreat input, walls and platform edges.
+- **Nova:** explicit close strike and secondary fire, plus a quick swap between two remembered primary/secondary loadouts.
+- **Echo:** directional tether throws and aerial finishers that carry, slam or lift. A lift can extend an aerial sequence once before landing.
+- **RAM:** steer a collected pile into a forward or upward release during a charge. An empty charge cannot cancel early this way.
+- **Fix:** wrench hits detonate embedded Hot Rivets. Pick up and relocate owned gadgets while preserving their upgrade level, health and remaining lifetime.
+- **Presentation:** cel-style character lighting, stronger armor and equipment silhouettes, hostile shape language, district signs, mechanical platform detail, contact shadows, readable machine states, distinct impact/audio signatures, and restored transit/civic lighting.
+- **Interface:** character selection, mission/training separation, compact or full combat HUD, improved pause navigation, reduced-effects mode, HUD scale and controller settings. Experimental legacy kits and zone/boss shortcuts are in the Training lab.
 
 ## Controls
 
-| Action | Keyboard + mouse | Gamepad |
+The complete character reference is available with **H / View**. The original contextual controls remain available alongside the deliberate Astra controls.
+
+| Action | Keyboard and mouse | Xbox-style controller |
 |---|---|---|
-| Move · crouch | A/D · S | Left stick |
-| Aim | Mouse | Right stick |
-| Jump · double jump · wall jump | Space | A |
-| Dash · slide · charged dash | Shift · S + Shift · hold Shift while standing still | B · down + B · hold B |
-| Fire (hold to charge) | Left click or K | RT |
-| Melee | Right click or J | X |
-| Rising attack · ground pound | W + melee · S + melee in the air | Up + X · down + X in the air |
-| Parry (Echo) · dodge (Nova) · guard (RAM) · Patch Beam (Fix) | Q or L | LT |
-| Suit ability (RAM: Bulwark Wall · Fix: build a gadget) | E, I or middle click | Y |
-| Switch mode (Nova's attachment, Echo's scarf) · Guardian Link (RAM) · pick a gadget (Fix) | R, U or mouse back | RB |
-| Nova's secondary weapon · Provoke (RAM) · pick a power-up (Fix) | T or Y | LB |
-| Lock-on (automatic by default: tap to switch, hold to let go) | F, O or mouse forward | R3 |
-| Ultimate (full bar) | V or N | LT + RT together |
-| Swap character · pause · help | 1–4 or Tab · Esc or P · H | D-pad left/right · Start · View |
+| Move / crouch / aim | A/D / S / mouse | Left stick / down / right stick |
+| Jump, double jump, wall jump | Space | A |
+| Dash / slide / charged dash | Shift / down + Shift / hold while still | B / down + B / hold while still |
+| Primary fire, hold to charge | Left click or K | RT |
+| Contextual melee or utility | Right click or J | X |
+| Explicit strike, always melee | X | L3 |
+| Explicit Nova secondary | C | LB + X |
+| Nova quick loadout swap | Z | LB + RB |
+| Dodge / deflect / guard / repair beam | Q | LT |
+| Suit ability, including Echo tether | E | Y |
+| Mode / attachment / gadget selection | R | RB |
+| Secondary / utility selection | T | Tap and release LB |
+| Fix pick up/place nearby gadget | B | LB + Y |
+| Interact with nearby machinery | G | D-pad up |
+| Switch target | F | R3 |
+| Ultimate, when full | V | LT + RT |
+| Swap hero | 1-4 or Tab during play | D-pad left/right |
+| Pause / full controls | Esc / H | Start / View |
 
-Extra gamepads join by pressing any button, up to four players; each new player gets the first character
-nobody is using. H or View shows the full controls in game; B, A, Start or View closes them, and the D-pad
-scrolls.
+**Echo throw:** hold tether and press strike while choosing a direction. Air finishers use neutral/up/down strike. **RAM release:** strike during a charge after collecting enemies; up throws upward. **Fix relocation:** press once near an owned gadget to pick it up, then again to place it. **Repair channels:** press Interact and remain nearby; moving away or taking damage interrupts the connection. Fix repairs faster.
 
-## What changed in Version 10
+Menus support native keyboard Tab/Shift+Tab, Enter/Space and controller up/down/A/B. Gameplay actions are suppressed while a menu is open and held buttons must be released before they act after closing it.
 
-### RAM, Vanguard (the tank)
+## Build and validate
 
-Much bigger than Nova and Echo (2.3 m to their 1.7 m) with 160 health; slower, with lower jumps.
-**Stalwart:** ordinary hits don't knock him about (heavy hits and blasts still do).
+Node.js 20+ and pnpm are sufficient. Dependencies are pinned in `pnpm-lock.yaml`.
 
-- **Rampart** (hold LT): a tower shield. It blocks strikes, shots and blasts from in front (shockwaves along
-  the floor still pass under it), and enemy shots stop at it, so it covers everyone behind him. The damage comes off its Integrity (the blue bar) instead of
-  his health; Integrity grows back once he lowers it, and if it breaks he reels and must wait for it.
-  Raised just as a hit lands, it is a **Perfect Guard**: no cost, a shot goes back to whoever fired it, a
-  striker reels. Aim up to hold it overhead; he walks slowly behind it and can jump with it up.
-- **Kinetic Release** (RT while guarding): every point the shield blocks is stored as Kinetic; this lets it
-  all out as a cone of force that erases enemy shots, stronger the more is stored.
-- **Ram Charge** (B): a shoulder charge behind the shield that scoops up light enemies and slams them into
-  the next wall. Hold B while standing still for the **Battering Ram**: three levels, longer and faster,
-  and from level 2 it carries heavy enemies too and breaks armour. Bosses and rooted enemies stop it.
-- **Breach Cannon** (RT): a heavy slug; hold to charge a Breach Shot that punches through enemies (level 2
-  breaks armour, level 3 also bursts at the end).
-- **Melee** (X): shield bash, edge strike and Piston Punch; a shield swat in the air; from a guard, a quick
-  shove. Hold for the **Seismic Slam**: shockwaves both ways along the floor. Rising attack: the
-  **Hydraulic Uplift** (launches enemies, sweeps shots away). His ground pound, the **Meteor Drop**, lands
-  wider and harder.
-- **Bulwark Wall** (Y): a hard-light wall for 8 s. Enemy shots stop at it and enemies can't get through
-  until they break it; the team's shots pass through boosted.
-- **Guardian Link** (RB): links him to the teammate who needs it most, leaping to their side if they are
-  far. For 8 s he takes 60% of the damage they take, and they get Plating (an overshield).
-- **Provoke** (LB): a war cry. Enemies close by turn on him for 4 s while he braces (takes 40% less), and
-  the ones right beside him are shoved back.
-- **Ultimate, Siege Breaker:** the team is Fortified with Plating, then he charges behind a colossal
-  hard-light ram's head, scooping up everything in his path, and slams the pile down.
+```sh
+pnpm install
+pnpm test
+pnpm build
+pnpm check:build
+```
 
-### Fix, Mechanic (the support)
+`tools/build.mjs` copies the used Three.js module graph into `game/vendor/three/` and creates the offline standalone from the current source and CSS. `check:build` validates the embedded JavaScript, absence of external loading dependencies, and source fingerprint so a stale standalone cannot be delivered silently. Rebuild after editing source.
 
-Lighter and quicker, with 95 health.
+The headless suite tests production simulation code, including input retention/consumption, controller chords, defensive priority, explicit attack intent, character extensions, mission progression, interrupted channels, checkpoint/replay cleanup, support statistics and traversal with every hero. Traversal tests suppress combat; progression tests stage boss victories. They do not substitute for a full human balance playthrough or hardware controller evaluation.
 
-- **Patch Beam** (hold LT): locks onto the teammate who needs it most. It heals fast, then adds Plating,
-  and **Tunes Up** whoever it holds: they charge, recharge and fill their bars 1.5 times as fast. On a
-  downed teammate it revives them from range; with no one in range she welds herself.
-- **Field Mechanic:** beside a downed teammate she revives three times as fast as anyone else, and whoever
-  she brings back returns with 60% of their health (40% otherwise).
-- **Gadgets** (Y builds, RB picks; cost Scrap): the **Patch Pylon** heals everyone in its field, and a
-  downed teammate inside slowly gets back up on their own; the **Sentry** shoots the nearest enemy (rockets
-  too at level 3); the **Amp Coil** makes teammates in its field charge and fill their bars faster. Two
-  wrench hits raise a gadget a level, up to 3.
-- **Power-ups** (melee with no enemy or gadget close; LB picks; cost Scrap): tossed to the nearest teammate
-  in front, or dropped at her feet, and anyone can pick one up. **Overclock**: everything charges,
-  recharges and fills 1.6 times as fast for 10 s. **Plating**: an overshield. **Medkit**: 40 health.
-- **Rivet Gun** (RT): tap for a burst of rivets; hold for a Hot Rivet that sticks where it hits and bursts.
-- **Wrench** (X): a three-hit combo; hold for the **Torque Slam**, a ring of sparks that stuns light
-  enemies and drones. Rising attack: **Jack-Up**, which leaves a spring pad teammates can bounce off. Her
-  ground pound sends out a repair pulse that heals teammates close by.
-- **Scrap** (the yellow bar): it trickles in, and comes from her hits and from enemies falling near her.
-- **Ultimate, Overhaul:** a supply pod drops and pulses repair light across the screen (it brings back
-  anyone who is down and hurts every enemy), then the team is Overclocked and Plated and her gadgets jump to
-  level 3.
+## Structure
 
-Fix's boosts (Tune-Up, Overclock and the Amp Coil) stack, up to 2.6 times as fast. They cover every
-weapon charge, ability cooldowns and recharges, and ultimate bar build-up.
+- `game/js/main.js`: application and menu orchestration.
+- `game/js/astraUI.js`, `game/astra.css`: title, settings, mission HUD and results.
+- `game/js/world.js`, `game/js/astraMission.js`, `game/js/level.js`: simulation, interactions and mission geography.
+- `game/js/player.js`, `combat.js`, `input.js`: moves, collision, input buffers and controller mappings.
+- `game/js/render.js`, `astraVisuals.js`, `rigs.js`, `enemyRigs.js`, `anim.js`: rendering and procedural art.
+- `game/js/fx.js`, character effect modules, `audio.js`, `music.js`: impact and sound.
+- `tests/`: headless regression and integration suites.
+- `standalone/`: generated offline game.
 
-### Also new
+The art is still procedural geometry and the soundtrack is synthesized. This is a playable rebuilt mission; authored animation clips, final production assets, online co-op, input remapping, touch controls and additional campaign missions remain future work.
 
-- **Team ultimates** have names for every pair, for example Heavy Metal (RAM + Fix), Starbreaker (Nova +
-  RAM) and Razorwire (Echo + Fix).
-- **Swapping** goes Nova, Echo, RAM, Fix; keys 1–4 pick a character directly.
-- **Fix:** an ultimate that ended with its player falling into a pit, or being pulled back on screen,
-  could leave the game frozen. It now ends there.
-
-## What changed in Version 9
-
-- **Nova's secondary weapons:** no recoil, and five to choose from with LB (Scatter, Grenade, Chain, Disc,
-  Gravity Well). Tap to fire, hold to charge.
-- **Nova's dodge** on LT, with a perfect dodge that slows the enemies around him.
-- **Automatic lock-on** (Settings: Lock-on mode).
-- **Rising attacks for everyone,** each designed for the character.
-- **Ultimates** and team ultimates, a sci-fi impact frame, and a controller-friendly controls screen.
-
-## What changed in Version 8
-
-- Nova: slower charging with a Level 4 sustained beam, the hard-light Aegis, and a close-range combo.
-- Echo: a sniper rifle with a laser sight, staff deflects and Zero-style moves.
-- A chargeable ground pound for both, less recoil across the board, dust effects, longer impact frames,
-  and two bosses (the Lockwarden and the Stormcaller).
-
-## Code
-
-`game/js/` has one ES module per concern. The simulation (`world.js`, `player.js`, `enemies.js`,
-`bosses.js`, `combat.js`, `level.js`) runs on plain data at a fixed 60 Hz and never touches the DOM or
-three.js. It emits events, and these react to them:
-
-- rendering (`render.js`, `rigs.js`, `enemyRigs.js`, `anim.js`, `fx.js`, `chargefx.js`, `subfx.js`,
-  `ultfx.js`, `beamfx.js`, `aegisfx.js`, `ramfx.js`, `fixfx.js`, `trails.js`, `ghosts.js`)
-- sound (`audio.js`, `music.js`)
-- haptics (`haptics.js`)
-- the HUD and menus (`ui.js`)
-
-All tuning lives in `config.js`.
-
-## Tests
-
-`node tests/run-all.mjs` needs Node 18 or newer and no install. It runs the headless simulation suites:
-220 checks, including two random-input soaks (the newer one runs all four characters, swapping them
-mid-fight). The browser screenshot, smoke and performance runs were done separately and are not included.
-
-## Known limits
-
-- Keyboard, mouse or gamepad only: there are no touch controls yet.
-- iPhones do not allow vibration from a web page.
-- Rumble, phone vibration and frame rate have not been checked on real devices yet.
-- RAM's and Fix's numbers, ultimate charge rates and weapon numbers are first-pass tuning values in
-  `config.js`.
+Three.js 0.170.0 is distributed under MIT; its license is included in the vendor directory and standalone HTML. The bundler is esbuild 0.25.0.

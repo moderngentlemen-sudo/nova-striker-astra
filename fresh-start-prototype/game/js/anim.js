@@ -339,11 +339,11 @@ export function animatePlayer(rig, p, dt, t) {
     if (mk) {
       // Skate stride: long, low pushes with arms swinging wide; at full glide both feet come together
       rig.phase += dt * speed * 0.95 * (back ? -1 : 1);
-      const s = Math.sin(rig.phase), c = Math.cos(rig.phase), coast = Math.max(0, 1 - Math.abs(p.vx - p.prevVx || 0) * 20) * (speed > 7 ? 1 : 0);
+      const s = Math.sin(rig.phase), c = Math.cos(rig.phase), coast = Math.max(0, 1 - Math.abs(p.vx - (rig.prevVx ?? p.vx)) * 20) * (speed > 7 ? 1 : 0);
       Object.assign(P, { hipN: 0.25 + s * 0.35 * amp, knN: -0.75 - Math.max(0, c) * 0.4, hipF: -0.3 - s * 0.45 * amp, knF: -0.55 - Math.max(0, -c) * 0.3,
         shN: -s * 0.9 * amp + 0.1, shF: s * 0.9 * amp - 0.1, elN: 0.5, elF: 0.5, spine: 0.36 * amp, hipY: 0.84 - Math.abs(c) * 0.03, twist: s * 0.18 * amp, head: -0.2 * amp });
       if (coast > 0.5) Object.assign(P, { hipN: 0.35, knN: -0.95, hipF: 0.1, knF: -0.9, shN: -0.6, shF: -0.8, spine: 0.42, hipY: 0.8 });
-      p.prevVx = p.vx;
+      rig.prevVx = p.vx;
     } else {
       // Sprint: knees high, arms pumping, leaning into it, torso counter-twisting the stride
       rig.phase += dt * speed * (ram ? 1.45 : 1.8) * (back ? -1 : 1);
@@ -411,6 +411,18 @@ export function animatePlayer(rig, p, dt, t) {
   if (!roll && Math.abs(rig.roll) > 0.01) { rig.roll = rig.roll % (Math.PI * 2); if (rig.roll < -Math.PI) rig.roll += Math.PI * 2; }
   rig.hips.rotation.z = rig.roll;
   rig.body.position.y = st === 'downed' || st === 'dead' ? 0.1 : 0;
+
+  // Astra equipment follows the action after the pose settles, preserving crisp strike silhouettes.
+  if (rig.extra.astraTails) for (let i=0;i<rig.extra.astraTails.length;i++) {
+    const tail=rig.extra.astraTails[i];
+    const target=Math.max(-0.3,Math.min(0.8,Math.abs(p.vx)*0.045)) + Math.sin(t*7+i)*Math.min(0.09,Math.abs(p.vx)*0.01);
+    tail.rotation.z += (target-tail.rotation.z)*(1-Math.exp(-dt*12));
+  }
+  if (rig.extra.astraVent) {
+    const charge=Math.min(1,(p.chargeT||0)/90);
+    rig.extra.astraVent.scale.set(1+charge*0.2,1.4+charge*0.5,1);
+    rig.extra.astraVent.rotation.z=charge*Math.PI*0.25;
+  }
 
   // ---- Suit details ----
   if (ram || fix) { newSuits(rig, p, cur, t, dt, aimAng, shooting); return; }

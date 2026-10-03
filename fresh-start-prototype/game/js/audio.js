@@ -242,6 +242,17 @@ export class Sound {
   play(ev) {
     if (!this.ctx || SETTINGS.volume <= 0) return;
     switch (ev.type) {
+      case 'interactionActivated':
+        if(ev.obj?.type==='breach'){this.noise(0.22,540,0.16,'lowpass');this.tone(120,42,0.2,'sine',0.16);}
+        else {this.tone(440,660,0.1,'triangle',0.07);this.tone(880,0,0.18,'sine',0.075,0.08);this.tone(1320,0,0.22,'sine',0.04,0.16);}break;
+      case 'interactionHit': if(this.limit('machine',0.07)){this.tone(620,480,0.08,'triangle',0.075);this.noise(0.035,2800,0.035,'highpass');}break;
+      case 'interactionLaunch':this.tone(180,760,0.19,'triangle',0.09);this.noise(0.1,1800,0.05,'bandpass',4200);break;
+      case 'missionComplete':for(let i=0;i<4;i++)this.tone([523,659,784,1046][i],0,0.45,'triangle',0.06,i*0.14);break;
+      case 'quickSwap':this.tone(980,1320,0.035,'square',0.025);break;
+      case 'tetherThrow':this.noise(0.12,2300,0.08,'bandpass',4200);this.tone(340,110,0.12,'triangle',0.075);break;
+      case 'rushRelease':this.tone(85,32,0.26,'sine',0.15);this.noise(0.15,900,0.1,'lowpass');break;
+      case 'rivetDetonate':this.noise(0.09,1600,0.14,'bandpass',4800);this.tone(170,60,0.12,'sine',0.1);break;
+      case 'gadgetRelocate':this.tone(660,330,0.08,'triangle',0.055);this.tone(440,660,0.07,'triangle',0.04,0.08);break;
       case 'jump': if (this.limit('jump', 0.05)) this.tone(280, 460, 0.09, 'triangle', 0.06); break;
       case 'djump': this.tone(380, 640, 0.09, 'triangle', 0.06); break;
       case 'walljump':
@@ -365,9 +376,11 @@ export class Sound {
         break;
       }
       case 'hit':
-        if (!this.limit('hit', 0.025)) break;
-        if (ev.heavy) { this.noise(0.12, 700, 0.22, 'lowpass'); this.tone(150, 60, 0.14, 'sine', 0.2); }
-        else { this.noise(0.06, 1100, 0.14, 'lowpass'); this.tone(200, 100, 0.07, 'sine', 0.12); }
+        if (!this.limit('hit', 0.045)) break;
+        if (ev.owner?.char === 'echo') {this.noise(0.055,3700,0.1,'highpass');this.tone(1120,740,0.07,'triangle',0.065);}
+        else if(ev.owner?.char === 'ram'){this.noise(0.1,650,0.15,'lowpass');this.tone(ev.heavy?95:150,38,ev.heavy?0.2:0.1,'sine',0.16);}
+        else if(ev.owner?.char === 'fix'){this.tone(740,520,0.075,'triangle',0.11);this.noise(0.05,2200,0.08,'bandpass',5200);}
+        else {this.noise(0.065,1500,0.13,'lowpass');this.tone(ev.heavy?150:240,80,0.1,'sine',0.11);this.tone(1350,840,0.035,'triangle',0.035);}
         break;
       case 'blocked': this.tone(1450, 0, 0.05, 'square', 0.04); this.tone(1950, 0, 0.07, 'square', 0.03, 0.01); break;
       case 'guardBreak': this.noise(0.25, 2000, 0.16, 'highpass'); this.tone(320, 140, 0.2, 'sawtooth', 0.1); break;

@@ -45,6 +45,7 @@ export function resolveHitboxes(world) {
           set.add('g' + g.id); world.wrenchGadget(g, hb.owner);
         }
       }
+      if (hb.wrench && hb.owner && world.detonateRivetsNear) world.detonateRivetsNear(hb.owner, hb);
     } else {
       for (const p of world.players) {
         if (p.state === 'dead' || p.state === 'downed' || set.has('p' + p.slot)) continue;
@@ -111,7 +112,7 @@ export function hitEnemy(world, e, hit, source) {
   }
   const heavyHit = (hit.vbTier || 0) >= 2 || hit.armorBreak || hit.rail || poise >= 40;
   if (source === 'melee') {
-    const stop = hit.vbTier ? 3 + hit.vbTier * 2 : heavyHit ? 6 : 3;
+    const stop = hit.multi && !hit.finalPulse ? 2 : hit.vbTier ? 3 + hit.vbTier * 2 : heavyHit ? 6 : 3;
     if (owner) owner.hitstop = Math.max(owner.hitstop, stop);
     e.hitstop = stop + 1;
   } else e.hitstop = Math.max(e.hitstop, 2);
@@ -124,8 +125,15 @@ export function hitEnemy(world, e, hit, source) {
   if (e.hp <= 0) { kill(world, e, owner, hit); return 'kill'; }
   const T = e.type;
   const canMove = !['post', 'turret', 'sniper', 'mortar'].includes(T);
+  if (hit.airEnder && e.light && canMove && !armored && !e.boss) {
+    e.missionThrower = owner; e.missionThrownUntil = world.tick + 60;
+  }
   if (ambush && T !== 'post' && T !== 'turret') {
     if (e.state !== 'stagger') stagger(world, e, T === 'brute' ? 120 : 90);
+  } else if (hit.airEnder === 'slam' && e.light && canMove && !armored && !e.boss) {
+    world.director.release(e);
+    e.state = 'launched'; e.st = 0; e.vy = hit.kb[1]; e.vx = hit.kb[0]; e.poise = 0;
+    world.emit('airSlamHit', { e, p: owner, x: cx, y: cy });
   } else if (hit.scatter && e.light && canMove && !e.flier && !armored) {
     // A ground pound's scatter blast throws light enemies outward in an arc
     if (e.state === 'windup' || e.state === 'aim' || e.state === 'lock') world.director.release(e);

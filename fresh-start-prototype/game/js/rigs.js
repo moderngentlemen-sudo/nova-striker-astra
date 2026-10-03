@@ -7,8 +7,20 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CHARS, ATTACH_LOOK } from './config.js';
 
-const rbox = (w, h, d, r = 0.05) => new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
+const rbox = (w, h, d, r = 0.05) => new RoundedBoxGeometry(w, h, d, 1, Math.min(r * 0.46, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
 const cap = (r, len) => new THREE.CapsuleGeometry(r, len, 4, 12);
+
+// A tiny nearest-filtered ramp gives every hero the same graphic light response.
+// It is shared by all rigs and works on the direct renderer as well as the bloom path.
+const ramp = new THREE.DataTexture(new Uint8Array([70, 132, 194, 255]), 4, 1, THREE.RedFormat);
+ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
+export const toonMaterial = color => new THREE.MeshToonMaterial({ color, gradientMap: ramp });
+const HERO_PALETTE = {
+  nova: { base: '#e6edf0', trim: '#17477e', under: '#101e35' },
+  echo: { base: '#bac7d1', trim: '#223145', under: '#101521' },
+  ram: { base: '#4a6685', trim: '#172c44', under: '#101a27' },
+  fix: { base: '#ecd9b5', trim: '#237d71', under: '#172d34' },
+};
 
 // Fresnel rim so characters separate from bright backgrounds (readability, especially in 4P)
 // The uniforms persist on mat.userData.rim so Echo's Veil can turn the rim into a shimmering outline;
@@ -30,15 +42,16 @@ export function addRim(mat, color, strength = 0.45, power = 2.4) {
 }
 
 function mats(c) {
-  const std = (color, rough, metal = 0.08) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
+  const std = color => toonMaterial(color);
+  const palette = HERO_PALETTE[Object.keys(CHARS).find(k => CHARS[k] === c)] || c;
   return {
-    base: std(c.base, 0.36), trim: std(c.trim, 0.42, 0.18), under: std(c.under, 0.72),
-    energy: new THREE.MeshStandardMaterial({ color: c.energy, emissive: c.energy, emissiveIntensity: 2.4, roughness: 0.3 }),
+    base: std(palette.base), trim: std(palette.trim), under: std(palette.under),
+    energy: new THREE.MeshStandardMaterial({ color: c.energy, emissive: c.energy, emissiveIntensity: 1.65, roughness: 0.3 }),
     visor: new THREE.MeshStandardMaterial({ color: 0x0b1018, roughness: 0.12, metalness: 0.7 }),
     amber: new THREE.MeshStandardMaterial({ color: 0xffa53a, emissive: 0xff8a1a, emissiveIntensity: 0.6, roughness: 0.1, transparent: true, opacity: 0.72 }),
   };
 }
-function rimAll(M) { for (const k of ['base', 'trim', 'under']) addRim(M[k], '#d6ecff', k === 'under' ? 0.35 : 0.5); return M; }
+function rimAll(M) { for (const k of ['base', 'trim', 'under']) addRim(M[k], '#93cbef', k === 'under' ? 0.18 : 0.25); return M; }
 
 function mesh(geo, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; return m;
@@ -223,6 +236,7 @@ export function buildPlayerRig(charId) {
 // The common tail of every rig: shadows, its state for the animation, and Echo's Veil (any rig can fade)
 function finishRig(parts) {
   const { root, mats: M } = parts;
+  dressAstraHero(parts);
   root.traverse(o => { if (o.isMesh) o.receiveShadow = false; });
   const rig = { ...parts, phase: 0, cur: {}, scarf: null, headMode: null, yaw: 0, stretch: 0, lastVy: 0, wasGround: true, lastRocketT: 0, wasCrouch: false };
   rig.setHead = () => {};
@@ -248,6 +262,80 @@ function finishRig(parts) {
     }
   };
   return rig;
+}
+
+// Cut armor panels make large graphic shapes in the gameplay-facing plane. They are attached to
+// the existing joints: combat poses, scarf simulation, muzzle locations and hitboxes stay aligned.
+function armor(parent, material, points, depth, x, y, z, outline = true) {
+  const shape = new THREE.Shape(); points.forEach(([a, b], i) => i ? shape.lineTo(a, b) : shape.moveTo(a, b)); shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.012, bevelThickness: 0.012 });
+  geometry.translate(0, 0, -depth / 2);
+  const plate = mesh(geometry, material, x, y, z); parent.add(plate);
+  if (outline) {
+    const ink = new THREE.MeshBasicMaterial({ color: '#101d30', side: THREE.BackSide });
+    const edge = new THREE.Mesh(geometry, ink); edge.scale.set(1.055, 1.055, 1.055); plate.add(edge);
+  }
+  return plate;
+}
+
+function dressAstraHero(S) {
+  const { char, mats: M, spine, head, armN, armF, legN, legF, hips, extra } = S;
+  const badge = (parent, color, x, y, z, scale = 1) => {
+    const m = mesh(new THREE.OctahedronGeometry(0.065 * scale, 0), color, x, y, z); m.scale.y = 1.4; parent.add(m); return m;
+  };
+  const cut = [[-0.18, -0.1], [0.13, -0.11], [0.23, 0.05], [0.1, 0.16], [-0.22, 0.1]];
+  if (char === 'nova') {
+    // Broad cobalt shoulder wings, a forward helmet brow, angular bracer cowling and long boot fins.
+    for (const [a, z] of [[armN, 0.055], [armF, -0.055]]) {
+      armor(a.top, M.trim, cut, 0.2, 0, 0.01, z);
+      badge(a.top, M.energy, 0.04, 0.035, z > 0 ? 0.17 : -0.17, 0.8);
+    }
+    armor(spine, M.trim, [[-0.18,-0.1],[0.17,-0.08],[0.13,0.12],[-0.13,0.16]], 0.045, 0, 0.41, 0.28);
+    badge(spine, M.energy, 0.02, 0.44, 0.315, 1.1);
+    armor(head, M.trim, [[-0.19,0],[0.21,-0.025],[0.16,0.07],[-0.1,0.11]], 0.31, 0, 0.19, 0);
+    armor(extra.bracer, M.trim, [[-0.13,-0.2],[0.13,-0.24],[0.16,0.18],[-0.1,0.22]], 0.045, 0, 0, 0.125);
+    for (const l of [legN, legF]) {
+      armor(l.joint, M.trim, [[-0.09,-0.13],[0.11,-0.17],[0.16,0.12],[-0.07,0.19]], 0.04, 0.015, -0.2, 0.115);
+      armor(l.end, M.base, [[-0.2,-0.04],[0.2,-0.03],[0.3,0.055],[-0.12,0.1]], 0.2, 0.015, 0.005, 0);
+    }
+    extra.astraVent = badge(extra.bracer, M.energy, 0, 0.15, 0.16, 1.2);
+  } else if (char === 'echo') {
+    // Swept asymmetry and a long coat tail echo the scarf's motion without obscuring it.
+    armor(armN.top, M.base, [[-0.23,-0.06],[0.2,-0.09],[0.12,0.12],[-0.31,0.18]], 0.23, -0.015, 0.025, 0.025);
+    armor(armF.top, M.trim, cut, 0.16, 0, 0, 0);
+    armor(spine, M.trim, [[-0.15,-0.18],[0.15,-0.12],[0.13,0.18],[-0.18,0.15]], 0.045, 0, 0.36, 0.25);
+    for (const z of [-0.2, 0.2]) {
+      const coat = armor(hips, M.trim, [[-0.18,0.08],[0.13,0.03],[-0.06,-0.42],[-0.3,-0.35]], 0.04, -0.06, -0.04, z, false);
+      (extra.astraTails ||= []).push(coat);
+      badge(armN.joint, M.energy, 0.02, -0.11, z * 0.62, 0.8);
+    }
+    for (const l of [legN, legF]) armor(l.joint, M.base, [[-0.08,-0.14],[0.09,-0.17],[0.12,0.17],[-0.1,0.09]], 0.05, 0.02, -0.19, 0.12);
+  } else if (char === 'ram') {
+    const rim = toonMaterial('#90a9c0');
+    for (const z of [-0.51,0.51]) {
+      armor(spine, M.trim, [[-0.3,-0.14],[0.26,-0.12],[0.3,0.14],[-0.25,0.2]], 0.19, 0, 0.64, z);
+      armor(spine, rim, [[-0.2,-0.03],[0.2,-0.03],[0.16,0.04],[-0.2,0.04]], 0.04, 0.02, 0.73, z + Math.sign(z)*0.12, false);
+    }
+    const sh = extra.shield;
+    for (const x of [-0.27,0.27]) armor(sh, M.trim, [[-0.08,-0.53],[0.08,-0.45],[0.08,0.52],[-0.08,0.57]], 0.1, x, 0, 0.13);
+    for (const y of [-0.38,-0.28]) sh.add(mesh(rbox(0.34,0.035,0.025), rim, 0, y, 0.105));
+    armor(extra.cannon, M.base, [[-0.22,-0.13],[0.4,-0.12],[0.47,0.03],[0.1,0.2],[-0.2,0.15]], 0.28, 0,0,0);
+    for (const l of [legN,legF]) armor(l.end, M.base, [[-0.2,-0.04],[0.3,-0.04],[0.32,0.09],[-0.1,0.14]],0.3,0,0,0);
+  } else {
+    const hazard = toonMaterial('#f7b943');
+    armor(spine,M.trim,[[-0.16,-0.19],[0.17,-0.18],[0.2,0.1],[0.05,0.2],[-0.2,0.17]],0.04,0,0.4,0.245);
+    for (const z of [-0.12,0.12]) spine.add(mesh(rbox(0.07,0.44,0.07), hazard,-0.23,0.42,z));
+    armor(armN.top, hazard, cut,0.22,0,0.01,0.02);
+    armor(armF.top,M.trim,cut,0.16,0,-0.01,0);
+    // A substantial insulated tool housing and a wrench jaw that is visible from the action camera.
+    extra.gun.add(mesh(rbox(0.18,0.17,0.23),M.base,0,0.06));
+    extra.wrench.add(mesh(rbox(0.18,0.04,0.13),hazard,0,-0.53));
+    for (const l of [legN,legF]) {
+      l.joint.add(mesh(rbox(0.21,0.15,0.22),hazard,0.035,-0.1));
+      l.end.add(mesh(rbox(0.29,0.05,0.2),M.base,0.06,-0.065));
+    }
+    badge(spine,M.energy,0.075,0.4,0.286,1.0);
+  }
 }
 
 // ---- RAM and Fix ----------------------------------------------------------------------------------
