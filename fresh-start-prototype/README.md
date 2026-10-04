@@ -30,7 +30,7 @@ Astra's X/C/Z/G/B inputs are preserved. Squad commands use **Alt+1/2/3/4**; on a
 - **World interaction:** eleven machines including breach panels, charged power fixtures, launch surfaces, a repair circuit, an Echo tether anchor, two relay controls and the final beacon. Every hero can complete the main route; abilities offer additional opportunities.
 - **Combat:** local hitstop preserves inputs. Defense has a clear cancel priority; missed attacks retain commitment. Melee assistance respects retreat input, walls and platform edges.
 - **Nova:** explicit close strike and secondary fire, plus a quick swap between two remembered primary/secondary loadouts.
-- **Echo:** directional tether throws and aerial finishers that carry, slam or lift. A lift can extend an aerial sequence once before landing.
+- **Echo:** directional tether throws and aerial finishers that carry, slam or lift. A lift can extend an aerial sequence once before landing. Hunter's spinning deflect still reflects shots and now also stuns enemies it touches at close range.
 - **RAM:** steer a collected pile into a forward or upward release during a charge. An empty charge cannot cancel early this way.
 - **Fix:** wrench hits detonate embedded Hot Rivets. Pick up and relocate owned gadgets while preserving their upgrade level, health and remaining lifetime.
 - **Presentation:** cel-style character lighting, stronger armor and equipment silhouettes, hostile shape language, district signs, mechanical platform detail, contact shadows, readable machine states, distinct impact/audio signatures, and restored transit/civic lighting.
@@ -50,7 +50,7 @@ The complete character reference is available with **H / View**. The original co
 | Explicit strike, always melee | X | L3 |
 | Explicit Nova secondary | C | LB + X |
 | Nova quick loadout swap | Z | LB + RB |
-| Dodge / deflect / guard / repair beam | Q | LT |
+| Dodge / deflect / guard / repair beam | Q or L | LT |
 | Suit ability, including Echo tether | E | Y |
 | Mode / attachment / gadget selection | R | RB |
 | Secondary / utility selection | T | Tap and release LB |
@@ -62,9 +62,11 @@ The complete character reference is available with **H / View**. The original co
 | Swap hero | 1-4 or Tab during play | D-pad left/right |
 | Pause / full controls | Esc / H | Start / View |
 
-**Echo throw:** hold tether and press strike while choosing a direction. Air finishers use neutral/up/down strike. **RAM release:** strike during a charge after collecting enemies; up throws upward. **Fix relocation:** press once near an owned gadget to pick it up, then again to place it. **Repair channels:** press Interact and remain nearby; moving away or taking damage interrupts the connection. Fix repairs faster.
+**Echo spinning deflect (Hunter):** Q/L or LT keeps the existing projectile reflection and perfect-deflect Riposte. Contact stuns unarmored, unguarded regular enemies for 1 s; shields, armor and walls block that stun. Vulnerable bosses interrupt briefly, and each enemy resists another spin stun for 2 s. Pursuit's parry and the separate projectile-deflecting glaive combos retain their existing behavior. **Echo throw:** hold tether and press strike while choosing a direction. Air finishers use neutral/up/down strike. **RAM release:** strike during a charge after collecting enemies; up throws upward. **Fix relocation:** press once near an owned gadget to pick it up, then again to place it. **Repair channels:** press Interact and remain nearby; moving away or taking damage interrupts the connection. Fix repairs faster.
 
 Menus support native keyboard Tab/Shift+Tab and Enter/Space; controller stick/D-pad moves spatially, left/right adjusts settings, A selects, B returns, LB goes to the top, and RB goes to settings. Gameplay actions are suppressed while a menu is open and held buttons must be released before they act after closing it. The same squad order again cancels it; orders clear on operation changes and retries.
+
+**Impact frame duration** in the pause menu scales the visual impact effect and its brief presentation pause from **0.5× to 3×**. **Default · 1×** preserves the original timing. The preference is saved automatically and applies to all seven impact styles.
 
 ## Build and validate
 

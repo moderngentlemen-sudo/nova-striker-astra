@@ -218,7 +218,9 @@ export const POUND = {
 // Echo's staff deflect: during a parry (the first `window` ticks) or any staff swing marked `deflect`, enemy
 // shots that reach him are knocked back toward whoever fired them, faster, as his own; a perfect parry
 // hits harder. Unblockable shells cannot be deflected.
-export const DEFLECT = { window: 22, reach: 1.15, speed: 1.35, dmg: { standard: 3, heavy: 6 }, perfect: 1.6 };
+export const DEFLECT = { window: 22, reach: 1.15, speed: 1.35, dmg: { standard: 3, heavy: 6 }, perfect: 1.6,
+  // Contact is once per enemy per spin; it never changes projectile timing.
+  contact: { radius: 1.5, dmg: 2, poise: 12, stun: 60, bossStun: 18, immunity: 120 } };
 
 export const HUNTER = {
   snareCharges: 2, snareRecharge: 300, throwSpeed: 15, throwLift: 5, snareGravity: 32,
@@ -575,6 +577,7 @@ export const DEFAULT_SETTINGS = {
   impactFrames: true,   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
   impactStyle: 'scifi', // the look: scifi, comic (the original), eclipse, shatter, thunder, sumi, warp (fx.js ImpactShader)
   impactColor: 'style', // its key colour: the look's own ('style'), the player's colour ('player') or the character's ('character')
+  impactDuration: 1,    // multiplier for the impact look and its brief presentation pause (0.5–3)
   camera: 'persp',
   fov: 34,
   aimAssist: true,

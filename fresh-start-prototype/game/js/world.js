@@ -978,6 +978,7 @@ export class World {
       p.dodge = null; p.pound = null; p.burstT = 0; p.subArmed = false; p.ultRun = null; p.lockSuspend = false;
       p.rush = null; p.link = null; p.leap = null; p.patch = null; p.tossArmed = false; p.integrity = RAM.guard.integrity; p.guardBroken = false; p.kinetic = 0;
       p.plate = 0; p.overclockT = 0; p.furyT = 0; p.tuneT = 0; p.braceT = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start); p.fixRevive = false; p.reviveGain = 0;
+      p.spinInstance = null; p.spinContactHit = false;
       p.hitstop = 0; p.hitConfirm = false; p.queued = null; p.move = null; p.moveId = null; p.dash = null; p.lash = null; p.zip = null;
       p.rifleT = 0; p.dashChargeT = 0; p.meleeHeldT = 0; p.meleeCharged = false; p.rivetQ = 0; p.meleeIntent = 'context';
       p.airEnderUsed = false; p.airRise = true; p.airDodge = true; p.airDashes = 1; p.jumpsUsed = 0; p.onGround = false;
@@ -987,6 +988,7 @@ export class World {
     this.projectiles = []; this.shockwaves = []; this.barriers = []; this.snares = []; this.wells = []; this.ultCast = null;
     this.gadgets = []; this.pickups = [];
     restoreBoxes(); this.spawnLevelPickups();
+    for (const e of this.enemies) e.spinStunUntil = 0;
     for (const e of this.enemies) if (e.state === 'plowed') { e.state = 'idle'; e.plowBy = null; }
     for (const p of this.players) p.leash = null;
     if (this.arena.state !== 'cleared') this.resetArena();

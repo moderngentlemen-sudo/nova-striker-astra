@@ -1,7 +1,7 @@
 // Combat resolution: melee hitboxes, projectiles, barriers, shockwaves, damage and parries.
 import { DT, PARRY, MERCY_TICKS, DIFFICULTY, SETTINGS, ECHO, SCARF, MARKSMAN, DEFLECT, SUB, DODGE, ULT, RAM, POWERUPS } from './config.js';
 import { onDealtDamage, addResolve, breakVeil, parryWindows, gainFocus, loseFocus, gainUlt, chest } from './player.js';
-import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y, killYAt, breakableAt } from './level.js';
+import { pointInSolid, groundBelow, BOXES, LEVEL_X0, LEVEL_X1, KILL_Y, killYAt, breakableAt, segmentBlocked } from './level.js';
 
 const sign = v => (v > 0 ? 1 : v < 0 ? -1 : 0);
 
@@ -30,6 +30,8 @@ export function resolveHitboxes(world) {
     if (hb.team === 'p') {
       for (const e of world.enemies) {
         if (e.dead || set.has(e.id) || !overlap(hb, hurtbox(e))) continue;
+        if (hb.spinContact && (!circleBox({ x: hb.cx, y: hb.cy, r: hb.radius }, hurtbox(e)) ||
+          segmentBlocked(hb.cx, hb.cy, e.x, e.y + e.h * 0.55))) continue;
         set.add(e.id);
         // Radial hits (landing shockwaves, the Aegis bursts, ground pounds) push each enemy away from their
         // centre. Bursts and pound shockwaves count as blasts (a shield cannot stop them); a pound that lands
@@ -87,7 +89,7 @@ export function hitEnemy(world, e, hit, source) {
     if (fromFront && !breaks) {
       e.poise += (hit.poise || 10) * 0.35;
       world.emit('blocked', { x: cx + e.shieldDir * 0.5, y: cy, e });
-      if (source === 'melee' && owner) { owner.vx = -owner.facing * 3; owner.hitstop = 3; }
+      if (source === 'melee' && owner && !hit.spinContact) { owner.vx = -owner.facing * 3; owner.hitstop = 3; }
       if (e.poise >= e.poiseMax) stagger(world, e, 90);
       return 'blocked';
     }
@@ -114,7 +116,7 @@ export function hitEnemy(world, e, hit, source) {
     if (!hit.ult) gainUlt(owner, dmg * ULT.gain.dealt, world);
   }
   const heavyHit = (hit.vbTier || 0) >= 2 || hit.armorBreak || hit.rail || poise >= 40;
-  if (source === 'melee') {
+  if (source === 'melee' && !hit.spinContact) {
     const stop = hit.multi && !hit.finalPulse ? 2 : hit.vbTier ? 3 + hit.vbTier * 2 : heavyHit ? 6 : 3;
     if (owner) owner.hitstop = Math.max(owner.hitstop, stop);
     e.hitstop = stop + 1;
@@ -125,13 +127,29 @@ export function hitEnemy(world, e, hit, source) {
   if (hit.vbTier === 3 || (hit.rail && (e.type === 'brute' || e.boss))) world.emit('impact', { x: cx, y: cy, big: true });
 
   if (ambush) { world.emit('ambush', { x: cx, y: cy, e, owner }); world.bark(owner, 'ambush', 0.3); }
-  if (e.hp <= 0) { kill(world, e, owner, hit); return 'kill'; }
+  if (e.hp <= 0) {
+    if (hit.spinContact) { owner.spinContactHit = true; world.emit('echoSpinHit', { p: owner, e, x: cx, y: cy, stunned: false, ticks: 0 }); }
+    kill(world, e, owner, hit); return 'kill';
+  }
   const T = e.type;
   const canMove = !['post', 'turret', 'sniper', 'mortar'].includes(T);
   if (hit.airEnder && e.light && canMove && !armored && !e.boss) {
     e.missionThrower = owner; e.missionThrownUntil = world.tick + 60;
   }
-  if (ambush && T !== 'post' && T !== 'turret') {
+  if (hit.spinContact) {
+    const C = DEFLECT.contact;
+    const stunned = !armored && !['post', 'turret'].includes(T) && !['caught', 'snared', 'plowed'].includes(e.state) &&
+      world.tick >= (e.spinStunUntil || 0) && (!e.boss || !(e.staggerCd > 0));
+    owner.spinContactHit = true;
+    const ticks = stunned ? (e.boss ? C.bossStun : C.stun) : 0;
+    if (stunned) {
+      const remaining = ['stagger', 'hitstun'].includes(e.state) ? Math.max(0, e.stun - e.st) : 0;
+      world.director.release(e); e.state = 'stagger'; e.st = 0; e.stun = Math.max(ticks, remaining); e.poise = 0;
+      e.vx = 0; e.atk = null; e.spinStunUntil = world.tick + C.immunity;
+      if (e.boss) e.staggerCd = Math.max(e.staggerCd || 0, C.immunity);
+    }
+    world.emit('echoSpinHit', { p: owner, e, x: cx, y: cy, stunned, ticks });
+  } else if (ambush && T !== 'post' && T !== 'turret') {
     if (e.state !== 'stagger') stagger(world, e, T === 'brute' ? 120 : 90);
   } else if (hit.airEnder === 'slam' && e.light && canMove && !armored && !e.boss) {
     world.director.release(e);

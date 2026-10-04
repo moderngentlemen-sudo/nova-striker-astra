@@ -459,6 +459,16 @@ export class FX {
       case 'rifleFocus': this.charge.levelUp(ev.p, this.rigs.get(ev.p), 3, 'rifle'); break;
       case 'snipe': this.snipe(ev); break;
       case 'crit': this.popText(ev.x, ev.y + 0.5, 'CRIT', '#ffd27a', 0.75); this.sprite(ev.x, ev.y, 'star', '#ffffff', 1.5, 0.16, 1.5); break;
+      case 'echoSpinHit': {
+        // Contact with the rotating staff: a compact gold pulse and a readable stun marker.
+        this.sprite(ev.x, ev.y, 'ring', ECHO_ORANGE, 0.65, 0.18, 2);
+        this.burst(ev.x, ev.y, '#ffe1a0', 6, 4, 0.16, 0.25, { grav: 4 });
+        if (ev.stunned) {
+          this.glyph(ev.e, '✦', '#ffe6a0', Math.max(0.18, ev.ticks / 60));
+          this.popText(ev.x, ev.y + 0.5, 'STUN', '#ffe6a0', 0.55);
+        }
+        break;
+      }
       case 'deflect': {
         // The staff knocks the shot back: a sharp spark flash, a ring, and sparks along its new path
         const c = ev.perfect ? '#fff6d8' : ECHO_ORANGE;

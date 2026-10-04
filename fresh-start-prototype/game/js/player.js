@@ -3,7 +3,7 @@
 import {
   DT, GRAVITY, FALL_MULT, RISE_CUT_MULT, MAX_FALL, FAST_FALL, HIGH_VEL,
   COYOTE, JUMP_BUFFER, ACTION_BUFFER, PARRY_BUFFER, PARRY, CHARS, MOVES, VB, NOVA, MARKSMAN, ECHO, HUNTER, SCARF, SETTINGS,
-  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT, RAM, FIX, PLATE_MAX,
+  WALL, DASH_CHARGE, LOCK, AEGIS, DASH_SLASH, POUND, SUBS, SUB, DODGE, ULT, RAM, FIX, PLATE_MAX, DEFLECT,
 } from './config.js';
 import { moveBody, hasHeadroom, groundBelow, segmentBlocked } from './level.js';
 
@@ -32,7 +32,7 @@ export function createPlayer(slot, device, charId, x, y) {
     chargeT: 0, fireCd: 0, meleeHeldT: 0, meleeCharged: false,
     hp: c.hp, maxHp: c.hp, strain: 0, strainT: 0,
     mercy: 0, hitstop: 0, stun: 0,
-    parryT: 0, parryResult: null, riposteT: 0,
+    parryT: 0, parryResult: null, riposteT: 0, spinInstance: null, spinContactHit: false,
     bulwarkCd: 0, lashCharges: ECHO.lashCharges, lashRecharge: 0, lash: null, zip: null,
     resolve: 0, calmT: 0, lastResolveHitT: 0, cells: ECHO.cellsMax, tracerCd: 0,
     snares: HUNTER.snareCharges, snareRecharge: 0, leash: null,
@@ -72,6 +72,7 @@ export function setCharacter(p, charId) {
   p.integrity = RAM.guard.integrity; p.kinetic = 0; p.guardBroken = false; p.rush = null; p.leap = null; p.braceT = 0;
   p.patch = null; p.tossArmed = false; p.rivetQ = 0; p.scrap = Math.max(p.scrap, FIX.scrap.start);
   p.meleeIntent = 'context'; p.airEnderUsed = false; p.quickCd = 0;
+  p.spinInstance = null; p.spinContactHit = false;
   for (const b in p.buf) p.buf[b] = 99;
 }
 
@@ -333,6 +334,8 @@ function tryParry(p, world) {
   if (p.char === 'ram') return startGuard(p, world);   // RAM raises the Rampart
   if (p.char === 'fix') return startPatch(p, world);   // Fix runs the Patch Beam
   p.buf.parry = 99; p.parryT = 0; p.parryResult = null;
+  p.spinInstance = p.char === 'echo' && SETTINGS.echoKit === 'hunter' ? world.newInstance() : null;
+  p.spinContactHit = false;
   setState(p, 'parry'); world.emit('parryStart', { p });
   return true;
 }
@@ -871,12 +874,18 @@ function stateAttack(p, cmd, world) {
 function stateParry(p, cmd, world) {
   p.parryT++;
   if (p.onGround) p.vx *= 0.7; else { applyGravity(p, cmd); p.vx = approach(p.vx, cmd.mx * 2, 20 * DT); wallCling(p, cmd, true); }
+  if (p.char === 'echo' && SETTINGS.echoKit === 'hunter' && p.spinInstance !== null && p.parryT <= DEFLECT.window) {
+    const C = DEFLECT.contact, cx = p.x, cy = p.y + p.h * 0.6;
+    world.spawnHitbox({ owner: p, team: 'p', x0: cx - C.radius, x1: cx + C.radius, y0: cy - C.radius, y1: cy + C.radius,
+      cx, cy, radius: C.radius, radial: true, spinContact: true, dmg: C.dmg, poise: C.poise, kb: [0, 0], instance: p.spinInstance });
+  }
   if (p.parryResult) {
     // Successful parry: short, cancellable recovery
     if (p.st > 3 && cancelInto(p, cmd, world)) return;
     if (p.st > 10) setState(p, 'normal');
     return;
   }
+  if (p.spinContactHit && p.parryT > 4 && cancelInto(p, cmd, world, { parry: false })) return;
   if (p.parryT >= PARRY.window + PARRY.whiff) setState(p, 'normal');
 }
 

@@ -39,7 +39,7 @@
 //   hold     Hold here: the bots stand their ground around where the commander stood, fighting what comes
 //            within ORDERS.holdRange of it, until another command
 // A new command replaces the last one; giving the same one again cancels it (back to following).
-import { ULT, RAM, FIX, ROSTER, MARKSMAN, HUNTER, SETTINGS } from './config.js';
+import { ULT, RAM, FIX, ROSTER, MARKSMAN, HUNTER, SETTINGS, DEFLECT } from './config.js';
 import { groundBelow, hasHeadroom, segmentBlocked, routeAt } from './level.js';
 
 const BTNS = ['jump', 'dash', 'melee', 'fire', 'parry', 'sig', 'mode', 'lock', 'sub', 'ult', 'strike', 'secondary', 'quick', 'relocate', 'interact'];
@@ -314,6 +314,11 @@ export class Bots {
       }
       case 'echo': {
         if (threat) { held.parry = (M.t % 3) === 0; M.hold = 0; }                         // parry / deflect
+        else if (SETTINGS.echoKit === 'hunter' && seen && !tgt.armor && world.tick >= (tgt.spinStunUntil || 0) &&
+          !['stagger', 'caught', 'snared', 'plowed'].includes(tgt.state) &&
+          Math.hypot(Math.max(0, Math.abs(tx) - tgt.w / 2), Math.max(0, Math.abs(ty) - tgt.h / 2)) < DEFLECT.contact.radius) {
+          held.parry = (M.t % 3) === 0; M.hold = 0; // use the spin's contact stun when the staff can reach
+        }
         else if (close) { aimFree = false; held.melee = (M.t % 8) < 3; M.hold = 0; }
         else if (d > 3 && d < 6.5 && p.onGround && Math.abs(ty) < 1 && (M.t % 50) === 0) { held.dash = true; mx = sign(tx); }
         else if (d >= 6.5 && seen) held.fire = this.charge(M, p, HUNTER.rifle.raise + (armoured ? HUNTER.rifle.focus : 20));

@@ -35,7 +35,7 @@ const ui = new UI(document.getElementById('overlay'), {
   remove: p => {
     // removing an AI teammate turns the setting down by one, so it isn't simply added back
     if (isBot(p)) { SETTINGS.aiTeammates = Math.max(0, world.players.filter(isBot).length - 1); saveSettings(); }
-    sound.jet(p, false); world.removePlayer(p.slot);
+    sound.jet(p, false); world.removePlayer(p.slot); input.resetDevice(p.device);
   },
 });
 
@@ -83,6 +83,7 @@ function tryJoin() {
     if (world.players.length >= 4 && !bots.makeRoom(world)) break;
     // Each new player takes the next character no one is playing yet (Nova, Echo, RAM, Fix)
     const used = new Set(world.players.map(p => p.char)), char = ROSTER.find(c => !used.has(c)) || ROSTER[world.players.length % ROSTER.length];
+    input.resetDevice(dev); // A device changing owners must not inherit queued taps.
     world.addPlayer(dev, char);
   }
   if (!started && input.gamepadBlocked) ui.gamepadNotice(true);
@@ -142,7 +143,9 @@ function stepSim() {
   if (O && O.type === 'hold' && world.tick % 50 === 0) view.fx.groundRing(O.x, O.y, PLAYER_COLORS[O.by.slot], 0.5, 1.8, 0.45, 0.6);
   if (SETTINGS.barks && bots.done === world.tick) { const b = world.players.find(isBot); if (b) ui.bark(b, ORDERS.lines[b.char].done); }
   if (window.__NS.inject) cmds = window.__NS.inject(world.tick, cmds) || cmds;
+  const inputRevision = world.sessionRevision;
   world.step(cmds);
+  if (world.sessionRevision !== inputRevision) input.swallowAll();
   for (const ev of world.events) { view.onEvent(ev); sound.play(ev); ui.onEvent(ev, world); haptics.onEvent(ev); }
   world.events.length = 0;
 }
@@ -162,7 +165,10 @@ function frame(now) {
   tryJoin();
   const halted = paused || ui.helpOpen || ui.resultsOpen;
   if (started && !halted && !window.__NS.manual) {
-    if (view.hitPause > 0) { view.hitPause -= dt; acc = 0; }   // an impact frame's hit-pause holds the world still
+    if (view.hitPause > 0) {
+      input.capturePadEdges(world.players.filter(p => !isBot(p)).map(p => p.device));
+      view.hitPause -= dt; acc = 0; // Freeze the world while preserving quick controller taps.
+    }
     else {
       acc += dt; let steps = 0;
       while (acc >= DT && steps < 5) { stepSim(); acc -= DT; steps++; }

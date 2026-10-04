@@ -285,6 +285,10 @@ export class Sound {
         break;
       }
       case 'crit': this.tone(2637, 0, 0.1, 'sine', 0.06); this.tone(3520, 0, 0.08, 'square', 0.025, 0.02); break;
+      case 'echoSpinHit':
+        this.tone(210, 90, 0.12, 'triangle', 0.055); this.noise(0.035, 1800, 0.045, 'bandpass');
+        if (ev.stunned) this.tone(880, 660, 0.18, 'sine', 0.035);
+        break;
       case 'deflect':
         // Staff meets shot: a bright metallic ting (brighter and ringing on a perfect)
         this.tone(2350, 0, ev.perfect ? 0.3 : 0.14, 'sine', 0.08); this.tone(3525, 0, ev.perfect ? 0.24 : 0.1, 'sine', 0.045);

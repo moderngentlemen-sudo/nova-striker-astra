@@ -189,8 +189,39 @@ export class Input {
     }
   }
 
+  // While an impact frame holds the simulation, poll assigned gamepads at display
+  // cadence. Keep logical edges (after LB chord suppression), not held states or
+  // axes, so a fast tap survives and aiming still reflects the current controls.
+  capturePadEdges(devices) {
+    if (this.menuActive()) return;
+    for (const dev of devices) {
+      if (!dev.startsWith('pad')) continue;
+      const cmd = this.sampleCurrent(dev), st = this.deviceState(dev);
+      if (st.swallow) continue; // Disconnected devices are waiting for a fresh join baseline.
+      const pending = st.pending || (st.pending = { pressed: {}, released: {} });
+      for (const b of BTNS) {
+        if (cmd.pressed[b]) pending.pressed[b] = true;
+        if (cmd.released[b]) pending.released[b] = true;
+      }
+    }
+  }
+
+  resetDevice(dev) { delete this.devices[dev]; }
+
   // aimFromMouse(screenX, screenY) is supplied by the caller: returns a unit sim-space vector.
   sample(dev, aimFromMouse, p1AimMode) {
+    const cmd = this.sampleCurrent(dev, aimFromMouse, p1AimMode), st = this.deviceState(dev);
+    if (st.pending) {
+      for (const b of BTNS) {
+        cmd.pressed[b] ||= !!st.pending.pressed[b];
+        cmd.released[b] ||= !!st.pending.released[b];
+      }
+      delete st.pending;
+    }
+    return cmd;
+  }
+
+  sampleCurrent(dev, aimFromMouse, p1AimMode) {
     // A newly joined controller is sampled as already held: its join/confirm
     // button cannot also become a jump or attack in the first game frame.
     const st = this.deviceState(dev);
@@ -228,6 +259,11 @@ export class Input {
     const pad = this.pads().find(p => 'pad' + p.index === dev);
     const padExtra = {};
     for (const b of BTNS) held[b] = false;
+    if (!pad) {
+      delete st.pending; st.prevHeld = {}; st.swallow = true;
+      st.utilityHeld = false; st.utilityUsed = true; st.orderChord = false; st.chordSuppressed?.clear();
+      return { mx, my, aimFree, ax, ay, held, pressed: none(), released: none() };
+    }
     if (pad) {
       const bt = i => (pad.buttons[i] ? pad.buttons[i].pressed || pad.buttons[i].value > 0.5 : false);
       [mx, my] = deadzone(pad.axes[0] || 0, -(pad.axes[1] || 0), 0.22);
@@ -277,13 +313,14 @@ export class Input {
   // physical release. Merely hiding pressed edges still charged weapons and
   // raised guards from the same button used to dismiss a modal.
   swallowAll() {
-    for (const st of Object.values(this.devices)) { st.swallow = true; st.utilityUsed = true; }
+    for (const st of Object.values(this.devices)) { st.swallow = true; st.utilityUsed = true; delete st.pending; }
     this.orderReset = true;
     this.kbPressed.clear(); this.kbReleased.clear(); this.mousePressed.clear(); this.mouseReleased.clear(); this.anyKbm = false;
   }
 
   finish(st, held, pressedExtra, mx, my, aimFree, ax, ay) {
     if (st.swallow) {
+      delete st.pending;
       st.swallow = false; st.prevHeld = {}; st.suppressed = new Set(BTNS.filter(b => held[b])); pressedExtra = {};
     }
     for (const b of st.suppressed || []) {
