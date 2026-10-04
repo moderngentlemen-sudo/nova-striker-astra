@@ -66,7 +66,7 @@ The complete character reference is available with **H / View**. The original co
 
 Menus support native keyboard Tab/Shift+Tab and Enter/Space; controller stick/D-pad moves spatially, left/right adjusts settings, A selects, B returns, LB goes to the top, and RB goes to settings. Gameplay actions are suppressed while a menu is open and held buttons must be released before they act after closing it. The same squad order again cancels it; orders clear on operation changes and retries.
 
-**Impact frame duration** in the pause menu scales the visual impact effect and its brief presentation pause from **0.5× to 3×**. **Default · 1×** preserves the original timing. The preference is saved automatically and applies to all seven impact styles.
+**Impact frame duration** in the pause menu sets the visual effect to **0.05 to 3.00 seconds**, with **0.15 s** as the default. The brief presentation pause scales proportionally. The preference is saved automatically and applies to all seven impact styles; previous multiplier preferences convert to the nearest seconds preset.
 
 ## Build and validate
 

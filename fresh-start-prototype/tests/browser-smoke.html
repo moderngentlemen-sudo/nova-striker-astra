@@ -6,7 +6,7 @@
 <script>
 const game=document.getElementById('game'), status=document.getElementById('status');
 document.getElementById('source').onclick=()=>{game.src='../game/';status.textContent='Loading source…';};
-document.getElementById('offline').onclick=()=>{game.src='../standalone/nova-striker-prototype.html';status.textContent='Loading standalone…';};
+document.getElementById('offline').onclick=()=>{game.src='../standalone/nova-striker-prototype.html?smoke='+Date.now();status.textContent='Loading standalone…';};
 game.onload=()=>{const check=()=>{if(game.contentWindow.__NS)status.textContent='Ready';else setTimeout(check,100);};check();};
 document.getElementById('party').onclick=()=>{
   const n=game.contentWindow.__NS;if(!n)return;
@@ -183,24 +183,25 @@ document.getElementById('impact-echo').onclick=async()=>{
     n.title();n.manual=true;n.input.pads=()=>[];n.inject=null;
     Object.assign(n.SETTINGS,{aiTeammates:0,echoKit:'hunter',lockMode:'manual',impactFrames:true,impactStyle:'scifi',quality:'high',reducedEffects:false,flashIntensity:0.55});
     n.start('echo','training');quiet();drive({},2);draw();
-    const select=n.ui.pause.querySelector('[data-setting="impactDuration"]');
+    const select=n.ui.pause.querySelector('[data-setting="impactDurationSeconds"]');
     check(!!select,'Pause menu exposes Impact frame duration');
-    for(const scale of [0.5,1,3]){
+    for(const scale of [0.05,0.15,0.5,3]){
       n.ui.H.settings();select.value=String(scale);select.dispatchEvent(new iw.Event('change',{bubbles:true}));
-      check(+n.SETTINGS.impactDuration===scale&&+JSON.parse(iw.localStorage.getItem(storageKey)).impactDuration===scale,scale+'× selection saves through the production UI');
+      check(+n.SETTINGS.impactDurationSeconds===scale&&+JSON.parse(iw.localStorage.getItem(storageKey)).impactDurationSeconds===scale,scale+' s selection saves through the production UI');
       n.ui.H.resume();n.ui.H.settings();
-      check(select.value===String(scale),scale+'× selection survives reopening the pause menu');n.ui.H.resume();
+      check(select.value===String(scale),scale+' s selection survives reopening the pause menu');n.ui.H.resume();
       const p=w.players[0];v.startImpact(p.x,p.y+1,1,true);
       const duration=v.impact.dur,pause=v.hitPause;
-      check(near(duration,0.145*scale)&&near(pause,0.05*scale)&&near(v.impactCd,1.05),scale+'× scales the visual timer and brief pause while preserving cooldown');
-      draw(duration*0.5);check(v.impact&&near(v.ink.uniforms.phase.value,0.5),scale+'× impact reaches its halfway visual phase');
-      draw(duration*0.51);check(!v.impact,scale+'× impact finishes after its selected duration');
+      check(near(duration,scale)&&near(pause,scale*0.05/0.145)&&near(v.impactCd,Math.max(1.05,scale)),scale+' s sets the exact visual duration and proportional pause without allowing another impact to interrupt it');
+      v.startImpact(p.x,p.y+1,1.5,true);check(near(v.impact.dur,scale),scale+' s stays exact for stronger hits');
+      draw(duration*0.5);check(v.impact&&near(v.ink.uniforms.phase.value,0.5),scale+' s impact reaches its halfway visual phase');
+      draw(duration*0.51);check(!v.impact,scale+' s impact finishes after its selected duration');
       // One real animation frame must skip simulation when its presentation pause starts positive.
       v.startImpact(p.x,p.y+1,1,true);const tick=w.tick;n.manual=false;await frame();n.manual=true;
-      check(w.tick===tick,scale+'× brief pause holds the real main-loop simulation');v.hitPause=0;
+      check(w.tick===tick,scale+' s brief pause holds the real main-loop simulation');v.hitPause=0;
     }
     for(const reduced of [false,true]){
-      Object.assign(n.SETTINGS,{impactDuration:1,quality:reduced?'low':'high',reducedEffects:reduced});
+      Object.assign(n.SETTINGS,{impactDurationSeconds:0.15,quality:reduced?'low':'high',reducedEffects:reduced});
       n.start('echo','training');quiet();prev={};const p=w.players[0],tag=reduced?'Low/reduced':'High/full';
       Object.assign(p,{x:20,y:0,prevX:20,prevY:0,vx:0,vy:0,onGround:true,state:'normal',st:0,hitstop:0,mercy:0});
       w.spawnWave({wave:0,def:{id:'smoke-echo',waves:[[['swarmer',19.2,0],['sniper',26,0]]]}},1);

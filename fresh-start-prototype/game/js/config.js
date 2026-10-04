@@ -566,6 +566,8 @@ export const PLAYER_COLORS = ['#5ac8fa', '#7ed957', '#f5f5f5', '#4dd0b8'];
 export const PLAYER_MARKS = ['▲', '◆', '●', '■'];
 export const HOSTILE = '#ff2e7e';
 
+export const IMPACT_DURATIONS = [0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1, 1.5, 2, 3];
+
 export const DEFAULT_SETTINGS = {
   novaKit: 'marksman',  // 'marksman' (projectile proposal) or 'sentinel' (Pass 1 kit)
   echoKit: 'hunter',    // 'hunter' (close-range proposal) or 'pursuit' (Pass 1 kit)
@@ -577,7 +579,7 @@ export const DEFAULT_SETTINGS = {
   impactFrames: true,   // impact frames on the biggest moments (sci-fi look since Version 9; on by default since Version 8)
   impactStyle: 'scifi', // the look: scifi, comic (the original), eclipse, shatter, thunder, sumi, warp (fx.js ImpactShader)
   impactColor: 'style', // its key colour: the look's own ('style'), the player's colour ('player') or the character's ('character')
-  impactDuration: 1,    // multiplier for the impact look and its brief presentation pause (0.5–3)
+  impactDurationSeconds: 0.15, // exact visual duration in seconds; the brief pause follows proportionally
   camera: 'persp',
   fov: 34,
   aimAssist: true,
@@ -628,6 +630,12 @@ export function loadSettings() {
       if (!(saved.settingsVersion >= 8)) { saved.impactFrames = true; saved.settingsVersion = 8; }
       // Version 9 introduces automatic lock-on as the default
       if (!(saved.settingsVersion >= 9)) { saved.lockMode = 'auto'; saved.settingsVersion = 9; }
+      // Convert the previous multiplier to the nearest seconds preset once.
+      const seconds = Number(saved.impactDurationSeconds ?? (saved.impactDuration != null ? Number(saved.impactDuration) * 0.145 : DEFAULT_SETTINGS.impactDurationSeconds));
+      saved.impactDurationSeconds = Number.isFinite(seconds) && seconds > 0
+        ? IMPACT_DURATIONS.reduce((best, value) => Math.abs(value - seconds) < Math.abs(best - seconds) ? value : best)
+        : DEFAULT_SETTINGS.impactDurationSeconds;
+      delete saved.impactDuration;
       Object.assign(SETTINGS, saved);
     }
   } catch (e) { /* storage unavailable: keep defaults */ }

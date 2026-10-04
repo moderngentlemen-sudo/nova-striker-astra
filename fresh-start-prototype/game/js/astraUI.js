@@ -1,5 +1,5 @@
 import { UI } from './ui.js';
-import { SETTINGS, saveSettings, CHARS, ROSTER, PLAYER_COLORS } from './config.js';
+import { SETTINGS, IMPACT_DURATIONS, saveSettings, CHARS, ROSTER, PLAYER_COLORS } from './config.js';
 import { isBot } from './bot.js';
 const OPERATIONS = {
   mission: { name:'Skyline Relay', action:'DEPLOY TO SKYLINE', tagline:'TAKE BACK THE SKYLINE.', description:'Break the lockdown and bring the relay back online.', ending:'The city is<br><em>back online.</em>' },
@@ -115,7 +115,7 @@ export class AstraUI extends UI {
       ['echoBelt','Echo snare control',[['fire','Tap fire'],['lb','Utility / LB']]],
       ['impactStyle','Impact frame style',[['scifi','Sci-fi hologram'],['comic','Comic ink'],['eclipse','Eclipse'],['shatter','Shatter'],['thunder','Thunderclap'],['sumi','Sumi ink'],['warp','Gravity well']]],
       ['impactColor','Impact frame colour',[['style','Style default'],['player','Player colour'],['character','Character colour']]],
-      ['impactDuration','Impact frame duration',[['0.5','Short · 0.5×'],['0.75','Quick · 0.75×'],['1','Default · 1×'],['1.5','Extended · 1.5×'],['2','Long · 2×'],['3','Extra long · 3×']]],
+      ['impactDurationSeconds','Impact frame duration',IMPACT_DURATIONS.map(s => [String(s),s.toFixed(2)+' s'+(s===0.15?' · Default':'')])],
       ['volume', 'Effects volume', [0,1,.05]], ['music','Music volume',[0,1,.05]],
       ['uiScale','HUD scale',[.85,1.3,.05]], ['hapticStrength','Vibration strength',[0,1,.05]],
       ['aimAssist','Controller aim assist',true], ['shake','Camera shake',true], ['reducedEffects','Reduced flashes & effects',true], ['haptics','Controller vibration',true], ['barks','Character dialogue',true],
@@ -136,7 +136,7 @@ export class AstraUI extends UI {
     if (spec === true) { input = el('input'); input.type = 'checkbox'; input.checked = !!SETTINGS[key]; }
     else if (typeof spec[0] === 'number') { input = el('input'); input.type='range'; [input.min,input.max,input.step] = spec; input.value=SETTINGS[key] ?? 1; }
     else { input = el('select'); for (const [v,t] of spec) { const o=el('option','',t); o.value=v; input.append(o); } input.value=SETTINGS[key] ?? spec[0][0]; }
-    if(key==='impactDuration') { hint=el('small','setting-hint', 'Scales the visual impact and brief pause.'); hint.id='impact-duration-hint'; wrap.classList.add('setting-with-hint'); input.setAttribute('aria-label',label); input.setAttribute('aria-describedby',hint.id); }
+    if(key==='impactDurationSeconds') { hint=el('small','setting-hint', 'Visual duration in seconds. The brief pause scales with it.'); hint.id='impact-duration-hint'; wrap.classList.add('setting-with-hint'); input.setAttribute('aria-label',label); input.setAttribute('aria-describedby',hint.id); }
     input.dataset.setting=key;
     input.oninput = () => { SETTINGS[key] = input.type==='checkbox' ? input.checked : input.type==='range' ? +input.value : input.value; saveSettings(); this.applyPreferences(); this.H.settingChanged?.(key); };
     input.onchange = input.oninput; wrap.append(input); if(hint)wrap.append(hint); parent.append(wrap);

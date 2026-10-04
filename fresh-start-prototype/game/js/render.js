@@ -423,15 +423,15 @@ export class View {
   startImpact(x, y, strength = 1, force = false) {
     if (!SETTINGS.impactFrames || (this.impactCd > 0 && !force)) return;
     const s = this.screenOf(x, y), r = this.canvas.getBoundingClientRect();
-    const savedDuration = Number(SETTINGS.impactDuration);
-    const duration = Number.isFinite(savedDuration) ? Math.max(0.5, Math.min(3, savedDuration)) : 1;
-    this.impact = { t: 0, dur: (0.1 + 0.045 * strength) * duration, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
+    const savedDuration = Number(SETTINGS.impactDurationSeconds);
+    const duration = Number.isFinite(savedDuration) ? Math.max(0.05, Math.min(3, savedDuration)) : 0.15;
+    this.impact = { t: 0, dur: duration, cx: s.x / Math.max(1, r.width), cy: 1 - s.y / Math.max(1, r.height), k: strength, seed: Math.random() * 100 };
     const style = IMPACT_STYLES.includes(SETTINGS.impactStyle) ? SETTINGS.impactStyle : 'scifi', U = this.ink.uniforms;
     let by = this.impactBy;
     if (!by && this.world) { let bd = Infinity; for (const q of this.world.players) { const dd = Math.hypot(q.x - x, q.y - y); if (dd < bd) { bd = dd; by = q; } } }
     const mode = SETTINGS.impactColor, col = by && mode === 'player' ? PLAYER_COLORS[by.slot] : by && mode === 'character' ? CHARS[by.char]?.energy : null;
     U.style.value = IMPACT_STYLES.indexOf(style); U.accent.value.set(col || IMPACT_ACCENT[style]); U.tinted.value = col ? 1 : 0;
-    this.impactCd = 1.05; this.hitPause = (0.025 + 0.025 * strength) * duration;
+    this.impactCd = Math.max(1.05, duration); this.hitPause = duration * (0.025 + 0.025 * strength) / (0.1 + 0.045 * strength);
     this.trauma = Math.max(this.trauma, 0.35 * strength); this.bloomKick = Math.max(this.bloomKick, 0.25 * strength);
   }
   updateImpact(dt, world) {
